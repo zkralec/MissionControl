@@ -1,0 +1,3156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mission Control Console</title>
+  <style>
+    :root {
+      --bg: #dce6f7;
+      --bg-deep: #cad8ef;
+      --ink: #172133;
+      --muted: #51617e;
+      --line: rgba(255, 255, 255, 0.52);
+      --glass: rgba(255, 255, 255, 0.36);
+      --glass-strong: rgba(255, 255, 255, 0.52);
+      --accent: #2a67ff;
+      --accent-soft: rgba(42, 103, 255, 0.14);
+      --warn: #b4232e;
+      --ok: #157d4f;
+      --radius: 18px;
+      --shadow: 0 22px 44px rgba(11, 29, 61, 0.16);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(255, 255, 255, 0.9), transparent 32%),
+        radial-gradient(circle at 86% 22%, rgba(147, 185, 255, 0.7), transparent 30%),
+        radial-gradient(circle at 70% 88%, rgba(190, 214, 255, 0.72), transparent 40%),
+        linear-gradient(165deg, var(--bg), var(--bg-deep));
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: -1;
+      border-radius: 999px;
+      filter: blur(24px);
+      pointer-events: none;
+    }
+
+    body::before {
+      width: 260px;
+      height: 260px;
+      left: -40px;
+      top: 28vh;
+      background: rgba(181, 211, 255, 0.66);
+    }
+
+    body::after {
+      width: 300px;
+      height: 300px;
+      right: -70px;
+      top: 8vh;
+      background: rgba(255, 255, 255, 0.68);
+    }
+
+    .page {
+      min-height: 100vh;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 18px 18px 26px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 18px;
+    }
+
+    .header {
+      background:
+        linear-gradient(165deg, rgba(255, 255, 255, 0.56), rgba(255, 255, 255, 0.3)),
+        linear-gradient(120deg, rgba(42, 103, 255, 0.22), rgba(255, 255, 255, 0.2));
+      border: 1px solid var(--line);
+      color: #112038;
+      border-radius: calc(var(--radius) + 2px);
+      padding: 18px 20px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px) saturate(140%);
+      -webkit-backdrop-filter: blur(14px) saturate(140%);
+      position: sticky;
+      top: 10px;
+      z-index: 20;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(1.08rem, 1.6vw, 1.3rem);
+      letter-spacing: 0.01em;
+      font-weight: 680;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: #31486d;
+      font-size: 0.86rem;
+    }
+
+    .header-shell {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .view-tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 4px 2px 0;
+    }
+
+    .view-tab {
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 0.82rem;
+    }
+
+    .view-tab.active {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.58)),
+        rgba(42, 103, 255, 0.2);
+      border-color: rgba(42, 103, 255, 0.34);
+      box-shadow: 0 10px 18px rgba(45, 78, 156, 0.2);
+    }
+
+    .view-item[hidden] {
+      display: none !important;
+    }
+
+    .error-box {
+      display: none;
+      background: rgba(255, 236, 239, 0.92);
+      color: var(--warn);
+      border: 1px solid rgba(219, 78, 89, 0.35);
+      border-radius: 14px;
+      padding: 12px 14px;
+      white-space: pre-wrap;
+      font-size: 0.86rem;
+      box-shadow: 0 8px 24px rgba(138, 15, 28, 0.13);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      min-height: 0;
+      align-items: start;
+    }
+
+    .layout.single-column {
+      grid-template-columns: 1fr;
+    }
+
+    .stack,
+    .detail-grid {
+      display: contents;
+    }
+
+    .card {
+      background: linear-gradient(160deg, var(--glass-strong), var(--glass));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px) saturate(135%);
+      -webkit-backdrop-filter: blur(16px) saturate(135%);
+      overflow: hidden;
+    }
+
+    .wide-card {
+      grid-column: 1 / -1;
+    }
+
+    .card:hover {
+      box-shadow: 0 24px 46px rgba(11, 29, 61, 0.17);
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 1rem;
+      color: #1c3156;
+      font-weight: 670;
+    }
+
+    .section-title {
+      margin: 0 0 10px;
+      font-size: 0.95rem;
+      color: #1e3763;
+      font-weight: 650;
+    }
+
+    .section-kicker {
+      margin: 0 0 10px;
+      color: #36527d;
+      font-size: 0.77rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-weight: 650;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      min-height: 36px;
+      flex-wrap: wrap;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .field:last-child { margin-bottom: 0; }
+
+    .field label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    .field-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 30px;
+    }
+
+    input, select, textarea, button {
+      font: inherit;
+      color: inherit;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.66);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.62);
+      box-shadow: inset 0 0 0 1px rgba(186, 206, 240, 0.25);
+      transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: rgba(42, 103, 255, 0.44);
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow:
+        inset 0 0 0 1px rgba(167, 196, 255, 0.4),
+        0 0 0 3px rgba(42, 103, 255, 0.1);
+    }
+
+    textarea {
+      min-height: 140px;
+      resize: vertical;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.79rem;
+      line-height: 1.42;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .button-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    button {
+      border: 1px solid rgba(255, 255, 255, 0.56);
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.48)),
+        var(--accent-soft);
+      color: #133365;
+      padding: 12px 16px;
+      cursor: pointer;
+      font-weight: 640;
+      transition: transform 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
+      box-shadow: 0 8px 16px rgba(70, 110, 195, 0.14);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 20px rgba(45, 78, 156, 0.18);
+    }
+
+    button:active {
+      transform: translateY(1px) scale(0.99);
+      box-shadow: 0 6px 12px rgba(45, 78, 156, 0.18);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.44)),
+        rgba(109, 147, 236, 0.24);
+    }
+
+    button:focus-visible {
+      outline: 2px solid rgba(42, 103, 255, 0.35);
+      outline-offset: 2px;
+    }
+
+    button.secondary {
+      color: #284a85;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.56)),
+        rgba(109, 147, 236, 0.18);
+    }
+
+    .tiny-toggle {
+      padding: 6px 10px;
+      font-size: 0.74rem;
+      border-radius: 10px;
+    }
+
+    .primary-action {
+      width: 100%;
+      justify-content: center;
+      text-align: center;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .small-note {
+      color: var(--muted);
+      font-size: 0.79rem;
+      min-height: 1.2em;
+      margin-top: 4px;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat,
+    .kpi {
+      background: rgba(255, 255, 255, 0.54);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 12px;
+      padding: 10px;
+      min-height: 72px;
+      display: grid;
+      align-content: center;
+    }
+
+    .stat .k,
+    .kpi .k {
+      color: var(--muted);
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .stat .v,
+    .kpi .v {
+      font-weight: 720;
+      margin-top: 3px;
+      color: #12284f;
+      line-height: 1.18;
+      font-size: 1.02rem;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .kpi .sub {
+      color: var(--muted);
+      font-size: 0.71rem;
+      margin-top: 1px;
+    }
+
+    .list-wrap {
+      max-height: clamp(220px, 44vh, 520px);
+      overflow: auto;
+      border: 1px solid rgba(255, 255, 255, 0.65);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.44);
+      padding: 4px;
+      margin-top: 2px;
+    }
+
+    .event-item {
+      background: rgba(255, 255, 255, 0.54);
+      border: 1px solid rgba(255, 255, 255, 0.62);
+      border-radius: 12px;
+      padding: 9px 10px;
+      display: grid;
+      gap: 4px;
+      margin: 6px;
+    }
+
+    .event-meta {
+      color: var(--muted);
+      font-size: 0.73rem;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+
+    .task-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      border: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+      width: 100%;
+      text-align: left;
+      padding: 10px 12px;
+      cursor: pointer;
+      background: transparent;
+      color: inherit;
+      border-radius: 10px;
+    }
+
+    .task-row:last-child { border-bottom: 0; }
+    .task-row:hover { background: rgba(255, 255, 255, 0.52); }
+
+    .task-row.active {
+      background: rgba(42, 103, 255, 0.16);
+      outline: 1px solid rgba(42, 103, 255, 0.24);
+    }
+
+    .task-main {
+      font-size: 0.83rem;
+      display: grid;
+      gap: 3px;
+    }
+
+    .task-main .id {
+      color: #203962;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+
+    .task-main .meta {
+      color: var(--muted);
+      font-size: 0.74rem;
+    }
+
+    .badge {
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 0.72rem;
+      border: 1px solid rgba(255, 255, 255, 0.66);
+      background: rgba(255, 255, 255, 0.58);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      justify-self: end;
+      min-width: 84px;
+      text-align: center;
+    }
+
+    .badge.ok {
+      color: var(--ok);
+      background: rgba(225, 248, 237, 0.85);
+      border-color: rgba(21, 125, 79, 0.28);
+    }
+
+    .badge.warn {
+      color: var(--warn);
+      background: rgba(255, 234, 238, 0.9);
+      border-color: rgba(180, 35, 46, 0.28);
+    }
+
+    pre {
+      margin: 0;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.58);
+      border: 1px solid rgba(255, 255, 255, 0.68);
+      border-radius: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.79rem;
+      line-height: 1.45;
+    }
+
+    .collapsible-pre {
+      max-height: 220px;
+      overflow: auto;
+      transition: max-height 160ms ease;
+    }
+
+    .collapsible-pre.expanded {
+      max-height: 70vh;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid rgba(255, 255, 255, 0.66);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.48);
+      max-height: clamp(220px, 40vh, 440px);
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 920px;
+      font-size: 0.78rem;
+    }
+
+    table.compact {
+      min-width: 620px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+      padding: 8px 9px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    tbody tr:hover td {
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: rgba(241, 247, 255, 0.9);
+      color: #28456f;
+      z-index: 1;
+      font-weight: 640;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .mono {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      word-break: break-word;
+    }
+
+    details.panel-details {
+      margin-top: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.62);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.44);
+      padding: 8px 10px;
+    }
+
+    details.panel-details > summary {
+      cursor: pointer;
+      color: #1f3963;
+      font-weight: 640;
+      font-size: 0.83rem;
+      list-style: none;
+      outline: none;
+    }
+
+    details.panel-details > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .builder-card {
+      border: 1px solid rgba(255, 255, 255, 0.62);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.42);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    .builder-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .builder-grid .field {
+      margin-bottom: 0;
+    }
+
+    .chip-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      background: rgba(255, 255, 255, 0.58);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 0.78rem;
+    }
+
+    .ok { color: var(--ok); font-weight: 600; }
+    .warn { color: var(--warn); font-weight: 600; }
+
+    .status-success {
+      color: var(--ok);
+      background: rgba(225, 248, 237, 0.85);
+      border-color: rgba(21, 125, 79, 0.28);
+    }
+
+    .status-warning {
+      color: var(--warn);
+      background: rgba(255, 234, 238, 0.9);
+      border-color: rgba(180, 35, 46, 0.28);
+    }
+
+    .status-info {
+      color: #21508f;
+      background: rgba(233, 243, 255, 0.88);
+      border-color: rgba(45, 90, 165, 0.22);
+    }
+
+    .status-disabled {
+      color: #5f6b80;
+      background: rgba(240, 244, 252, 0.85);
+      border-color: rgba(108, 123, 152, 0.2);
+    }
+
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      min-height: 0;
+      align-items: start;
+    }
+
+    .workflow-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 18px;
+      margin-top: 14px;
+      align-items: start;
+    }
+
+    .workflow-grid > .builder-card {
+      margin-top: 0;
+      height: 100%;
+      align-content: start;
+    }
+
+    .workflow-grid.secondary {
+      grid-template-columns: minmax(320px, 460px);
+      margin-top: 14px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+
+    .form-grid .field {
+      margin-bottom: 0;
+    }
+
+    @media (max-width: 1280px) {
+      .kpi-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 1080px) {
+      .layout { grid-template-columns: 1fr; }
+      .list-wrap { max-height: 34vh; }
+      .page { padding: 14px; }
+      .card { padding: 14px; }
+      .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .telemetry-grid { grid-template-columns: 1fr; }
+      .workflow-grid,
+      .workflow-grid.secondary {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .stats-grid,
+      .kpi-grid {
+        grid-template-columns: 1fr;
+      }
+      .builder-grid {
+        grid-template-columns: 1fr;
+      }
+      .task-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+      .badge {
+        justify-self: start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="header">
+      <div class="header-shell">
+        <div>
+          <h1 class="title">Mission Control Console</h1>
+          <p class="subtitle">Liquid-glass operations cockpit for scans, automations, notifications, and system health.</p>
+        </div>
+        <div class="header-actions">
+          <button id="openObservabilityBtn" class="secondary" type="button">Open Observability</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="errorBox" class="error-box"></div>
+
+    <nav id="consoleViewTabs" class="view-tabs" aria-label="Console Views">
+      <button type="button" class="view-tab active" data-view="dashboard">Dashboard</button>
+      <button type="button" class="view-tab" data-view="automations">Automations</button>
+      <button type="button" class="view-tab" data-view="tasks">Tasks</button>
+      <button type="button" class="view-tab" data-view="alerts">Alerts</button>
+      <button type="button" class="view-tab" data-view="system">System</button>
+      <button type="button" class="view-tab" data-view="settings">Settings</button>
+    </nav>
+
+    <main id="consoleLayout" class="layout">
+      <section id="leftStack" class="stack">
+        <article class="card view-item wide-card" data-view="dashboard">
+          <h2>Quick Actions</h2>
+          <p class="small-note">Run scans and notifications from one place. API key and advanced options are in Settings.</p>
+          <div class="workflow-grid">
+            <article class="builder-card" style="margin-top: 0;">
+              <h3 class="section-title">GPU Deal Scan</h3>
+              <p class="small-note">Track RTX 5090 prices and queue a scan now.</p>
+              <div class="field">
+                <label for="dealsBuilderGpuMaxInput">GPU price ceiling (USD)</label>
+                <input id="dealsBuilderGpuMaxInput" type="number" min="1" step="1" value="2000">
+              </div>
+              <div class="field">
+                <label for="dealsBuilderPcMaxInput">AI PC price ceiling (USD)</label>
+                <input id="dealsBuilderPcMaxInput" type="number" min="1" step="1" value="4000">
+              </div>
+              <details class="panel-details" style="margin-top: 0;">
+                <summary>Advanced</summary>
+                <div class="field" style="margin-top: 10px;">
+                  <label for="dealsBuilderSourceInput">Source tag</label>
+                  <input id="dealsBuilderSourceInput" type="text" value="manual-console">
+                </div>
+                <label class="chip-toggle" for="dealsBuilderCollectorsInput">
+                  <input id="dealsBuilderCollectorsInput" type="checkbox" checked style="width:auto;">
+                  Enable collectors
+                </label>
+              </details>
+              <button id="runDealsWorkflowBtn" class="primary-action" type="button">Run GPU Deal Scan</button>
+              <div id="dealsWorkflowNote" class="small-note"></div>
+            </article>
+
+            <article class="builder-card" style="margin-top: 0;">
+              <h3 class="section-title">Job Scan</h3>
+              <p class="small-note">Scan major job boards and rank openings against your profile.</p>
+              <div class="field">
+                <label for="jobsBuilderTitleInput">Desired role title</label>
+                <input id="jobsBuilderTitleInput" type="text" value="Software Developer">
+              </div>
+              <div class="field">
+                <label for="jobsBuilderSalaryMinInput">Minimum salary (USD)</label>
+                <input id="jobsBuilderSalaryMinInput" type="number" min="1" step="1000" value="100000">
+              </div>
+              <div class="field">
+                <label for="jobsBuilderLocationInput">Preferred location</label>
+                <input id="jobsBuilderLocationInput" type="text" value="United States">
+              </div>
+              <details class="panel-details" style="margin-top: 0;">
+                <summary>Advanced</summary>
+                <div class="field" style="margin-top: 10px;">
+                  <label for="jobsBuilderBoardsInput">Boards (comma separated)</label>
+                  <input id="jobsBuilderBoardsInput" type="text" value="linkedin, indeed, glassdoor, handshake">
+                </div>
+                <div class="row">
+                  <label class="chip-toggle" for="jobsBuilderUseResumeInput">
+                    <input id="jobsBuilderUseResumeInput" type="checkbox" checked style="width:auto;">
+                    Use resume profile
+                  </label>
+                  <label class="chip-toggle" for="jobsBuilderCollectorsInput">
+                    <input id="jobsBuilderCollectorsInput" type="checkbox" checked style="width:auto;">
+                    Enable collectors
+                  </label>
+                </div>
+              </details>
+              <button id="runJobsWorkflowBtn" class="primary-action" type="button">Run Job Scan</button>
+              <div id="jobsWorkflowNote" class="small-note"></div>
+            </article>
+          </div>
+          <div class="workflow-grid secondary">
+            <article class="builder-card" style="margin-top: 0;">
+              <h3 class="section-title">Test Notification</h3>
+              <p class="small-note">Send a test alert using notification settings configured in Settings.</p>
+              <button id="runNotifyWorkflowBtn" class="primary-action" type="button">Send Test Notification</button>
+              <div id="notifyWorkflowNote" class="small-note"></div>
+            </article>
+          </div>
+
+          <div class="small-note" style="margin-top: 10px;">Developer JSON controls are available in Settings under Developer Mode.</div>
+        </article>
+
+        <article class="card view-item wide-card" data-view="tasks">
+          <div class="card-head">
+            <h2>Task History</h2>
+            <button id="loadTasksBtn" class="secondary" type="button">Reload</button>
+          </div>
+          <div class="table-wrap">
+            <table class="compact">
+              <thead>
+                <tr>
+                  <th>Created</th>
+                  <th>Workflow</th>
+                  <th>Status</th>
+                  <th>Duration</th>
+                  <th>Model</th>
+                  <th>Artifacts</th>
+                </tr>
+              </thead>
+              <tbody id="tasksList">
+                <tr><td colspan="6" class="muted">No tasks found.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card view-item wide-card" data-view="automations">
+          <div class="card-head">
+            <h2>Planner Overview</h2>
+            <button id="plannerRefreshBtn" class="secondary" type="button">Refresh</button>
+          </div>
+          <div id="plannerControlNote" class="small-note">Planner controls loading...</div>
+          <div id="plannerSummarySentence" class="small-note"></div>
+          <div class="stats-grid" style="margin-top: 8px;">
+            <div class="stat"><div class="k">Planner enabled</div><div id="plannerEnabledVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Planner mode</div><div id="plannerModeVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Approval state</div><div id="plannerApprovalVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Active automations</div><div id="plannerTemplateCountVal" class="v">-</div></div>
+          </div>
+          <div class="field" style="margin-top: 10px;">
+            <label>Quick actions</label>
+            <p class="small-note">Choose recommendation mode to review actions first, or execute mode for autonomous runs.</p>
+            <div class="button-group">
+              <button id="plannerQuickRecommendBtn" type="button">Recommendation Mode</button>
+              <button id="plannerQuickExecuteBtn" class="secondary" type="button">Execute + Auto-Approve</button>
+              <button id="plannerQuickPauseBtn" class="secondary" type="button">Pause Planner</button>
+              <button id="plannerRunOnceBtn" class="secondary" type="button">Run Planner Now</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="card view-item wide-card" data-view="automations">
+          <div class="card-head">
+            <h2>Active Automations</h2>
+          </div>
+          <div class="small-note">These cards represent saved automation workflows. Edit thresholds, enable presets, and trigger immediate runs.</div>
+          <div class="workflow-grid" style="margin-top: 10px;">
+            <article class="builder-card" style="margin-top: 0;">
+              <div class="card-head" style="margin-bottom: 6px;">
+                <h3 class="section-title">RTX 5090 AI Lab Watch</h3>
+                <span id="automation5090Status" class="badge">Unknown</span>
+              </div>
+              <div id="automation5090Meta" class="small-note">Watches RTX 5090 GPU/PC deals against your price ceilings.</div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="plannerPresetIntervalInput">Check interval (sec)</label>
+                  <input id="plannerPresetIntervalInput" type="number" min="60" step="60" value="300">
+                </div>
+                <div class="field">
+                  <label for="plannerPresetGpuMaxInput">GPU price ceiling</label>
+                  <input id="plannerPresetGpuMaxInput" type="number" min="1" step="1" value="2000">
+                </div>
+                <div class="field">
+                  <label for="plannerPresetPcMaxInput">AI PC price ceiling</label>
+                  <input id="plannerPresetPcMaxInput" type="number" min="1" step="1" value="4000">
+                </div>
+              </div>
+              <div class="button-group">
+                <button id="plannerPreset5090Btn" type="button">Save Automation</button>
+                <button id="automationToggle5090Btn" class="secondary" type="button">Disable</button>
+                <button id="automationRun5090Btn" class="secondary" type="button">Run Now</button>
+              </div>
+            </article>
+
+            <article class="builder-card" style="margin-top: 0;">
+              <div class="card-head" style="margin-bottom: 6px;">
+                <h3 class="section-title">Software Developer Job Watch</h3>
+                <span id="automationJobsStatus" class="badge">Unknown</span>
+              </div>
+              <div id="automationJobsMeta" class="small-note">Scans major boards and ranks opportunities for your preferences.</div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="plannerJobsPresetIntervalInput">Check interval (sec)</label>
+                  <input id="plannerJobsPresetIntervalInput" type="number" min="60" step="60" value="300">
+                </div>
+                <div class="field">
+                  <label for="plannerJobsPresetTitleInput">Desired title</label>
+                  <input id="plannerJobsPresetTitleInput" type="text" value="Software Developer">
+                </div>
+                <div class="field">
+                  <label for="plannerJobsPresetSalaryMinInput">Salary minimum</label>
+                  <input id="plannerJobsPresetSalaryMinInput" type="number" min="1" step="1000" value="100000">
+                </div>
+                <div class="field">
+                  <label for="plannerJobsPresetLocationInput">Preferred location</label>
+                  <input id="plannerJobsPresetLocationInput" type="text" value="United States">
+                </div>
+              </div>
+              <div class="button-group">
+                <button id="plannerPresetJobsBtn" type="button">Save Automation</button>
+                <button id="automationToggleJobsBtn" class="secondary" type="button">Disable</button>
+                <button id="automationRunJobsBtn" class="secondary" type="button">Run Now</button>
+              </div>
+            </article>
+
+            <article class="builder-card" style="margin-top: 0;">
+              <div class="card-head" style="margin-bottom: 6px;">
+                <h3 class="section-title">Daily Ops Summary</h3>
+                <span id="automationDailyOpsStatus" class="badge status-info">Scheduler</span>
+              </div>
+              <div id="automationDailyOpsMeta" class="small-note">Daily report generation is scheduler-driven. This card gives quick visibility and manual trigger options.</div>
+              <div class="button-group">
+                <button id="automationRunDailyOpsBtn" type="button">Run Planner Cycle</button>
+                <button id="automationRefreshDailyOpsBtn" class="secondary" type="button">Refresh Status</button>
+              </div>
+            </article>
+          </div>
+          <div id="plannerTemplateNote" class="small-note"></div>
+        </article>
+
+        <article class="card view-item" id="statsSection" data-view="dashboard">
+          <div class="card-head">
+            <h2>Task Success and Failures</h2>
+            <button id="refreshStatsBtn" class="secondary" type="button">Refresh</button>
+          </div>
+          <p class="small-note">Prioritized snapshot of current run outcomes and budget health.</p>
+          <div id="statsUnavailable" class="muted" style="display: none;"></div>
+          <div id="statsGrid" class="stats-grid">
+            <div class="stat"><div class="k">Daily budget (USD)</div><div id="sBudget" class="v">-</div></div>
+            <div class="stat"><div class="k">Spend today (USD)</div><div id="sSpend" class="v">-</div></div>
+            <div class="stat"><div class="k">Remaining (USD)</div><div id="sRemain" class="v">-</div></div>
+            <div class="stat"><div class="k">Buffer (USD)</div><div id="sBuffer" class="v">-</div></div>
+            <div class="stat"><div class="k">Runs today</div><div id="sRuns" class="v">-</div></div>
+            <div class="stat"><div class="k">Succeeded / Failed</div><div id="sSuccessFailed" class="v">-</div></div>
+          </div>
+        </article>
+
+        <article class="card view-item" data-view="dashboard">
+          <div class="card-head">
+            <h2>Active Automations</h2>
+            <button id="refreshDashboardAutomationBtn" class="secondary" type="button">Refresh</button>
+          </div>
+          <div class="stats-grid">
+            <div class="stat"><div class="k">Planner</div><div id="dashPlannerEnabledVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Mode</div><div id="dashPlannerModeVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Active rules</div><div id="dashPlannerActiveVal" class="v">-</div></div>
+          </div>
+          <div id="dashPlannerMeta" class="small-note">Automation summary loads from planner status.</div>
+        </article>
+
+        <article class="card view-item" data-view="system">
+          <div class="card-head">
+            <h2>Planner Status</h2>
+            <button id="refreshPlannerTelemetryBtn" class="secondary" type="button">Refresh</button>
+          </div>
+          <div class="stats-grid">
+            <div class="stat"><div class="k">Mode</div><div id="telemetryPlannerModeVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Approval</div><div id="telemetryPlannerApprovalVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Interval</div><div id="telemetryPlannerIntervalVal" class="v">-</div></div>
+          </div>
+          <div id="telemetryPlannerMeta" class="small-note">Planner status loads after config refresh.</div>
+        </article>
+
+        <article class="card view-item" data-view="settings">
+          <div class="card-head">
+            <h2>Candidate Profile</h2>
+            <button id="resumeRefreshBtn" class="secondary" type="button">Refresh</button>
+          </div>
+          <p class="small-note">Used to rank jobs in Job Scan workflows. Keep this concise and current.</p>
+          <div class="stats-grid">
+            <div class="stat"><div class="k">Resume loaded</div><div id="resumeLoadedVal" class="v">No</div></div>
+            <div class="stat"><div class="k">Name</div><div id="resumeNameVal" class="v">-</div></div>
+            <div class="stat"><div class="k">Characters</div><div id="resumeCharsVal" class="v">0</div></div>
+            <div class="stat"><div class="k">Last updated</div><div id="resumeUpdatedVal" class="v">-</div></div>
+          </div>
+          <div id="resumeMeta" class="small-note">No resume profile stored.</div>
+          <div class="button-group" style="margin-top: 8px;">
+            <button id="resumeToggleEditorBtn" type="button">Edit Resume</button>
+            <button id="resumeDeleteBtn" class="secondary" type="button">Remove Resume</button>
+          </div>
+          <div class="field" style="margin-top: 8px;">
+            <label for="resumeFileInput">Upload new resume file (PDF, DOCX, text)</label>
+            <div class="row">
+              <input id="resumeFileInput" type="file" accept=".pdf,.docx,.doc,.txt,.md,.rtf,.json,.yaml,.yml,.log,.csv" style="min-width: 230px;">
+              <button id="resumeUploadFileBtn" class="secondary" type="button">Upload New Resume</button>
+            </div>
+          </div>
+          <div id="resumeNote" class="small-note">Saved profile is reused by jobs scans when resume mode is enabled.</div>
+          <details id="resumeEditorPanel" class="panel-details">
+            <summary>Resume editor</summary>
+            <div class="field" style="margin-top: 10px;">
+              <label for="resumeNameInput">Resume name</label>
+              <input id="resumeNameInput" type="text" placeholder="Resume - March 2026">
+            </div>
+            <div class="field">
+              <label for="resumeTextInput">Resume text</label>
+              <textarea id="resumeTextInput" style="min-height: 170px;" placeholder="Paste resume text here, or upload a resume file above."></textarea>
+            </div>
+            <div class="row">
+              <button id="resumeSaveBtn" type="button">Save Resume</button>
+            </div>
+          </details>
+        </article>
+
+        <article class="card view-item" data-view="settings">
+          <div class="card-head">
+            <h2>Access and Notifications</h2>
+          </div>
+          <div class="field">
+            <label for="apiKeyInput">API key (optional)</label>
+            <input id="apiKeyInput" type="text" placeholder="Used for authenticated Mission Control API endpoints">
+            <div class="small-note">Stored only in the browser for this session.</div>
+          </div>
+          <div class="field">
+            <label for="notifyWorkflowChannelsInput">Notification channels (comma separated)</label>
+            <input id="notifyWorkflowChannelsInput" type="text" value="discord">
+          </div>
+          <div class="field">
+            <label for="notifyWorkflowSourceInput">Notification source task type</label>
+            <input id="notifyWorkflowSourceInput" type="text" value="ops_report_v1">
+          </div>
+          <div class="field">
+            <label for="notifyWorkflowMessageInput">Default test message</label>
+            <input id="notifyWorkflowMessageInput" type="text" value="Mission Control test notification.">
+          </div>
+          <div class="button-group">
+            <button id="settingsSendTestNotifyBtn" type="button">Send Test Notification</button>
+          </div>
+          <div class="small-note">Notification tests use `notify_v1` with `disable_dedupe=true` so repeated manual sends are never suppressed.</div>
+        </article>
+
+        <article class="card view-item" data-view="settings">
+          <details class="panel-details">
+            <summary>Developer Mode</summary>
+            <p class="small-note" style="margin-top: 10px;">Raw payload and task debug controls for power users.</p>
+            <div class="button-group" style="margin-bottom: 10px;">
+              <button id="quickTaskJobsBtn" class="secondary" type="button">Load Jobs Template</button>
+              <button id="quickTaskDealsBtn" class="secondary" type="button">Load Deals Template</button>
+              <button id="quickTaskNotifyBtn" class="secondary" type="button">Load Notify Template</button>
+            </div>
+            <div class="field">
+              <label for="taskType">Internal task type</label>
+              <select id="taskType">
+                <option value="jobs_digest_v1">jobs_digest_v1</option>
+                <option value="deals_scan_v1">deals_scan_v1</option>
+                <option value="slides_outline_v1">slides_outline_v1</option>
+                <option value="notify_v1">notify_v1</option>
+              </select>
+            </div>
+            <div class="builder-card">
+              <div id="jobsBuilder" class="builder-panel"></div>
+              <div id="dealsBuilder" class="builder-panel" hidden></div>
+              <div id="genericBuilderHint" class="small-note" hidden>
+                Use “Load Suggested Payload” to start for this task type.
+              </div>
+              <div class="row">
+                <button id="buildGuidedPayloadBtn" class="secondary" type="button">Build Payload from Card Inputs</button>
+                <button id="loadPayloadTemplateBtn" class="secondary" type="button">Load Suggested Payload</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="modelOverride">Model override (optional)</label>
+              <input id="modelOverride" type="text" placeholder="gpt-5-mini or tier alias">
+            </div>
+            <div class="field">
+              <label for="payloadInput">Raw payload JSON</label>
+              <textarea id="payloadInput">{"use_resume_profile":true,"jobs":[{"title":"Software Developer","company":"Acme","remote":true,"salary_max":100000}]}</textarea>
+            </div>
+            <div class="row">
+              <button id="createTaskBtn" class="primary-action" type="button">Create Task from Raw JSON</button>
+            </div>
+            <div id="createNote" class="small-note"></div>
+          </details>
+        </article>
+      </section>
+
+      <section id="rightDetail" class="detail-grid">
+        <article class="card view-item" data-view="tasks">
+          <h3 class="section-title">Task Details</h3>
+          <div id="taskStatusLine" class="small-note">No item selected.</div>
+          <pre id="taskMetaPre">{}</pre>
+        </article>
+
+        <article class="card view-item wide-card" id="runsSection" data-view="tasks">
+          <h3 class="section-title">Execution Attempts</h3>
+          <div id="runsUnavailable" class="muted" style="display: none;"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Attempt</th>
+                  <th>Status</th>
+                  <th>Model</th>
+                  <th>Tokens in</th>
+                  <th>Tokens out</th>
+                  <th>Cost USD</th>
+                  <th>Started</th>
+                  <th>Ended</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="runsBody">
+                <tr><td colspan="9" class="muted">No runs loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card view-item" id="resultSection" data-view="tasks">
+          <h3 class="section-title">Latest result.json</h3>
+          <div id="resultUnavailable" class="muted" style="display: none;"></div>
+          <div id="resultMeta" class="small-note">No result yet.</div>
+          <div class="field">
+            <label>Result text</label>
+            <pre id="resultTextPre"></pre>
+          </div>
+          <div class="field">
+            <div class="field-label-row">
+              <label for="resultJsonPre">Result JSON</label>
+              <button id="resultJsonToggleBtn" class="secondary tiny-toggle" type="button">Expand</button>
+            </div>
+            <pre id="resultJsonPre" class="collapsible-pre"></pre>
+          </div>
+        </article>
+
+        <article class="card view-item wide-card" data-view="dashboard">
+          <div class="card-head">
+            <h2>Mission Health Priorities</h2>
+            <button id="refreshOverviewBtn" class="secondary" type="button">Refresh All</button>
+          </div>
+          <p class="small-note">Prioritized for operators: system health, AI usage, run outcomes, then diagnostics.</p>
+          <div id="overviewNote" class="small-note">Telemetry loading...</div>
+          <div class="kpi-grid">
+            <div class="kpi"><div class="k">CPU</div><div id="kCpu" class="v">-</div><div class="sub">latest system snapshot</div></div>
+            <div class="kpi"><div class="k">Memory</div><div id="kMem" class="v">-</div><div class="sub">latest system snapshot</div></div>
+            <div class="kpi"><div class="k">Disk</div><div id="kDisk" class="v">-</div><div class="sub">latest system snapshot</div></div>
+            <div class="kpi"><div class="k">Load Avg</div><div id="kLoad" class="v">-</div><div class="sub">1 / 5 / 15m</div></div>
+            <div class="kpi"><div class="k">AI Requests</div><div id="kAiReq" class="v">-</div><div class="sub">today</div></div>
+            <div class="kpi"><div class="k">AI Tokens</div><div id="kAiTok" class="v">-</div><div class="sub">today</div></div>
+            <div class="kpi"><div class="k">AI Cost USD</div><div id="kAiCost" class="v">-</div><div class="sub">today</div></div>
+            <div class="kpi"><div class="k">Recent Events</div><div id="kEvents" class="v">-</div><div class="sub">activity feed</div></div>
+            <div class="kpi"><div class="k">Tasks Created</div><div id="kTasksCreated" class="v">-</div><div class="sub">counter</div></div>
+            <div class="kpi"><div class="k">Runs DB</div><div id="kRunsDb" class="v">-</div><div class="sub">gauge</div></div>
+            <div class="kpi"><div class="k">Artifacts DB</div><div id="kArtifactsDb" class="v">-</div><div class="sub">gauge</div></div>
+            <div class="kpi"><div class="k">Rate Limited</div><div id="kRateLimited" class="v">-</div><div class="sub">counter</div></div>
+          </div>
+        </article>
+
+        <article class="card view-item" data-view="dashboard">
+          <div class="card-head">
+            <h2>Recent Alerts</h2>
+          </div>
+          <div id="dashboardAlertsList" class="list-wrap">
+            <div class="muted" style="padding:10px;">No alerts yet.</div>
+          </div>
+        </article>
+
+        <article class="card view-item" data-view="dashboard">
+          <div class="card-head">
+            <h2>Recent Activity</h2>
+          </div>
+          <div id="dashboardActivityList" class="list-wrap">
+            <div class="muted" style="padding:10px;">No recent activity yet.</div>
+          </div>
+        </article>
+
+        <section class="telemetry-grid view-item wide-card" data-view="alerts">
+          <article class="card">
+            <div class="card-head">
+              <h2>GPU Deals</h2>
+              <button id="refreshAlertsBtn" class="secondary" type="button">Refresh Alerts</button>
+            </div>
+            <div id="gpuAlertsList" class="list-wrap">
+              <div class="muted" style="padding:10px;">No GPU deal alerts yet.</div>
+            </div>
+          </article>
+          <article class="card">
+            <div class="card-head">
+              <h2>Job Matches</h2>
+            </div>
+            <div id="jobAlertsList" class="list-wrap">
+              <div class="muted" style="padding:10px;">No job match alerts yet.</div>
+            </div>
+          </article>
+          <article class="card">
+            <div class="card-head">
+              <h2>System Alerts</h2>
+            </div>
+            <div id="systemAlertsList" class="list-wrap">
+              <div class="muted" style="padding:10px;">No system alerts yet.</div>
+            </div>
+          </article>
+        </section>
+
+        <section class="telemetry-grid view-item wide-card" data-view="system">
+          <article class="card">
+            <div class="card-head">
+              <h2>Recent Events</h2>
+              <button id="refreshEventsBtn" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="eventsUnavailable" class="muted" style="display: none;"></div>
+            <div class="table-wrap">
+              <table class="compact">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Source</th>
+                    <th>Level</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody id="eventsBody">
+                  <tr><td colspan="5" class="muted">No events loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>AI Usage by Model</h2>
+              <button id="refreshAiBtn" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="aiUnavailable" class="muted" style="display: none;"></div>
+            <div class="table-wrap">
+              <table class="compact">
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Requests</th>
+                    <th>Tokens</th>
+                    <th>Cost USD</th>
+                  </tr>
+                </thead>
+                <tbody id="aiModelBody">
+                  <tr><td colspan="4" class="muted">No AI usage loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>System Snapshots</h2>
+              <button id="refreshSystemBtn" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="systemUnavailable" class="muted" style="display: none;"></div>
+            <div class="table-wrap">
+              <table class="compact">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>CPU%</th>
+                    <th>Memory%</th>
+                    <th>Disk%</th>
+                    <th>Load Avg</th>
+                  </tr>
+                </thead>
+                <tbody id="systemBody">
+                  <tr><td colspan="5" class="muted">No system metrics loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card">
+            <details class="panel-details">
+              <summary>Deep Diagnostics</summary>
+              <div class="card-head" style="margin-top: 10px;">
+                <h2>Prometheus Counters</h2>
+                <button id="refreshPromBtn" class="secondary" type="button">Refresh</button>
+              </div>
+              <pre id="promPre">No metrics loaded.</pre>
+            </details>
+          </article>
+        </section>
+
+        <article class="card view-item wide-card" data-view="settings">
+          <details class="panel-details">
+            <summary>Advanced Planner Settings</summary>
+            <div class="field" style="margin-top: 10px;">
+              <label for="plannerIntervalInput">Planner check interval (seconds)</label>
+              <input id="plannerIntervalInput" type="number" min="30" step="30" value="300">
+              <div class="small-note">How often the planner evaluates automations and queue health.</div>
+            </div>
+            <div class="field">
+              <label for="plannerMaxCreateInput">Max tasks planner may create per cycle</label>
+              <input id="plannerMaxCreateInput" type="number" min="0" step="1" value="1">
+            </div>
+            <div class="field">
+              <label for="plannerMaxExecuteInput">Max tasks planner may run per cycle</label>
+              <input id="plannerMaxExecuteInput" type="number" min="0" step="1" value="2">
+            </div>
+            <div class="field">
+              <label for="plannerMaxPendingInput">Max queued tasks before planner pauses</label>
+              <input id="plannerMaxPendingInput" type="number" min="1" step="1" value="20">
+            </div>
+            <div class="button-group">
+              <button id="plannerSaveBtn" type="button">Save Settings</button>
+              <button id="plannerEnableToggleBtn" class="secondary" type="button">Toggle Enabled</button>
+              <button id="plannerModeToggleBtn" class="secondary" type="button">Toggle Mode</button>
+              <button id="plannerApprovalToggleBtn" class="secondary" type="button">Toggle Approval Requirement</button>
+              <button id="plannerApprovedToggleBtn" class="secondary" type="button">Toggle Approval</button>
+              <button id="plannerResetBtn" class="secondary" type="button">Reset Defaults</button>
+            </div>
+
+            <h3 class="section-title" style="margin-top: 14px;">Rule Editor</h3>
+            <div class="table-wrap">
+              <table class="compact">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Task type</th>
+                    <th>Interval</th>
+                    <th>Enabled</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="plannerTemplatesBody">
+                  <tr><td colspan="5" class="muted">No planner templates yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="plannerTemplateNameInput">Rule name</label>
+              <input id="plannerTemplateNameInput" type="text" value="RTX 5090 deals scan">
+            </div>
+            <div class="field">
+              <label for="plannerTemplateTaskTypeInput">Task type, interval, and priority</label>
+              <div class="row">
+                <select id="plannerTemplateTaskTypeInput" style="min-width: 180px;">
+                  <option value="deals_scan_v1">deals_scan_v1</option>
+                  <option value="jobs_digest_v1">jobs_digest_v1</option>
+                  <option value="slides_outline_v1">slides_outline_v1</option>
+                  <option value="notify_v1">notify_v1</option>
+                </select>
+                <input id="plannerTemplateIntervalInput" type="number" min="60" step="60" value="300" style="max-width: 120px;">
+                <input id="plannerTemplatePriorityInput" type="number" min="-1000" max="1000" step="1" value="10" style="max-width: 120px;">
+              </div>
+            </div>
+            <div class="field">
+              <label for="plannerTemplatePayloadInput">Raw payload JSON</label>
+              <textarea id="plannerTemplatePayloadInput">{"source":"autonomous-planner-rtx5090","collectors_enabled":true,"unicorn_gpu_5090_max_price":2000,"unicorn_pc_5090_max_price":4000,"payload_nonce":"{{uuid4}}"}</textarea>
+            </div>
+            <div class="row">
+              <button id="plannerTemplateAddBtn" type="button">Add Rule</button>
+              <input id="plannerTemplateEnabledInput" type="checkbox" checked style="width: auto;">
+              <label for="plannerTemplateEnabledInput" class="muted" style="margin-left: -4px;">Enabled</label>
+            </div>
+          </details>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const terminalStates = new Set(["success", "failed", "blocked_budget", "failed_permanent"]);
+
+    const state = {
+      tasks: [],
+      latestRunsByTask: {},
+      selectedTaskId: null,
+      pollTimer: null,
+      planner: {
+        config: null,
+        templates: [],
+      },
+      resumeProfile: null,
+      overview: {
+        stats: null,
+        events: [],
+        aiSummary: null,
+        systemLatest: null,
+        systemRows: [],
+        promRaw: "",
+        promMap: {},
+      },
+      endpointAvailable: {
+        stats: true,
+        runs: true,
+        runsFeed: true,
+        result: true,
+        events: true,
+        aiSummary: true,
+        systemLatest: true,
+        systemRows: true,
+        prom: true,
+        planner: true,
+        resumeProfile: true,
+      },
+      activeView: "dashboard",
+      resultJsonExpanded: false,
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    function apiHeaders(extra) {
+      const headers = Object.assign({}, extra || {});
+      const apiKey = $("apiKeyInput").value.trim();
+      if (apiKey) headers["X-API-Key"] = apiKey;
+      return headers;
+    }
+
+    function safe(v) {
+      return v == null ? "" : String(v);
+    }
+
+    function safeNum(v, d = 0) {
+      if (v == null || v === "") return "-";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toFixed(d);
+    }
+
+    function formatInt(v) {
+      if (v == null || v === "") return "-";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return Math.round(n).toLocaleString();
+    }
+
+    function parseIsoDate(raw) {
+      if (!raw) return null;
+      const d = new Date(raw);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    function formatDurationMs(ms) {
+      if (ms == null || ms < 0 || !Number.isFinite(ms)) return "-";
+      if (ms < 1000) return Math.round(ms) + " ms";
+      return (ms / 1000).toFixed(2) + " s";
+    }
+
+    function durationMsFromRun(run) {
+      if (!run) return null;
+      const start = parseIsoDate(run.started_at);
+      const end = parseIsoDate(run.ended_at);
+      if (!start || !end) return null;
+      return Math.max(0, end.getTime() - start.getTime());
+    }
+
+    function taskTypeLabel(taskType) {
+      const type = safe(taskType);
+      if (type === "deals_scan_v1") return "GPU Deal Scan";
+      if (type === "jobs_digest_v1") return "Job Scan";
+      if (type === "notify_v1") return "Notification";
+      if (type === "slides_outline_v1") return "Slides Outline";
+      return type || "(unknown)";
+    }
+
+    function suggestedPayloadForTask(taskType) {
+      const type = safe(taskType);
+      if (type === "deals_scan_v1") {
+        return {
+          source: "manual-console",
+          collectors_enabled: true,
+          unicorn_gpu_5090_max_price: 2000,
+          unicorn_pc_5090_max_price: 4000,
+        };
+      }
+      if (type === "jobs_digest_v1") {
+        return {
+          source: "manual-console-jobs",
+          collectors_enabled: true,
+          use_resume_profile: true,
+          search_query: "Software Developer",
+          location: "United States",
+          job_boards: ["linkedin", "indeed", "glassdoor", "handshake"],
+          desired_salary_min: 100000,
+          work_modes: ["remote", "hybrid"],
+        };
+      }
+      if (type === "notify_v1") {
+        return {
+          channels: ["discord"],
+          message: "Mission Control notification test",
+          source_task_type: "ops_report_v1",
+          disable_dedupe: true,
+          severity: "info",
+          include_header: true,
+          include_metadata: true,
+        };
+      }
+      if (type === "slides_outline_v1") {
+        return {
+          topic: "Quarterly Project Update",
+          audience: "Engineering leadership",
+          goals: ["Status update", "Risks", "Next milestones"],
+        };
+      }
+      return {};
+    }
+
+    function parseCommaList(text) {
+      return safe(text)
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+    }
+
+    function buildJobsPayloadFromForm() {
+      const title = $("jobsBuilderTitleInput").value.trim();
+      const salaryMin = Number($("jobsBuilderSalaryMinInput").value);
+      const location = $("jobsBuilderLocationInput").value.trim();
+      const boards = parseCommaList($("jobsBuilderBoardsInput").value);
+      return {
+        source: "manual-console-jobs",
+        collectors_enabled: $("jobsBuilderCollectorsInput").checked,
+        use_resume_profile: $("jobsBuilderUseResumeInput").checked,
+        search_query: title || "Software Developer",
+        location: location || "United States",
+        desired_title_keywords: title ? [title] : ["Software Developer"],
+        desired_salary_min: Number.isFinite(salaryMin) && salaryMin > 0 ? salaryMin : null,
+        job_boards: boards.length > 0 ? boards : ["linkedin", "indeed", "glassdoor", "handshake"],
+        work_modes: ["remote", "hybrid"],
+      };
+    }
+
+    function buildDealsPayloadFromForm() {
+      const source = $("dealsBuilderSourceInput").value.trim();
+      const gpuMax = Number($("dealsBuilderGpuMaxInput").value);
+      const pcMax = Number($("dealsBuilderPcMaxInput").value);
+      return {
+        source: source || "manual-console",
+        collectors_enabled: $("dealsBuilderCollectorsInput").checked,
+        unicorn_gpu_5090_max_price: Number.isFinite(gpuMax) && gpuMax > 0 ? gpuMax : 2000,
+        unicorn_pc_5090_max_price: Number.isFinite(pcMax) && pcMax > 0 ? pcMax : 4000,
+      };
+    }
+
+    function buildNotifyPayloadFromForm() {
+      const channels = parseCommaList($("notifyWorkflowChannelsInput").value);
+      const message = $("notifyWorkflowMessageInput").value.trim();
+      const sourceTaskType = $("notifyWorkflowSourceInput").value.trim();
+      return {
+        channels: channels.length > 0 ? channels : ["discord"],
+        message: message || "Mission Control notification test",
+        source_task_type: sourceTaskType || "ops_report_v1",
+        disable_dedupe: true,
+        severity: "info",
+        include_header: true,
+        include_metadata: true,
+      };
+    }
+
+    function setInlineNote(noteId, text, level) {
+      const node = $(noteId);
+      if (!node) return;
+      node.className = "small-note" + (level ? (" " + level) : "");
+      node.textContent = text || "";
+    }
+
+    function renderTaskBuilder(taskType) {
+      const type = safe(taskType);
+      const showJobs = type === "jobs_digest_v1";
+      const showDeals = type === "deals_scan_v1";
+      $("jobsBuilder").hidden = !showJobs;
+      $("dealsBuilder").hidden = !showDeals;
+      $("genericBuilderHint").hidden = showJobs || showDeals;
+      $("buildGuidedPayloadBtn").disabled = !(showJobs || showDeals);
+    }
+
+    function buildGuidedPayload() {
+      const type = $("taskType").value;
+      let payload = null;
+      if (type === "jobs_digest_v1") {
+        payload = buildJobsPayloadFromForm();
+      } else if (type === "deals_scan_v1") {
+        payload = buildDealsPayloadFromForm();
+      }
+      if (!payload) {
+        $("createNote").className = "small-note warn";
+        $("createNote").textContent = "Guided payload is available for jobs and deals workflows.";
+        return;
+      }
+      $("payloadInput").value = JSON.stringify(payload, null, 2);
+      $("createNote").className = "small-note ok";
+      $("createNote").textContent = "Payload generated from card inputs.";
+    }
+
+    function setTaskType(taskType, options) {
+      const opts = options || {};
+      $("taskType").value = taskType;
+      renderTaskBuilder(taskType);
+      if (opts.loadPayload === "guided") {
+        buildGuidedPayload();
+      } else if (opts.loadPayload === "template") {
+        const payload = suggestedPayloadForTask(taskType);
+        $("payloadInput").value = JSON.stringify(payload, null, 2);
+      }
+    }
+
+    function formatErrorBody(body) {
+      if (body == null || body === "") return "(empty response body)";
+      if (typeof body === "string") return body;
+      try { return JSON.stringify(body, null, 2); } catch (_e) { return String(body); }
+    }
+
+    function isRouteMissing(err) {
+      if (!err || err.status !== 404) return false;
+      if (typeof err.body === "string") return err.body.includes("Not Found");
+      return err.body && err.body.detail === "Not Found";
+    }
+
+    function showError(title, err) {
+      const node = $("errorBox");
+      const status = (err && typeof err.status === "number") ? err.status : "?";
+      const body = formatErrorBody(err ? err.body : null);
+      node.textContent = title + "\nHTTP " + status + "\n" + body;
+      node.style.display = "block";
+    }
+
+    function clearError() {
+      $("errorBox").style.display = "none";
+      $("errorBox").textContent = "";
+    }
+
+    async function apiRequest(path, options) {
+      const response = await fetch(path, options || {});
+      const raw = await response.text();
+      let parsed = raw;
+      if (raw) {
+        try { parsed = JSON.parse(raw); } catch (_e) { parsed = raw; }
+      } else {
+        parsed = null;
+      }
+      if (!response.ok) {
+        const error = new Error("HTTP " + response.status);
+        error.status = response.status;
+        error.body = parsed;
+        throw error;
+      }
+      return parsed;
+    }
+
+    function statusClass(status) {
+      if (status === "success" || status === "succeeded") return "ok";
+      if (status === "failed" || status === "blocked_budget" || status === "failed_permanent") return "warn";
+      return "";
+    }
+
+    function parsePromMetrics(rawText) {
+      const out = {};
+      if (typeof rawText !== "string") return out;
+      for (const line of rawText.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const idx = trimmed.lastIndexOf(" ");
+        if (idx <= 0) continue;
+        const key = trimmed.slice(0, idx).trim();
+        const val = Number(trimmed.slice(idx + 1).trim());
+        if (Number.isFinite(val)) out[key] = val;
+      }
+      return out;
+    }
+
+    function setConsoleView(view) {
+      const allowed = new Set(["dashboard", "automations", "tasks", "alerts", "system", "settings"]);
+      const resolved = allowed.has(view) ? view : "dashboard";
+      state.activeView = resolved;
+
+      const buttons = document.querySelectorAll("#consoleViewTabs .view-tab");
+      buttons.forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.view === resolved);
+      });
+
+      const items = document.querySelectorAll(".view-item");
+      items.forEach((item) => {
+        item.hidden = item.dataset.view !== resolved;
+      });
+    }
+
+    function renderStats(stats) {
+      if (!stats) return;
+      $("statsUnavailable").style.display = "none";
+      $("statsGrid").style.display = "grid";
+      $("sBudget").textContent = safe(stats.budget_usd);
+      $("sSpend").textContent = safe(stats.spend_usd);
+      $("sRemain").textContent = safe(stats.remaining_usd);
+      $("sBuffer").textContent = safe(stats.buffer_usd);
+      $("sRuns").textContent = safe(stats.runs_count);
+      $("sSuccessFailed").textContent = safe(stats.success_count) + " / " + safe(stats.failed_count);
+    }
+
+    function renderOverview() {
+      const stats = state.overview.stats || {};
+      const ai = state.overview.aiSummary || {};
+      const sys = state.overview.systemLatest || {};
+      const events = state.overview.events || [];
+      const prom = state.overview.promMap || {};
+
+      const load = Array.isArray(sys.load_avg_json) && sys.load_avg_json.length >= 3
+        ? sys.load_avg_json.map((v) => safeNum(v, 2)).join(" / ")
+        : "-";
+
+      $("kCpu").textContent = sys.cpu_percent != null ? safeNum(sys.cpu_percent, 1) + "%" : "-";
+      $("kMem").textContent = sys.memory_percent != null ? safeNum(sys.memory_percent, 1) + "%" : "-";
+      $("kDisk").textContent = sys.disk_percent != null ? safeNum(sys.disk_percent, 1) + "%" : "-";
+      $("kLoad").textContent = load;
+
+      $("kAiReq").textContent = formatInt(ai.requests_total);
+      $("kAiTok").textContent = formatInt(ai.total_tokens_sum);
+      $("kAiCost").textContent = ai.cost_usd_total != null ? safeNum(ai.cost_usd_total, 6) : "-";
+      $("kEvents").textContent = formatInt(events.length);
+
+      $("kTasksCreated").textContent = formatInt(prom.mission_control_tasks_created_total);
+      $("kRunsDb").textContent = formatInt(prom.mission_control_runs_db_total);
+      $("kArtifactsDb").textContent = formatInt(prom.mission_control_artifacts_db_total);
+      $("kRateLimited").textContent = formatInt(prom.mission_control_task_create_rate_limited_total);
+
+      const updatedText = [
+        stats.runs_count != null ? ("runs today=" + stats.runs_count) : null,
+        sys.created_at ? ("system=" + sys.created_at) : null,
+      ].filter(Boolean).join(" | ");
+      $("overviewNote").textContent = updatedText || "No telemetry snapshots yet.";
+
+      if (state.planner && state.planner.config) {
+        const templates = Array.isArray(state.planner.templates) ? state.planner.templates : [];
+        const enabledCount = templates.filter((row) => row && row.enabled).length;
+        renderTelemetryPlannerCard(state.planner.config, enabledCount, templates.length);
+      }
+    }
+
+    function renderTaskList(tasks) {
+      const body = $("tasksList");
+      body.innerHTML = "";
+      if (!Array.isArray(tasks) || tasks.length === 0) {
+        body.innerHTML = '<tr><td colspan="6" class="muted">No tasks found.</td></tr>';
+        return;
+      }
+      for (const task of tasks) {
+        const run = state.latestRunsByTask[safe(task.id)] || null;
+        const tr = document.createElement("tr");
+        if (task.id === state.selectedTaskId) tr.style.background = "rgba(42, 103, 255, 0.12)";
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", () => {
+          state.selectedTaskId = task.id;
+          renderTaskList(state.tasks);
+          loadTaskDetail(task.id, false);
+        });
+
+        const createdTd = document.createElement("td");
+        createdTd.textContent = safe(task.created_at);
+        createdTd.className = "mono";
+
+        const workflowTd = document.createElement("td");
+        workflowTd.textContent = taskTypeLabel(task.task_type);
+
+        const statusTd = document.createElement("td");
+        const statusBadge = document.createElement("span");
+        statusBadge.className = "badge " + statusClass(task.status);
+        statusBadge.textContent = safe(task.status);
+        statusTd.appendChild(statusBadge);
+
+        const durationTd = document.createElement("td");
+        durationTd.textContent = formatDurationMs(durationMsFromRun(run));
+
+        const modelTd = document.createElement("td");
+        modelTd.textContent = safe((run && run.model) || task.model) || "-";
+
+        const artifactTd = document.createElement("td");
+        const link = document.createElement("a");
+        link.href = "/tasks/" + encodeURIComponent(task.id) + "/result";
+        link.textContent = "Open";
+        link.className = "mono";
+        link.style.color = "#2457ad";
+        link.addEventListener("click", (ev) => ev.stopPropagation());
+        artifactTd.appendChild(link);
+
+        tr.appendChild(createdTd);
+        tr.appendChild(workflowTd);
+        tr.appendChild(statusTd);
+        tr.appendChild(durationTd);
+        tr.appendChild(modelTd);
+        tr.appendChild(artifactTd);
+        body.appendChild(tr);
+      }
+    }
+
+    function renderTaskMeta(task) {
+      $("taskMetaPre").textContent = JSON.stringify(task || {}, null, 2);
+      if (!task) {
+        $("taskStatusLine").textContent = "No task selected.";
+        $("taskStatusLine").className = "small-note";
+        return;
+      }
+      $("taskStatusLine").textContent = "Task " + safe(task.id) + " status: " + safe(task.status);
+      $("taskStatusLine").className = "small-note " + statusClass(task.status);
+    }
+
+    function renderRuns(runs) {
+      $("runsUnavailable").style.display = "none";
+      const body = $("runsBody");
+      body.innerHTML = "";
+      if (!Array.isArray(runs) || runs.length === 0) {
+        body.innerHTML = '<tr><td colspan="9" class="muted">No runs yet.</td></tr>';
+        return;
+      }
+      for (const run of runs) {
+        const tr = document.createElement("tr");
+        const cols = [
+          safe(run.attempt),
+          safe(run.status),
+          safe(run.model),
+          safe(run.tokens_in),
+          safe(run.tokens_out),
+          safe(run.cost_usd),
+          safe(run.started_at),
+          safe(run.ended_at),
+          safe(run.error),
+        ];
+        cols.forEach((value, idx) => {
+          const td = document.createElement("td");
+          td.textContent = value;
+          if (idx === 1) td.className = statusClass(run.status);
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      }
+    }
+
+    function renderResult(result) {
+      $("resultUnavailable").style.display = "none";
+      if (!result) {
+        $("resultMeta").textContent = "No result yet.";
+        $("resultTextPre").textContent = "";
+        $("resultJsonPre").textContent = "";
+        setResultJsonExpanded(false);
+        setResultJsonToggleEnabled(false);
+        return;
+      }
+      const isResultJson = result.artifact_type === "result.json";
+      $("resultMeta").textContent =
+        (isResultJson ? "artifact: result.json" : "artifact fallback: " + safe(result.artifact_type)) +
+        " | created_at: " + safe(result.created_at);
+      $("resultTextPre").textContent = safe(result.content_text);
+      const jsonText = result.content_json == null ? "" : JSON.stringify(result.content_json, null, 2);
+      $("resultJsonPre").textContent = jsonText;
+      setResultJsonExpanded(false);
+      setResultJsonToggleEnabled(jsonText.length > 0);
+    }
+
+    function setResultJsonToggleEnabled(enabled) {
+      const btn = $("resultJsonToggleBtn");
+      btn.disabled = !enabled;
+      btn.style.visibility = enabled ? "visible" : "hidden";
+    }
+
+    function setResultJsonExpanded(expanded) {
+      const pre = $("resultJsonPre");
+      const btn = $("resultJsonToggleBtn");
+      state.resultJsonExpanded = !!expanded;
+      pre.classList.toggle("expanded", state.resultJsonExpanded);
+      btn.textContent = state.resultJsonExpanded ? "Collapse" : "Expand";
+    }
+
+    function renderEvents(rows) {
+      const body = $("eventsBody");
+      body.innerHTML = "";
+      if (!Array.isArray(rows) || rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">No recent events.</td></tr>';
+        return;
+      }
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        const cols = [
+          safe(row.created_at),
+          safe(row.event_type),
+          safe(row.source),
+          safe(row.level),
+          safe(row.message),
+        ];
+        cols.forEach((value, idx) => {
+          const td = document.createElement("td");
+          td.textContent = value;
+          if (idx === 3) td.className = value.toUpperCase() === "ERROR" || value.toUpperCase() === "WARNING" ? "warn" : "ok";
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      }
+    }
+
+    function renderSimpleFeed(containerId, items, emptyText) {
+      const container = $(containerId);
+      container.innerHTML = "";
+      if (!Array.isArray(items) || items.length === 0) {
+        container.innerHTML = '<div class="muted" style="padding:10px;">' + safe(emptyText) + "</div>";
+        return;
+      }
+      for (const item of items.slice(0, 12)) {
+        const row = document.createElement("div");
+        row.className = "event-item";
+        const top = document.createElement("div");
+        top.className = "event-meta";
+        top.textContent = safe(item.top || "");
+        const body = document.createElement("div");
+        body.textContent = safe(item.body || "");
+        row.appendChild(top);
+        row.appendChild(body);
+        container.appendChild(row);
+      }
+    }
+
+    function renderDashboardActivity(tasks) {
+      const rows = (Array.isArray(tasks) ? tasks : []).slice(0, 12).map((task) => ({
+        top: safe(task.created_at),
+        body: taskTypeLabel(task.task_type) + " · " + safe(task.status),
+      }));
+      renderSimpleFeed("dashboardActivityList", rows, "No recent activity yet.");
+    }
+
+    function renderAlertsPanels() {
+      const events = Array.isArray(state.overview.events) ? state.overview.events : [];
+      const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+      const gpuPattern = /(gpu|5090|deal|unicorn)/i;
+      const jobPattern = /(job|resume|match|candidate)/i;
+      const systemPattern = /(warning|error|failed|alert|stale)/i;
+
+      const gpuAlerts = events
+        .filter((row) => gpuPattern.test(safe(row.event_type)) || gpuPattern.test(safe(row.message)))
+        .map((row) => ({ top: safe(row.created_at), body: safe(row.message || row.event_type) }));
+      const jobAlerts = events
+        .filter((row) => jobPattern.test(safe(row.event_type)) || jobPattern.test(safe(row.message)))
+        .map((row) => ({ top: safe(row.created_at), body: safe(row.message || row.event_type) }));
+      const systemAlerts = events
+        .filter((row) => systemPattern.test(safe(row.level)) || systemPattern.test(safe(row.event_type)) || systemPattern.test(safe(row.message)))
+        .map((row) => ({ top: safe(row.created_at), body: safe(row.message || row.event_type) }));
+
+      if (gpuAlerts.length === 0) {
+        const gpuTaskAlerts = tasks
+          .filter((task) => safe(task.task_type) === "deals_scan_v1" && safe(task.status) !== "queued")
+          .slice(0, 6)
+          .map((task) => ({ top: safe(task.created_at), body: "Deal scan " + safe(task.status) }));
+        gpuAlerts.push(...gpuTaskAlerts);
+      }
+
+      if (jobAlerts.length === 0) {
+        const jobTaskAlerts = tasks
+          .filter((task) => safe(task.task_type) === "jobs_digest_v1" && safe(task.status) !== "queued")
+          .slice(0, 6)
+          .map((task) => ({ top: safe(task.created_at), body: "Job scan " + safe(task.status) }));
+        jobAlerts.push(...jobTaskAlerts);
+      }
+
+      const dashboardAlerts = []
+        .concat(systemAlerts.slice(0, 4))
+        .concat(gpuAlerts.slice(0, 4))
+        .concat(jobAlerts.slice(0, 4));
+
+      renderSimpleFeed("dashboardAlertsList", dashboardAlerts, "No alerts yet.");
+      renderSimpleFeed("gpuAlertsList", gpuAlerts, "No GPU deal alerts yet.");
+      renderSimpleFeed("jobAlertsList", jobAlerts, "No job match alerts yet.");
+      renderSimpleFeed("systemAlertsList", systemAlerts, "No system alerts yet.");
+    }
+
+    function renderAiSummary(summary) {
+      const body = $("aiModelBody");
+      body.innerHTML = "";
+      const byModel = summary && Array.isArray(summary.by_model) ? summary.by_model : [];
+      if (byModel.length === 0) {
+        body.innerHTML = '<tr><td colspan="4" class="muted">No AI usage rows for selected period.</td></tr>';
+        return;
+      }
+      for (const row of byModel.slice(0, 20)) {
+        const tr = document.createElement("tr");
+        [
+          safe(row.model),
+          formatInt(row.requests_total),
+          formatInt(row.total_tokens_sum),
+          row.cost_usd_total == null ? "-" : safeNum(row.cost_usd_total, 6),
+        ].forEach((value) => {
+          const td = document.createElement("td");
+          td.textContent = value;
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      }
+    }
+
+    function renderSystemRows(rows) {
+      const body = $("systemBody");
+      body.innerHTML = "";
+      if (!Array.isArray(rows) || rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">No system metrics rows.</td></tr>';
+        return;
+      }
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        const load = Array.isArray(row.load_avg_json) ? row.load_avg_json.map((v) => safeNum(v, 2)).join("/") : "-";
+        [
+          safe(row.created_at),
+          row.cpu_percent == null ? "-" : safeNum(row.cpu_percent, 1),
+          row.memory_percent == null ? "-" : safeNum(row.memory_percent, 1),
+          row.disk_percent == null ? "-" : safeNum(row.disk_percent, 1),
+          load,
+        ].forEach((value) => {
+          const td = document.createElement("td");
+          td.textContent = value;
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      }
+    }
+
+    function plannerModeLabel(config) {
+      if (!config) return "-";
+      return config.execution_enabled ? "execute" : "recommendation";
+    }
+
+    function plannerApprovalLabel(config) {
+      if (!config) return "-";
+      if (!config.require_approval) return "not required";
+      return config.approved ? "approved" : "awaiting approval";
+    }
+
+    function findPlannerTemplate(templates, predicate) {
+      if (!Array.isArray(templates)) return null;
+      for (const tpl of templates) {
+        if (tpl && predicate(tpl)) return tpl;
+      }
+      return null;
+    }
+
+    function renderAutomationCards(config, templates) {
+      const rtxTemplate = findPlannerTemplate(
+        templates,
+        (tpl) => safe(tpl.id) === "preset-rtx5090-deals-scan" || /5090/i.test(safe(tpl.name))
+      );
+      const jobsTemplate = findPlannerTemplate(
+        templates,
+        (tpl) => safe(tpl.id) === "preset-jobs-digest-scan" || /jobs/i.test(safe(tpl.name))
+      );
+
+      if (rtxTemplate) {
+        $("automation5090Status").textContent = rtxTemplate.enabled ? "Enabled" : "Paused";
+        $("automation5090Status").className = "badge " + (rtxTemplate.enabled ? "status-success" : "status-disabled");
+        $("automation5090Meta").textContent =
+          "Interval " + safe(rtxTemplate.min_interval_seconds) + "s · " + safe(rtxTemplate.task_type);
+        $("automationToggle5090Btn").disabled = false;
+        $("automationToggle5090Btn").textContent = rtxTemplate.enabled ? "Disable" : "Enable";
+      } else {
+        $("automation5090Status").textContent = "Not configured";
+        $("automation5090Status").className = "badge status-warning";
+        $("automation5090Meta").textContent = "No RTX 5090 automation rule exists yet.";
+        $("automationToggle5090Btn").disabled = true;
+        $("automationToggle5090Btn").textContent = "Enable";
+      }
+
+      if (jobsTemplate) {
+        $("automationJobsStatus").textContent = jobsTemplate.enabled ? "Enabled" : "Paused";
+        $("automationJobsStatus").className = "badge " + (jobsTemplate.enabled ? "status-success" : "status-disabled");
+        $("automationJobsMeta").textContent =
+          "Interval " + safe(jobsTemplate.min_interval_seconds) + "s · " + safe(jobsTemplate.task_type);
+        $("automationToggleJobsBtn").disabled = false;
+        $("automationToggleJobsBtn").textContent = jobsTemplate.enabled ? "Disable" : "Enable";
+      } else {
+        $("automationJobsStatus").textContent = "Not configured";
+        $("automationJobsStatus").className = "badge status-warning";
+        $("automationJobsMeta").textContent = "No jobs watch automation rule exists yet.";
+        $("automationToggleJobsBtn").disabled = true;
+        $("automationToggleJobsBtn").textContent = "Enable";
+      }
+
+      const enabled = config && config.enabled;
+      $("automationDailyOpsStatus").textContent = enabled ? "Monitoring" : "Paused";
+      $("automationDailyOpsStatus").className = "badge " + (enabled ? "status-info" : "status-disabled");
+      $("automationDailyOpsMeta").textContent = config
+        ? ("Scheduler-driven report flow · Planner interval " + safe(config.interval_sec) + "s · approval " + plannerApprovalLabel(config))
+        : "Daily report automation status unavailable.";
+    }
+
+    function renderTelemetryPlannerCard(config, enabledCount, totalTemplates) {
+      $("telemetryPlannerModeVal").textContent = plannerModeLabel(config);
+      $("telemetryPlannerApprovalVal").textContent = plannerApprovalLabel(config);
+      $("telemetryPlannerIntervalVal").textContent = config ? (safe(config.interval_sec) + "s") : "-";
+      $("telemetryPlannerMeta").textContent = config
+        ? ("Enabled automations: " + enabledCount + "/" + totalTemplates + " · Last update: " + safe(config.updated_at))
+        : "Planner status unavailable.";
+
+      $("dashPlannerEnabledVal").textContent = config ? (config.enabled ? "Enabled" : "Paused") : "-";
+      $("dashPlannerModeVal").textContent = plannerModeLabel(config);
+      $("dashPlannerActiveVal").textContent = enabledCount + "/" + totalTemplates;
+      $("dashPlannerMeta").textContent = config
+        ? ("Approval: " + plannerApprovalLabel(config) + " · Interval: " + safe(config.interval_sec) + "s")
+        : "Planner status unavailable.";
+    }
+
+    function renderPlannerTemplates(templates) {
+      const body = $("plannerTemplatesBody");
+      body.innerHTML = "";
+      if (!Array.isArray(templates) || templates.length === 0) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">No planner templates yet.</td></tr>';
+        return;
+      }
+
+      for (const tpl of templates.slice(0, 30)) {
+        const tr = document.createElement("tr");
+
+        const tdName = document.createElement("td");
+        tdName.textContent = safe(tpl.name);
+
+        const tdType = document.createElement("td");
+        tdType.textContent = safe(tpl.task_type);
+
+        const tdInterval = document.createElement("td");
+        tdInterval.textContent = safe(tpl.min_interval_seconds) + "s";
+
+        const tdEnabled = document.createElement("td");
+        tdEnabled.textContent = tpl.enabled ? "yes" : "no";
+        tdEnabled.className = tpl.enabled ? "ok" : "warn";
+
+        const tdActions = document.createElement("td");
+        const toggleBtn = document.createElement("button");
+        toggleBtn.type = "button";
+        toggleBtn.className = "secondary";
+        toggleBtn.textContent = tpl.enabled ? "Disable" : "Enable";
+        toggleBtn.style.marginRight = "6px";
+        toggleBtn.addEventListener("click", async () => {
+          await updatePlannerTemplate(tpl.id, { enabled: !tpl.enabled });
+        });
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "secondary";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.addEventListener("click", async () => {
+          if (!window.confirm("Delete planner rule '" + safe(tpl.name) + "'?")) return;
+          await deletePlannerTemplate(tpl.id);
+        });
+
+        tdActions.appendChild(toggleBtn);
+        tdActions.appendChild(deleteBtn);
+
+        tr.appendChild(tdName);
+        tr.appendChild(tdType);
+        tr.appendChild(tdInterval);
+        tr.appendChild(tdEnabled);
+        tr.appendChild(tdActions);
+        body.appendChild(tr);
+      }
+    }
+
+    function renderPlannerControls() {
+      const config = state.planner.config;
+      const templates = state.planner.templates || [];
+      const enabledCount = templates.filter((row) => row && row.enabled).length;
+
+      $("plannerEnabledVal").textContent = config ? (config.enabled ? "Enabled" : "Paused") : "-";
+      $("plannerModeVal").textContent = plannerModeLabel(config);
+      $("plannerApprovalVal").textContent = plannerApprovalLabel(config);
+      $("plannerTemplateCountVal").textContent = enabledCount + "/" + templates.length;
+
+      if (config) {
+        $("plannerIntervalInput").value = String(config.interval_sec || 300);
+        $("plannerMaxCreateInput").value = String(config.max_create_per_cycle || 0);
+        $("plannerMaxExecuteInput").value = String(config.max_execute_per_cycle || 0);
+        $("plannerMaxPendingInput").value = String(config.max_pending_tasks || 1);
+      }
+
+      $("plannerEnableToggleBtn").textContent = config && config.enabled ? "Disable" : "Enable";
+      $("plannerModeToggleBtn").textContent = config && config.execution_enabled ? "Set Recommendation" : "Set Execute";
+      $("plannerApprovalToggleBtn").textContent = config && config.require_approval ? "Approval Required" : "Approval Optional";
+      $("plannerApprovedToggleBtn").textContent = config && config.approved ? "Revoke Approval" : "Approve";
+      $("plannerControlNote").textContent = config
+        ? ("Updated: " + safe(config.updated_at) + " | automations enabled: " + enabledCount + "/" + templates.length)
+        : "Planner config unavailable.";
+      $("plannerSummarySentence").textContent = config
+        ? ("Planner is " + (config.enabled ? "enabled" : "paused") +
+          ", running in " + plannerModeLabel(config) +
+          " mode every " + safe(config.interval_sec) + "s.")
+        : "Planner is unavailable.";
+
+      renderPlannerTemplates(templates);
+      renderAutomationCards(config, templates);
+      renderTelemetryPlannerCard(config, enabledCount, templates.length);
+    }
+
+    async function loadPlannerControls() {
+      if (!state.endpointAvailable.planner) return;
+      try {
+        const [config, templates] = await Promise.all([
+          apiRequest("/planner/config", { headers: apiHeaders() }),
+          apiRequest("/planner/templates?limit=100", { headers: apiHeaders() }),
+        ]);
+        state.planner.config = config || null;
+        state.planner.templates = Array.isArray(templates) ? templates : [];
+        renderPlannerControls();
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.planner = false;
+          $("plannerControlNote").textContent = "Planner control endpoints unavailable on this API version.";
+          $("plannerSummarySentence").textContent = "Planner controls are unavailable on this API deployment.";
+          renderTelemetryPlannerCard(null, 0, 0);
+          return;
+        }
+        showError("Failed to load planner controls", err);
+      }
+    }
+
+    async function patchPlannerConfig(patch, successText) {
+      try {
+        const updated = await apiRequest("/planner/config", {
+          method: "PATCH",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(patch),
+        });
+        state.planner.config = updated || null;
+        $("plannerTemplateNote").className = "small-note ok";
+        $("plannerTemplateNote").textContent = successText || "Planner settings updated.";
+        renderPlannerControls();
+      } catch (err) {
+        $("plannerTemplateNote").className = "small-note warn";
+        $("plannerTemplateNote").textContent = "Planner update failed.";
+        showError("Failed to update planner config", err);
+      }
+    }
+
+    async function updatePlannerTemplate(templateId, patch) {
+      try {
+        await apiRequest("/planner/templates/" + encodeURIComponent(templateId), {
+          method: "PATCH",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(patch),
+        });
+        $("plannerTemplateNote").className = "small-note ok";
+        $("plannerTemplateNote").textContent = "Planner rule updated.";
+        await loadPlannerControls();
+      } catch (err) {
+        $("plannerTemplateNote").className = "small-note warn";
+        $("plannerTemplateNote").textContent = "Planner rule update failed.";
+        showError("Failed to update planner template", err);
+      }
+    }
+
+    async function deletePlannerTemplate(templateId) {
+      try {
+        await apiRequest("/planner/templates/" + encodeURIComponent(templateId), {
+          method: "DELETE",
+          headers: apiHeaders(),
+        });
+        $("plannerTemplateNote").className = "small-note ok";
+        $("plannerTemplateNote").textContent = "Planner rule deleted.";
+        await loadPlannerControls();
+      } catch (err) {
+        $("plannerTemplateNote").className = "small-note warn";
+        $("plannerTemplateNote").textContent = "Planner rule delete failed.";
+        showError("Failed to delete planner template", err);
+      }
+    }
+
+    function renderResumeProfile(profile) {
+      if (!profile || !profile.has_resume) {
+        $("resumeMeta").textContent = "No resume profile stored.";
+        $("resumeLoadedVal").textContent = "No";
+        $("resumeNameVal").textContent = "-";
+        $("resumeCharsVal").textContent = "0";
+        $("resumeUpdatedVal").textContent = "-";
+        $("resumeDeleteBtn").disabled = true;
+        $("resumeNameInput").value = "";
+        $("resumeTextInput").value = "";
+        return;
+      }
+      $("resumeLoadedVal").textContent = "Yes";
+      $("resumeNameVal").textContent = profile.resume_name || "(unnamed)";
+      $("resumeCharsVal").textContent = formatInt(profile.resume_char_count);
+      $("resumeUpdatedVal").textContent = safe(profile.updated_at) || "-";
+      $("resumeDeleteBtn").disabled = false;
+      $("resumeNameInput").value = profile.resume_name || "";
+      $("resumeTextInput").value = profile.resume_text || "";
+      const metaParts = [
+        "Updated: " + safe(profile.updated_at),
+        "Characters: " + formatInt(profile.resume_char_count),
+        profile.resume_sha256 ? ("sha256: " + String(profile.resume_sha256).slice(0, 12) + "...") : null,
+      ].filter(Boolean);
+      $("resumeMeta").textContent = metaParts.join(" | ");
+    }
+
+    function toggleResumeEditor(forceOpen) {
+      const panel = $("resumeEditorPanel");
+      const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : !panel.open;
+      panel.open = shouldOpen;
+      $("resumeToggleEditorBtn").textContent = shouldOpen ? "Hide Editor" : "Edit Resume";
+    }
+
+    async function loadResumeProfile() {
+      if (!state.endpointAvailable.resumeProfile) return;
+      try {
+        const profile = await apiRequest("/profile/resume?include_text=true", { headers: apiHeaders() });
+        state.resumeProfile = profile || null;
+        $("resumeNote").className = "small-note";
+        $("resumeNote").textContent = profile && profile.has_resume
+          ? "Resume profile loaded."
+          : "No resume profile stored.";
+        renderResumeProfile(state.resumeProfile);
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.resumeProfile = false;
+          $("resumeMeta").textContent = "Resume profile endpoint unavailable on this API version.";
+          renderResumeProfile(null);
+          return;
+        }
+        showError("Failed to load /profile/resume", err);
+      }
+    }
+
+    async function uploadResumeFile() {
+      const fileInput = $("resumeFileInput");
+      const note = $("resumeNote");
+      const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+      if (!file) {
+        note.className = "small-note warn";
+        note.textContent = "Choose a file first.";
+        return;
+      }
+      try {
+        const formData = new FormData();
+        formData.append("file", file, file.name || "resume");
+        const profile = await apiRequest("/profile/resume/upload", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: formData,
+        });
+        state.resumeProfile = profile || null;
+        renderResumeProfile(state.resumeProfile);
+        note.className = "small-note ok";
+        note.textContent = "Resume file uploaded and parsed.";
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Could not parse resume file.";
+        showError("Failed to upload /profile/resume/upload", err);
+      }
+    }
+
+    async function saveResumeProfile() {
+      const note = $("resumeNote");
+      const resumeText = $("resumeTextInput").value.trim();
+      const resumeName = $("resumeNameInput").value.trim();
+      if (!resumeText) {
+        note.className = "small-note warn";
+        note.textContent = "Resume text cannot be empty.";
+        return;
+      }
+      try {
+        const profile = await apiRequest("/profile/resume", {
+          method: "PUT",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            resume_text: resumeText,
+            resume_name: resumeName || null,
+          }),
+        });
+        state.resumeProfile = profile || null;
+        renderResumeProfile(state.resumeProfile);
+        note.className = "small-note ok";
+        note.textContent = "Resume profile saved.";
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Failed to save resume profile.";
+        showError("Failed to save /profile/resume", err);
+      }
+    }
+
+    async function deleteResumeProfile() {
+      const note = $("resumeNote");
+      if (!window.confirm("Remove stored resume profile?")) return;
+      try {
+        await apiRequest("/profile/resume", {
+          method: "DELETE",
+          headers: apiHeaders(),
+        });
+        state.resumeProfile = null;
+        renderResumeProfile(null);
+        toggleResumeEditor(false);
+        note.className = "small-note ok";
+        note.textContent = "Resume profile removed.";
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Failed to remove resume profile.";
+        showError("Failed to delete /profile/resume", err);
+      }
+    }
+
+    async function loadStats() {
+      if (!state.endpointAvailable.stats) return;
+      try {
+        const stats = await apiRequest("/stats/today", { headers: apiHeaders() });
+        state.overview.stats = stats;
+        renderStats(stats);
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.stats = false;
+          $("statsUnavailable").style.display = "block";
+          $("statsUnavailable").textContent = "Stats endpoint missing (404 route).";
+          $("statsGrid").style.display = "none";
+          return;
+        }
+        showError("Failed to load /stats/today", err);
+      }
+    }
+
+    async function loadPromMetrics() {
+      if (!state.endpointAvailable.prom) return;
+      try {
+        const raw = await apiRequest("/metrics", { headers: apiHeaders() });
+        state.overview.promRaw = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+        state.overview.promMap = parsePromMetrics(state.overview.promRaw);
+        $("promPre").textContent = state.overview.promRaw || "(empty)";
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.prom = false;
+          $("promPre").textContent = "Metrics endpoint unavailable.";
+          return;
+        }
+        showError("Failed to load /metrics", err);
+      }
+    }
+
+    async function loadEvents() {
+      if (!state.endpointAvailable.events) return;
+      try {
+        const rows = await apiRequest("/telemetry/events?limit=20", { headers: apiHeaders() });
+        state.overview.events = Array.isArray(rows) ? rows : [];
+        $("eventsUnavailable").style.display = "none";
+        renderEvents(state.overview.events);
+        renderAlertsPanels();
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.events = false;
+          $("eventsUnavailable").style.display = "block";
+          $("eventsUnavailable").textContent = "Events telemetry endpoint missing.";
+          return;
+        }
+        showError("Failed to load /telemetry/events", err);
+      }
+    }
+
+    async function loadAiSummary() {
+      if (!state.endpointAvailable.aiSummary) return;
+      try {
+        const summary = await apiRequest("/telemetry/ai-usage/summary", { headers: apiHeaders() });
+        state.overview.aiSummary = summary;
+        $("aiUnavailable").style.display = "none";
+        renderAiSummary(summary);
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.aiSummary = false;
+          $("aiUnavailable").style.display = "block";
+          $("aiUnavailable").textContent = "AI usage telemetry endpoint missing.";
+          return;
+        }
+        showError("Failed to load /telemetry/ai-usage/summary", err);
+      }
+    }
+
+    async function loadSystemLatest() {
+      if (!state.endpointAvailable.systemLatest) return;
+      try {
+        const latest = await apiRequest("/telemetry/system-metrics/latest", { headers: apiHeaders() });
+        state.overview.systemLatest = latest || null;
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.systemLatest = false;
+          return;
+        }
+        showError("Failed to load /telemetry/system-metrics/latest", err);
+      }
+    }
+
+    async function loadSystemRows() {
+      if (!state.endpointAvailable.systemRows) return;
+      try {
+        const rows = await apiRequest("/telemetry/system-metrics?limit=20", { headers: apiHeaders() });
+        state.overview.systemRows = Array.isArray(rows) ? rows : [];
+        $("systemUnavailable").style.display = "none";
+        renderSystemRows(state.overview.systemRows);
+      } catch (err) {
+        if (isRouteMissing(err)) {
+          state.endpointAvailable.systemRows = false;
+          $("systemUnavailable").style.display = "block";
+          $("systemUnavailable").textContent = "System metrics endpoint missing.";
+          return;
+        }
+        showError("Failed to load /telemetry/system-metrics", err);
+      }
+    }
+
+    async function loadOverview() {
+      clearError();
+      await Promise.all([
+        loadStats(),
+        loadPromMetrics(),
+        loadEvents(),
+        loadAiSummary(),
+        loadSystemLatest(),
+        loadSystemRows(),
+      ]);
+      renderOverview();
+    }
+
+    async function loadTasks() {
+      clearError();
+      const tasksReq = apiRequest("/tasks?limit=100", { headers: apiHeaders() });
+      const runsReq = state.endpointAvailable.runsFeed
+        ? apiRequest("/runs?limit=200", { headers: apiHeaders() })
+        : Promise.resolve([]);
+
+      const [tasksRes, runsRes] = await Promise.allSettled([tasksReq, runsReq]);
+      if (tasksRes.status !== "fulfilled") {
+        showError("Failed to load /tasks?limit=100", tasksRes.reason);
+        return;
+      }
+
+      state.tasks = Array.isArray(tasksRes.value) ? tasksRes.value : [];
+      state.latestRunsByTask = {};
+
+      if (runsRes.status === "fulfilled" && Array.isArray(runsRes.value)) {
+        for (const run of runsRes.value) {
+          const taskId = safe(run.task_id);
+          if (!taskId) continue;
+          if (!state.latestRunsByTask[taskId]) state.latestRunsByTask[taskId] = run;
+        }
+      } else if (runsRes.status === "rejected") {
+        const runsErr = runsRes.reason;
+        if (isRouteMissing(runsErr)) {
+          state.endpointAvailable.runsFeed = false;
+        } else {
+          showError("Failed to load /runs?limit=200", runsErr);
+        }
+      }
+
+      renderTaskList(state.tasks);
+      renderDashboardActivity(state.tasks);
+      renderAlertsPanels();
+
+      const hasSelected = state.selectedTaskId && state.tasks.some((task) => task.id === state.selectedTaskId);
+      if (!hasSelected) {
+        state.selectedTaskId = state.tasks.length > 0 ? state.tasks[0].id : null;
+        renderTaskList(state.tasks);
+      }
+      if (state.activeView === "tasks" && state.selectedTaskId) {
+        await loadTaskDetail(state.selectedTaskId, true);
+      }
+    }
+
+    function stopPolling() {
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = null;
+      }
+    }
+
+    function startPolling(taskId) {
+      stopPolling();
+      state.pollTimer = setInterval(() => {
+        if (!state.selectedTaskId || state.selectedTaskId !== taskId) {
+          stopPolling();
+          return;
+        }
+        loadTaskDetail(taskId, true);
+      }, 3000);
+    }
+
+    async function loadTaskDetail(taskId, silent) {
+      if (!taskId) return;
+      if (!silent) clearError();
+
+      let task;
+      try {
+        task = await apiRequest("/tasks/" + encodeURIComponent(taskId), { headers: apiHeaders() });
+        renderTaskMeta(task);
+      } catch (err) {
+        if (!silent) showError("Failed to load /tasks/" + taskId, err);
+        return;
+      }
+
+      if (state.endpointAvailable.runs) {
+        try {
+          const runs = await apiRequest("/tasks/" + encodeURIComponent(taskId) + "/runs?limit=20", { headers: apiHeaders() });
+          renderRuns(runs);
+        } catch (err) {
+          if (isRouteMissing(err)) {
+            state.endpointAvailable.runs = false;
+            $("runsUnavailable").style.display = "block";
+            $("runsUnavailable").textContent = "Runs endpoint missing (404 route).";
+            $("runsBody").innerHTML = '<tr><td colspan="9" class="muted">Runs endpoint unavailable.</td></tr>';
+          } else if (!silent) {
+            showError("Failed to load /tasks/" + taskId + "/runs?limit=20", err);
+          }
+        }
+      }
+
+      if (state.endpointAvailable.result) {
+        try {
+          const result = await apiRequest("/tasks/" + encodeURIComponent(taskId) + "/result", { headers: apiHeaders() });
+          renderResult(result);
+        } catch (err) {
+          if (isRouteMissing(err)) {
+            state.endpointAvailable.result = false;
+            $("resultUnavailable").style.display = "block";
+            $("resultUnavailable").textContent = "Result endpoint missing (404 route).";
+            $("resultMeta").textContent = "Result endpoint unavailable.";
+            $("resultTextPre").textContent = "";
+            $("resultJsonPre").textContent = "";
+            setResultJsonExpanded(false);
+            setResultJsonToggleEnabled(false);
+          } else if (err && err.status === 404) {
+            renderResult(null);
+          } else if (!silent) {
+            showError("Failed to load /tasks/" + taskId + "/result", err);
+          }
+        }
+      }
+
+      if (terminalStates.has(task.status)) {
+        stopPolling();
+      } else {
+        startPolling(taskId);
+      }
+    }
+
+    function loadPayloadTemplate() {
+      const taskType = $("taskType").value;
+      if (taskType === "jobs_digest_v1" || taskType === "deals_scan_v1") {
+        buildGuidedPayload();
+        return;
+      }
+      const payload = suggestedPayloadForTask(taskType);
+      $("payloadInput").value = JSON.stringify(payload, null, 2);
+      $("createNote").className = "small-note";
+      $("createNote").textContent = "Loaded suggested payload for " + taskType + ".";
+    }
+
+    async function createTaskWithPayload(taskType, payloadObj, options) {
+      clearError();
+      const opts = options || {};
+      const noteId = opts.noteId || "createNote";
+      const modelRaw = typeof opts.model === "string" ? opts.model.trim() : $("modelOverride").value.trim();
+      const startText = opts.startText || "Creating task...";
+      const submitBtn = opts.buttonId ? $(opts.buttonId) : null;
+      const payloadRaw = JSON.stringify(payloadObj, null, 2);
+      const body = {
+        task_type: taskType,
+        payload_json: payloadRaw,
+        model: modelRaw || null,
+      };
+
+      if (submitBtn) submitBtn.disabled = true;
+      setInlineNote(noteId, startText);
+      try {
+        const created = await apiRequest("/tasks", {
+          method: "POST",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(body),
+        });
+        const taskId = created && created.id ? created.id : "(unknown)";
+        setInlineNote(noteId, "Queued scan: " + taskId, "ok");
+
+        if (opts.updateDeveloperPayload !== false) {
+          $("taskType").value = taskType;
+          $("payloadInput").value = payloadRaw;
+          renderTaskBuilder(taskType);
+        }
+
+        await loadTasks();
+        if (created && created.id) {
+          state.selectedTaskId = created.id;
+          renderTaskList(state.tasks);
+          await loadTaskDetail(created.id, false);
+        }
+        await loadOverview();
+        return created;
+      } catch (err) {
+        setInlineNote(noteId, "Create failed.", "warn");
+        showError("Failed to create task", err);
+        throw err;
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
+      }
+    }
+
+    async function createTask() {
+      const payloadRaw = $("payloadInput").value;
+      let parsedPayload = null;
+      try {
+        parsedPayload = JSON.parse(payloadRaw);
+      } catch (err) {
+        setInlineNote(
+          "createNote",
+          "Raw payload JSON is invalid: " + (err && err.message ? err.message : String(err)),
+          "warn"
+        );
+        return;
+      }
+
+      try {
+        await createTaskWithPayload($("taskType").value, parsedPayload, {
+          noteId: "createNote",
+          buttonId: "createTaskBtn",
+          startText: "Creating task from developer JSON...",
+        });
+      } catch (_err) {
+        // errors are handled in createTaskWithPayload
+      }
+    }
+
+    async function runDealsWorkflow() {
+      try {
+        await createTaskWithPayload("deals_scan_v1", buildDealsPayloadFromForm(), {
+          noteId: "dealsWorkflowNote",
+          buttonId: "runDealsWorkflowBtn",
+          startText: "Queueing GPU deal scan...",
+        });
+      } catch (_err) {
+        // errors are handled in createTaskWithPayload
+      }
+    }
+
+    async function runJobsWorkflow() {
+      try {
+        await createTaskWithPayload("jobs_digest_v1", buildJobsPayloadFromForm(), {
+          noteId: "jobsWorkflowNote",
+          buttonId: "runJobsWorkflowBtn",
+          startText: "Queueing job scan...",
+        });
+      } catch (_err) {
+        // errors are handled in createTaskWithPayload
+      }
+    }
+
+    async function runNotifyWorkflow() {
+      try {
+        await createTaskWithPayload("notify_v1", buildNotifyPayloadFromForm(), {
+          noteId: "notifyWorkflowNote",
+          buttonId: "runNotifyWorkflowBtn",
+          startText: "Queueing test notification...",
+        });
+      } catch (_err) {
+        // errors are handled in createTaskWithPayload
+      }
+    }
+
+    async function savePlannerSettings() {
+      const note = $("plannerTemplateNote");
+      const intervalSec = Number($("plannerIntervalInput").value);
+      const maxCreate = Number($("plannerMaxCreateInput").value);
+      const maxExecute = Number($("plannerMaxExecuteInput").value);
+      const maxPending = Number($("plannerMaxPendingInput").value);
+      await patchPlannerConfig(
+        {
+          interval_sec: Number.isFinite(intervalSec) ? Math.max(30, Math.round(intervalSec)) : 300,
+          max_create_per_cycle: Number.isFinite(maxCreate) ? Math.max(0, Math.round(maxCreate)) : 1,
+          max_execute_per_cycle: Number.isFinite(maxExecute) ? Math.max(0, Math.round(maxExecute)) : 2,
+          max_pending_tasks: Number.isFinite(maxPending) ? Math.max(1, Math.round(maxPending)) : 20,
+        },
+        "Planner settings saved."
+      );
+      note.className = "small-note ok";
+    }
+
+    async function addPlannerTemplate() {
+      const note = $("plannerTemplateNote");
+      const name = $("plannerTemplateNameInput").value.trim();
+      const taskType = $("plannerTemplateTaskTypeInput").value;
+      const intervalSec = Number($("plannerTemplateIntervalInput").value);
+      const priority = Number($("plannerTemplatePriorityInput").value);
+      const enabled = $("plannerTemplateEnabledInput").checked;
+      const payloadRaw = $("plannerTemplatePayloadInput").value;
+
+      if (!name) {
+        note.className = "small-note warn";
+        note.textContent = "Rule name is required.";
+        return;
+      }
+      try {
+        JSON.parse(payloadRaw);
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Rule payload_json must be valid JSON.";
+        return;
+      }
+
+      try {
+        await apiRequest("/planner/templates", {
+          method: "POST",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            name: name,
+            task_type: taskType,
+            payload_json: payloadRaw,
+            min_interval_seconds: Number.isFinite(intervalSec) ? Math.max(60, Math.round(intervalSec)) : 300,
+            priority: Number.isFinite(priority) ? Math.round(priority) : 100,
+            enabled: enabled,
+          }),
+        });
+        note.className = "small-note ok";
+        note.textContent = "Planner rule created.";
+        await loadPlannerControls();
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Planner rule create failed.";
+        showError("Failed to create planner template", err);
+      }
+    }
+
+    async function enableRtxPreset() {
+      const note = $("plannerTemplateNote");
+      const intervalSec = Number($("plannerPresetIntervalInput").value);
+      const gpuMax = Number($("plannerPresetGpuMaxInput").value);
+      const pcMax = Number($("plannerPresetPcMaxInput").value);
+
+      try {
+        await apiRequest("/planner/templates/presets/rtx5090", {
+          method: "POST",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            interval_seconds: Number.isFinite(intervalSec) ? Math.max(60, Math.round(intervalSec)) : 300,
+            gpu_max_price: Number.isFinite(gpuMax) ? gpuMax : null,
+            pc_max_price: Number.isFinite(pcMax) ? pcMax : null,
+            enabled: true,
+          }),
+        });
+        note.className = "small-note ok";
+        note.textContent = "RTX 5090 preset enabled.";
+        await loadPlannerControls();
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Failed to enable RTX 5090 preset.";
+        showError("Failed to upsert RTX 5090 preset", err);
+      }
+    }
+
+    async function enableJobsPreset() {
+      const note = $("plannerTemplateNote");
+      const intervalSec = Number($("plannerJobsPresetIntervalInput").value);
+      const desiredTitle = $("plannerJobsPresetTitleInput").value.trim();
+      const salaryMin = Number($("plannerJobsPresetSalaryMinInput").value);
+      const location = $("plannerJobsPresetLocationInput").value.trim();
+
+      try {
+        await apiRequest("/planner/templates/presets/jobs-digest", {
+          method: "POST",
+          headers: apiHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            interval_seconds: Number.isFinite(intervalSec) ? Math.max(60, Math.round(intervalSec)) : 300,
+            desired_title: desiredTitle || null,
+            desired_salary_min: Number.isFinite(salaryMin) ? salaryMin : null,
+            location: location || null,
+            experience_levels: ["entry", "mid", "senior"],
+            boards: ["linkedin", "indeed", "glassdoor", "handshake"],
+            enabled: true,
+          }),
+        });
+        note.className = "small-note ok";
+        note.textContent = "Jobs digest preset enabled.";
+        await loadPlannerControls();
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Failed to enable jobs digest preset.";
+        showError("Failed to upsert jobs digest preset", err);
+      }
+    }
+
+    async function runPlannerOnce() {
+      const note = $("plannerTemplateNote");
+      try {
+        const summary = await apiRequest("/planner/run-once", {
+          method: "POST",
+          headers: apiHeaders(),
+        });
+        const decisionCounts = summary && summary.decision_counts ? JSON.stringify(summary.decision_counts) : "{}";
+        note.className = "small-note ok";
+        note.textContent = "Planner ran once. executed=" + safe(summary.executed_count) + " decisions=" + decisionCounts;
+        await Promise.all([loadPlannerControls(), loadTasks(), loadOverview()]);
+      } catch (err) {
+        note.className = "small-note warn";
+        note.textContent = "Manual planner run failed.";
+        showError("Failed to run planner once", err);
+      }
+    }
+
+    async function runAutomation5090Now() {
+      try {
+        await createTaskWithPayload("deals_scan_v1", buildDealsPayloadFromForm(), {
+          noteId: "plannerTemplateNote",
+          buttonId: "automationRun5090Btn",
+          startText: "Queueing RTX 5090 scan now...",
+        });
+      } catch (_err) {
+        // errors are handled in createTaskWithPayload
+      }
+    }
+
+    async function runAutomationJobsNow() {
+      try {
+        await createTaskWithPayload("jobs_digest_v1", buildJobsPayloadFromForm(), {
+          noteId: "plannerTemplateNote",
+          buttonId: "automationRunJobsBtn",
+          startText: "Queueing jobs scan now...",
+        });
+      } catch (_err) {
+        // errors are handled in createTaskWithPayload
+      }
+    }
+
+    function findAutomationTemplateId(kind) {
+      const templates = Array.isArray(state.planner.templates) ? state.planner.templates : [];
+      const match = findPlannerTemplate(
+        templates,
+        kind === "rtx"
+          ? (tpl) => safe(tpl.id) === "preset-rtx5090-deals-scan" || /5090/i.test(safe(tpl.name))
+          : (tpl) => safe(tpl.id) === "preset-jobs-digest-scan" || /jobs/i.test(safe(tpl.name))
+      );
+      return match ? safe(match.id) : "";
+    }
+
+    async function toggleAutomation(kind) {
+      const templateId = findAutomationTemplateId(kind);
+      if (!templateId) return;
+      const template = (state.planner.templates || []).find((tpl) => safe(tpl.id) === templateId);
+      if (!template) return;
+      await updatePlannerTemplate(templateId, { enabled: !Boolean(template.enabled) });
+    }
+
+    async function runDailyOpsAutomation() {
+      await runPlannerOnce();
+    }
+
+    async function plannerQuickRecommend() {
+      await patchPlannerConfig(
+        {
+          enabled: true,
+          execution_enabled: false,
+          require_approval: true,
+          approved: false,
+        },
+        "Planner set to recommendation mode."
+      );
+    }
+
+    async function plannerQuickExecute() {
+      await patchPlannerConfig(
+        {
+          enabled: true,
+          execution_enabled: true,
+          require_approval: false,
+          approved: true,
+        },
+        "Planner set to execute mode."
+      );
+    }
+
+    async function plannerQuickPause() {
+      await patchPlannerConfig(
+        {
+          enabled: false,
+        },
+        "Planner paused."
+      );
+    }
+
+    async function activateConsoleView(view) {
+      setConsoleView(view);
+      if (view !== "tasks") {
+        stopPolling();
+      }
+      if (view === "dashboard") {
+        await Promise.all([loadOverview(), loadTasks(), loadPlannerControls(), loadEvents()]);
+        return;
+      }
+      if (view === "automations") {
+        await loadPlannerControls();
+        return;
+      }
+      if (view === "alerts") {
+        await Promise.all([loadEvents(), loadTasks()]);
+        renderAlertsPanels();
+        return;
+      }
+      if (view === "system") {
+        await Promise.all([loadOverview(), loadPlannerControls()]);
+        return;
+      }
+      if (view === "settings") {
+        await Promise.all([loadResumeProfile(), loadPlannerControls()]);
+        return;
+      }
+      await loadTasks();
+    }
+
+    $("createTaskBtn").addEventListener("click", createTask);
+    $("runDealsWorkflowBtn").addEventListener("click", runDealsWorkflow);
+    $("runJobsWorkflowBtn").addEventListener("click", runJobsWorkflow);
+    $("runNotifyWorkflowBtn").addEventListener("click", runNotifyWorkflow);
+    $("buildGuidedPayloadBtn").addEventListener("click", buildGuidedPayload);
+    $("loadPayloadTemplateBtn").addEventListener("click", loadPayloadTemplate);
+    $("quickTaskJobsBtn").addEventListener("click", () => {
+      setTaskType("jobs_digest_v1", { loadPayload: "guided" });
+      $("createNote").className = "small-note ok";
+      $("createNote").textContent = "Jobs scan builder loaded.";
+    });
+    $("quickTaskDealsBtn").addEventListener("click", () => {
+      setTaskType("deals_scan_v1", { loadPayload: "guided" });
+      $("createNote").className = "small-note ok";
+      $("createNote").textContent = "Deals scan builder loaded.";
+    });
+    $("quickTaskNotifyBtn").addEventListener("click", () => {
+      setTaskType("notify_v1", { loadPayload: "template" });
+      $("createNote").className = "small-note ok";
+      $("createNote").textContent = "Notify task template loaded.";
+    });
+    $("taskType").addEventListener("change", () => {
+      renderTaskBuilder($("taskType").value);
+      $("createNote").className = "small-note";
+      $("createNote").textContent = "Task type changed. Load a suggested payload or build from current card inputs.";
+    });
+    $("refreshStatsBtn").addEventListener("click", async () => { await loadStats(); renderOverview(); });
+    $("loadTasksBtn").addEventListener("click", loadTasks);
+
+    $("plannerRefreshBtn").addEventListener("click", loadPlannerControls);
+    $("plannerSaveBtn").addEventListener("click", savePlannerSettings);
+    $("plannerEnableToggleBtn").addEventListener("click", async () => {
+      const cfg = state.planner.config || {};
+      await patchPlannerConfig({ enabled: !Boolean(cfg.enabled) }, "Planner enabled flag updated.");
+    });
+    $("plannerModeToggleBtn").addEventListener("click", async () => {
+      const cfg = state.planner.config || {};
+      await patchPlannerConfig(
+        { execution_enabled: !Boolean(cfg.execution_enabled) },
+        "Planner mode updated."
+      );
+    });
+    $("plannerApprovalToggleBtn").addEventListener("click", async () => {
+      const cfg = state.planner.config || {};
+      await patchPlannerConfig(
+        { require_approval: !Boolean(cfg.require_approval) },
+        "Planner approval requirement updated."
+      );
+    });
+    $("plannerApprovedToggleBtn").addEventListener("click", async () => {
+      const cfg = state.planner.config || {};
+      await patchPlannerConfig(
+        { approved: !Boolean(cfg.approved) },
+        Boolean(cfg.approved) ? "Planner approval revoked." : "Planner approved."
+      );
+    });
+    $("plannerResetBtn").addEventListener("click", async () => {
+      try {
+        const reset = await apiRequest("/planner/config/reset", {
+          method: "POST",
+          headers: apiHeaders(),
+        });
+        state.planner.config = reset || null;
+        $("plannerTemplateNote").className = "small-note ok";
+        $("plannerTemplateNote").textContent = "Planner settings reset to defaults.";
+        renderPlannerControls();
+      } catch (err) {
+        $("plannerTemplateNote").className = "small-note warn";
+        $("plannerTemplateNote").textContent = "Planner reset failed.";
+        showError("Failed to reset planner config", err);
+      }
+    });
+    $("plannerTemplateAddBtn").addEventListener("click", addPlannerTemplate);
+    $("plannerPreset5090Btn").addEventListener("click", enableRtxPreset);
+    $("plannerPresetJobsBtn").addEventListener("click", enableJobsPreset);
+    $("plannerRunOnceBtn").addEventListener("click", runPlannerOnce);
+    $("automationToggle5090Btn").addEventListener("click", async () => { await toggleAutomation("rtx"); });
+    $("automationToggleJobsBtn").addEventListener("click", async () => { await toggleAutomation("jobs"); });
+    $("automationRun5090Btn").addEventListener("click", runAutomation5090Now);
+    $("automationRunJobsBtn").addEventListener("click", runAutomationJobsNow);
+    $("automationRunDailyOpsBtn").addEventListener("click", runDailyOpsAutomation);
+    $("automationRefreshDailyOpsBtn").addEventListener("click", async () => {
+      await Promise.all([loadPlannerControls(), loadOverview()]);
+    });
+    $("plannerQuickRecommendBtn").addEventListener("click", plannerQuickRecommend);
+    $("plannerQuickExecuteBtn").addEventListener("click", plannerQuickExecute);
+    $("plannerQuickPauseBtn").addEventListener("click", plannerQuickPause);
+    $("refreshPlannerTelemetryBtn").addEventListener("click", loadPlannerControls);
+    $("refreshDashboardAutomationBtn").addEventListener("click", loadPlannerControls);
+    $("resumeRefreshBtn").addEventListener("click", loadResumeProfile);
+    $("resumeUploadFileBtn").addEventListener("click", uploadResumeFile);
+    $("resumeSaveBtn").addEventListener("click", saveResumeProfile);
+    $("resumeDeleteBtn").addEventListener("click", deleteResumeProfile);
+    $("settingsSendTestNotifyBtn").addEventListener("click", runNotifyWorkflow);
+    $("resumeToggleEditorBtn").addEventListener("click", () => {
+      toggleResumeEditor();
+    });
+
+    document.querySelectorAll("#consoleViewTabs .view-tab").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await activateConsoleView(btn.dataset.view || "dashboard");
+      });
+    });
+
+    $("refreshOverviewBtn").addEventListener("click", loadOverview);
+    $("refreshEventsBtn").addEventListener("click", async () => { await loadEvents(); renderOverview(); });
+    $("refreshAiBtn").addEventListener("click", async () => { await loadAiSummary(); renderOverview(); });
+    $("refreshSystemBtn").addEventListener("click", async () => { await Promise.all([loadSystemLatest(), loadSystemRows()]); renderOverview(); });
+    $("refreshPromBtn").addEventListener("click", async () => { await loadPromMetrics(); renderOverview(); });
+    $("refreshAlertsBtn").addEventListener("click", async () => {
+      await Promise.all([loadEvents(), loadTasks()]);
+      renderAlertsPanels();
+    });
+    $("openObservabilityBtn").addEventListener("click", () => {
+      window.location.href = "/observability";
+    });
+    $("resultJsonToggleBtn").addEventListener("click", () => {
+      setResultJsonExpanded(!state.resultJsonExpanded);
+    });
+
+    setResultJsonExpanded(false);
+    setResultJsonToggleEnabled(false);
+    setConsoleView("dashboard");
+    toggleResumeEditor(false);
+    renderTaskBuilder($("taskType").value);
+
+    (async function init() {
+      await Promise.all([loadOverview(), loadTasks(), loadPlannerControls(), loadResumeProfile()]);
+    })();
+  </script>
+</body>
+</html>

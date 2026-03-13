@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_search_v1 payload",
+  "type": "object",
+  "properties": {
+    "query": {"type": "string"},
+    "locations": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "remote_only": {"type": "boolean"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 500}
+  },
+  "additionalProperties": true
+}

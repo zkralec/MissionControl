@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "essay_draft_v1 payload",
+  "type": "object",
+  "properties": {
+    "topic": {"type": "string"},
+    "prompt": {"type": "string"},
+    "audience": {"type": "string"},
+    "word_count_target": {"type": "integer", "minimum": 100, "maximum": 5000}
+  },
+  "additionalProperties": true
+}

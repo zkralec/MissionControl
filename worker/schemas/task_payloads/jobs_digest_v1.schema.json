@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_digest_v1 payload",
+  "type": "object",
+  "properties": {
+    "source": {"type": "string", "description": "Optional source label for manual jobs or planner-generated scans."},
+    "collectors_enabled": {
+      "type": "boolean",
+      "description": "Enable scraping collectors for external job boards."
+    },
+    "search_query": {"type": "string", "description": "Primary search query used by board collectors."},
+    "query": {"type": "string", "description": "Alias for search_query."},
+    "location": {"type": "string", "description": "Search location, e.g. 'Remote' or 'United States'."},
+    "search_location": {"type": "string", "description": "Alias for location."},
+    "job_boards": {
+      "type": "array",
+      "description": "Boards to scrape. Supported: linkedin, indeed, glassdoor, handshake.",
+      "items": {"type": "string"}
+    },
+    "board_url_overrides": {
+      "type": "object",
+      "description": "Optional map of board name -> custom URL for scraping.",
+      "additionalProperties": {"type": "string"}
+    },
+    "max_jobs_per_board": {"type": "integer", "minimum": 1, "maximum": 200},
+    "desired_title": {"type": "string"},
+    "desired_title_keywords": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "excluded_title_keywords": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "desired_salary_min": {"type": ["number", "integer"]},
+    "desired_salary_max": {"type": ["number", "integer"]},
+    "require_salary_data": {"type": "boolean"},
+    "experience_levels": {
+      "type": "array",
+      "description": "Desired levels: internship, entry, mid, senior (or custom).",
+      "items": {"type": "string"}
+    },
+    "require_experience_match": {"type": "boolean"},
+    "clearance_required": {
+      "description": "Bool or string mode (required / none / either).",
+      "oneOf": [
+        {"type": "boolean"},
+        {"type": "string"}
+      ]
+    },
+    "required_clearances": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "require_clearance_match": {"type": "boolean"},
+    "work_modes": {
+      "type": "array",
+      "description": "Desired work modes: remote, hybrid, onsite.",
+      "items": {"type": "string"}
+    },
+    "require_work_mode_match": {"type": "boolean"},
+    "location_keywords": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "use_resume_profile": {
+      "type": "boolean",
+      "description": "If true, include stored resume profile context in LLM ranking/categorization."
+    },
+    "resume_text": {
+      "type": "string",
+      "description": "Optional per-run resume text override used for fit ranking."
+    },
+    "resume_name": {
+      "type": "string",
+      "description": "Optional label for resume_text override."
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "company": {"type": "string"},
+          "location": {"type": "string"},
+          "url": {"type": "string"},
+          "source": {"type": "string"},
+          "skills": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "remote": {"type": "boolean"},
+          "salary_min": {"type": ["number", "integer"]},
+          "salary_max": {"type": ["number", "integer"]},
+          "salary_currency": {"type": "string"},
+          "experience_level": {"type": "string"},
+          "clearance_required": {"type": "boolean"},
+          "clearance_type": {"type": "string"},
+          "work_mode": {"type": "string"},
+          "posted_at": {"type": "string"},
+          "scraped_at": {"type": "string"},
+          "description_snippet": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

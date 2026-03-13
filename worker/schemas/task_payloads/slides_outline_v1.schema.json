@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "slides_outline_v1 payload",
+  "type": "object",
+  "properties": {
+    "topic": {"type": "string"},
+    "goals": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "points": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": true
+}

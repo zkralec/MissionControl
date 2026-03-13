@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_top.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "shortlisted_at",
+    "top_jobs",
+    "summary"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs_top.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_top.v1"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "shortlisted_at": {"type": "string", "minLength": 1},
+    "request": {"type": "object"},
+    "shortlist_policy": {"type": "object"},
+    "top_jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job_id", "title", "source", "score"],
+        "properties": {
+          "job_id": {"type": "string"},
+          "title": {"type": "string"},
+          "company": {"type": ["string", "null"]},
+          "source": {"type": "string"},
+          "score": {"type": "number"},
+          "overall_score": {"type": ["number", "null"]},
+          "explanation_summary": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "summary": {"type": "object"},
+    "pipeline_counts": {"type": "object"},
+    "anti_repetition_summary": {"type": "object"},
+    "upstream": {"type": "object"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "unicorn_deals_rank_v1 payload",
+  "type": "object",
+  "properties": {
+    "deals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": ["string", "integer"]},
+          "name": {"type": "string"},
+          "size_usd": {"type": ["number", "integer"]},
+          "sector": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "ranking_profile": {"type": "string"}
+  },
+  "additionalProperties": true
+}

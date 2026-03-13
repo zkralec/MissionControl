@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_rank_v1 structured LLM output",
+  "type": "object",
+  "required": ["scores"],
+  "properties": {
+    "scores": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "resume_match_score",
+          "title_match_score",
+          "salary_score",
+          "location_score",
+          "seniority_score",
+          "overall_score",
+          "explanation"
+        ],
+        "properties": {
+          "job_id": {"type": "string"},
+          "resume_match_score": {"type": "number", "minimum": 0, "maximum": 100},
+          "title_match_score": {"type": "number", "minimum": 0, "maximum": 100},
+          "salary_score": {"type": "number", "minimum": 0, "maximum": 100},
+          "location_score": {"type": "number", "minimum": 0, "maximum": 100},
+          "seniority_score": {"type": "number", "minimum": 0, "maximum": 100},
+          "overall_score": {"type": "number", "minimum": 0, "maximum": 100},
+          "explanation": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {"type": "string"}
+  },
+  "additionalProperties": false
+}

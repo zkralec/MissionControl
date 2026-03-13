@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_normalized.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "normalized_at",
+    "raw_count",
+    "normalized_count",
+    "jobs"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs_normalized.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_normalized.v1"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "normalized_at": {"type": "string", "minLength": 1},
+    "request": {"type": "object"},
+    "raw_count": {"type": "integer", "minimum": 0},
+    "normalized_count": {"type": "integer", "minimum": 0},
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["normalized_job_id", "title", "source", "source_url"],
+        "properties": {
+          "normalized_job_id": {"type": "string"},
+          "title": {"type": "string"},
+          "company": {"type": ["string", "null"]},
+          "location": {"type": ["string", "null"]},
+          "remote_type": {"type": ["string", "null"]},
+          "salary_min": {"type": ["number", "integer", "null"]},
+          "salary_max": {"type": ["number", "integer", "null"]},
+          "salary_text": {"type": ["string", "null"]},
+          "source": {"type": "string"},
+          "source_url": {"type": ["string", "null"]},
+          "description_snippet": {"type": ["string", "null"]},
+          "posted_at": {"type": ["string", "null"]},
+          "experience_level": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "drop_reasons": {"type": "object"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "upstream": {"type": "object"}
+  },
+  "additionalProperties": true
+}

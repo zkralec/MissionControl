@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_digest.md.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "generated_at",
+    "content"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs_digest.md.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_digest.md.v1"},
+    "file_name": {"type": "string", "const": "jobs_digest.md"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "minLength": 1},
+    "generation_mode": {"type": "string"},
+    "digest_format": {"type": "string"},
+    "content": {"type": "string"},
+    "preview": {"type": "string"}
+  },
+  "additionalProperties": true
+}

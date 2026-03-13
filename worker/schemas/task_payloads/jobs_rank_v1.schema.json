@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_rank_v1 payload",
+  "type": "object",
+  "required": ["pipeline_id", "upstream", "request"],
+  "properties": {
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "upstream": {
+      "type": "object",
+      "required": ["task_id", "run_id", "task_type"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "task_type": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "request": {"type": "object", "additionalProperties": true},
+    "rank_policy": {
+      "type": "object",
+      "properties": {
+        "weights": {"type": "object", "additionalProperties": {"type": ["number", "integer"]}},
+        "max_ranked": {"type": "integer", "minimum": 1, "maximum": 200},
+        "llm_enabled": {"type": "boolean"},
+        "prompt_version": {"type": "string"},
+        "llm_batch_size": {"type": "integer", "minimum": 1, "maximum": 25},
+        "llm_max_retries": {"type": "integer", "minimum": 1, "maximum": 5},
+        "strict_llm_output": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "shortlist_policy": {
+      "type": "object",
+      "properties": {
+        "max_items": {"type": "integer", "minimum": 1, "maximum": 100},
+        "min_score": {"type": ["number", "integer"]},
+        "per_source_cap": {"type": "integer", "minimum": 1, "maximum": 50},
+        "diversity_mode": {"type": "string"},
+        "freshness_preference": {"type": "string"},
+        "freshness_weight_enabled": {"type": "boolean"},
+        "freshness_max_bonus": {"type": ["number", "integer"]}
+      },
+      "additionalProperties": true
+    },
+    "profile_context": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

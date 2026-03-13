@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_scored.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "scored_at",
+    "jobs_scored"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs_scored.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_scored.v1"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "scored_at": {"type": "string", "minLength": 1},
+    "request": {"type": "object"},
+    "input_jobs_count": {"type": "integer", "minimum": 0},
+    "filtered_jobs_count": {"type": "integer", "minimum": 0},
+    "scored_jobs_count": {"type": "integer", "minimum": 0},
+    "pipeline_counts": {"type": "object"},
+    "jobs_scored": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "title",
+          "source",
+          "resume_match_score",
+          "title_match_score",
+          "salary_score",
+          "location_score",
+          "seniority_score",
+          "overall_score",
+          "score"
+        ],
+        "properties": {
+          "job_id": {"type": "string"},
+          "title": {"type": "string"},
+          "company": {"type": ["string", "null"]},
+          "source": {"type": "string"},
+          "source_url": {"type": ["string", "null"]},
+          "resume_match_score": {"type": "number"},
+          "title_match_score": {"type": "number"},
+          "salary_score": {"type": "number"},
+          "location_score": {"type": "number"},
+          "seniority_score": {"type": "number"},
+          "overall_score": {"type": "number"},
+          "overall_score_adjusted": {"type": "number"},
+          "score": {"type": "number"},
+          "explanation": {"type": "string"},
+          "explanation_summary": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "llm": {"type": "object"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "upstream": {"type": "object"}
+  },
+  "additionalProperties": true
+}

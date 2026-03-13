@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "school_agenda_sync_v1 payload",
+  "type": "object",
+  "properties": {
+    "student_id": {"type": "string"},
+    "calendar_id": {"type": "string"},
+    "start_date": {"type": "string", "format": "date"},
+    "end_date": {"type": "string", "format": "date"}
+  },
+  "additionalProperties": true
+}

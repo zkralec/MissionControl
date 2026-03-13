@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_digest.json.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "generated_at",
+    "executive_summary",
+    "jobs"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs_digest.json.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_digest.json.v1"},
+    "file_name": {"type": "string", "const": "jobs_digest.json"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "minLength": 1},
+    "generation_mode": {"type": "string"},
+    "digest_format": {"type": "string"},
+    "executive_summary": {
+      "type": "object",
+      "required": ["summary_text", "strongest_patterns", "best_fit_roles"],
+      "properties": {
+        "collected_count": {"type": ["integer", "null"], "minimum": 0},
+        "deduped_count": {"type": ["integer", "null"], "minimum": 0},
+        "shortlisted_count": {"type": ["integer", "null"], "minimum": 0},
+        "summary_text": {"type": "string"},
+        "strongest_patterns": {"type": "array", "items": {"type": "string"}},
+        "best_fit_roles": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "rank",
+          "title",
+          "company",
+          "location",
+          "salary",
+          "source",
+          "source_url",
+          "why_it_fits",
+          "tradeoffs"
+        ],
+        "properties": {
+          "job_id": {"type": "string"},
+          "rank": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "company": {"type": "string"},
+          "location": {"type": "string"},
+          "salary": {"type": "string"},
+          "source": {"type": "string"},
+          "source_url": {"type": "string"},
+          "why_it_fits": {"type": "string"},
+          "tradeoffs": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "notification_excerpt": {"type": "string"},
+    "summary_for_ui": {"type": "object"},
+    "artifact_references": {"type": "object"},
+    "notification_seed": {"type": "object"}
+  },
+  "additionalProperties": true
+}

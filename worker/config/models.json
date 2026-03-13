@@ -1,0 +1,44 @@
+{
+  "models": {
+    "gpt-5-nano": {
+      "input_per_1m": "0.05",
+      "output_per_1m": "0.20",
+      "max_context": 128000
+    },
+    "gpt-5-mini": {
+      "input_per_1m": "0.25",
+      "output_per_1m": "1.00",
+      "max_context": 128000
+    },
+    "gpt-5": {
+      "input_per_1m": "1.25",
+      "output_per_1m": "5.00",
+      "max_context": 128000
+    },
+    "gpt-4o-mini": {
+      "input_per_1m": "0.15",
+      "output_per_1m": "0.60",
+      "max_context": 128000
+    },
+    "gpt-4o": {
+      "input_per_1m": "5.00",
+      "output_per_1m": "15.00",
+      "max_context": 128000
+    },
+    "gpt-4-turbo": {
+      "input_per_1m": "10.00",
+      "output_per_1m": "30.00",
+      "max_context": 128000
+    }
+  },
+  "tiers": {
+    "cheap": "gpt-5-nano",
+    "standard": "gpt-5-mini",
+    "advanced": "gpt-5"
+  },
+  "routing_rules": {
+    "min_remaining_for_standard": "0.05",
+    "min_remaining_for_advanced": "0.20",
+    "payload_size_force_cheap_chars": 50000
+  }
+}

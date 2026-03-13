@@ -1,0 +1,192 @@
+{
+  "collect_multisource_by_source": {
+    "linkedin": [
+      {
+        "source": "linkedin",
+        "source_url": "https://www.linkedin.com/jobs/search/?keywords=machine+learning+engineer",
+        "title": "Senior Machine Learning Engineer",
+        "company": "Acme AI",
+        "location": "Remote",
+        "url": "https://www.linkedin.com/jobs/view/1001",
+        "description_snippet": "Remote ML platform role with production ownership.",
+        "salary_min": 180000,
+        "salary_max": 220000,
+        "source_metadata": {
+          "job_id": "li-1001",
+          "search_url": "https://www.linkedin.com/jobs/search/?keywords=machine+learning+engineer"
+        }
+      }
+    ],
+    "indeed": [
+      {
+        "source": "indeed",
+        "source_url": "https://www.indeed.com/jobs?q=machine+learning+engineer",
+        "title": "Senior ML Engineer",
+        "company": "Acme AI",
+        "location": "Remote",
+        "url": "https://www.indeed.com/viewjob?jk=2002",
+        "description_snippet": "Senior applied ML systems role.",
+        "salary_min": 175000,
+        "salary_max": 215000,
+        "source_metadata": {
+          "job_id": "in-2002",
+          "search_url": "https://www.indeed.com/jobs?q=machine+learning+engineer"
+        }
+      }
+    ],
+    "glassdoor": [
+      {
+        "source": "glassdoor",
+        "source_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=machine+learning+engineer",
+        "title": "Machine Learning Engineer",
+        "company": "Beta Labs",
+        "location": "New York, NY",
+        "url": "https://www.glassdoor.com/partner/jobListing.htm?pos=101",
+        "description_snippet": "Hybrid ML engineer for product intelligence.",
+        "salary_text": "USD 165,000 - 195,000",
+        "source_metadata": {
+          "job_id": "gd-3003",
+          "search_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=machine+learning+engineer"
+        }
+      }
+    ],
+    "handshake": [
+      {
+        "source": "handshake",
+        "source_url": "https://app.joinhandshake.com/stu/postings?query=machine+learning+engineer",
+        "title": "Machine Learning Engineer",
+        "company": "Campus Robotics",
+        "location": "San Francisco, CA",
+        "url": "https://app.joinhandshake.com/stu/jobs/4004",
+        "description_snippet": "Early-career ML engineer role with mentorship.",
+        "salary_min": 120000,
+        "salary_max": 145000,
+        "source_metadata": {
+          "job_id": "hs-4004",
+          "search_url": "https://app.joinhandshake.com/stu/postings?query=machine+learning+engineer"
+        }
+      }
+    ]
+  },
+  "normalize_duplicate_heavy_raw_jobs": [
+    {
+      "source": "linkedin",
+      "source_url": "https://www.linkedin.com/jobs/search/?keywords=senior+ml+engineer",
+      "title": "SENIOR MACHINE LEARNING ENGINEER",
+      "company": "Acme AI, Inc.",
+      "location": "New York, NY",
+      "url": "https://www.linkedin.com/jobs/view/5001",
+      "description_snippet": "Hybrid role. Compensation $170k - $210k."
+    },
+    {
+      "source": "indeed",
+      "source_url": "https://www.indeed.com/jobs?q=senior+machine+learning+engineer",
+      "title": "Senior ML Engineer",
+      "company": "Acme AI Inc",
+      "location": "New York City",
+      "url": "https://www.indeed.com/viewjob?jk=5002",
+      "description_snippet": "Senior platform role with hybrid schedule.",
+      "salary_min": 172000,
+      "salary_max": 212000
+    },
+    {
+      "source": "glassdoor",
+      "source_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=senior+machine+learning+engineer",
+      "title": "Sr. Machine Learning Engineer",
+      "company": "ACME AI",
+      "location": "NYC",
+      "url": "https://www.glassdoor.com/partner/jobListing.htm?pos=5003",
+      "description_snippet": "ML platform team, hybrid."
+    },
+    {
+      "source": "handshake",
+      "source_url": "https://app.joinhandshake.com/stu/postings?query=senior+machine+learning+engineer",
+      "title": "Machine Learning Engineer",
+      "company": "Acme AI",
+      "location": "New York, NY",
+      "url": "https://app.joinhandshake.com/stu/jobs/5004",
+      "description_snippet": "Machine learning engineer opportunity."
+    },
+    {
+      "source": "linkedin",
+      "source_url": "https://www.linkedin.com/jobs/search/?keywords=data+engineer",
+      "title": "Data Engineer",
+      "company": "Beta Labs",
+      "location": "Remote",
+      "url": "https://www.linkedin.com/jobs/view/5101",
+      "description_snippet": "Remote data platform role."
+    }
+  ],
+  "shortlist_duplicate_heavy_scored_jobs": [
+    {
+      "job_id": "dup-1",
+      "title": "Senior ML Engineer",
+      "company": "Acme AI",
+      "source": "linkedin",
+      "source_url": "https://www.linkedin.com/jobs/view/6001",
+      "overall_score": 95,
+      "score": 1.9,
+      "duplicate_group_id": "grp-acme-1",
+      "explanation_summary": "Excellent fit for ML platform work."
+    },
+    {
+      "job_id": "dup-2",
+      "title": "Senior Machine Learning Engineer",
+      "company": "Acme AI",
+      "source": "indeed",
+      "source_url": "https://www.indeed.com/viewjob?jk=6002",
+      "overall_score": 94,
+      "score": 1.88,
+      "duplicate_group_id": "grp-acme-1",
+      "explanation_summary": "Near-identical posting from another source."
+    },
+    {
+      "job_id": "dup-3",
+      "title": "Staff ML Engineer",
+      "company": "Acme AI",
+      "source": "glassdoor",
+      "source_url": "https://www.glassdoor.com/partner/jobListing.htm?pos=6003",
+      "overall_score": 93,
+      "score": 1.86,
+      "duplicate_group_id": "grp-acme-2",
+      "explanation_summary": "Strong fit with leadership expectation."
+    },
+    {
+      "job_id": "dup-4",
+      "title": "Machine Learning Engineer",
+      "company": "Beta Labs",
+      "source": "handshake",
+      "source_url": "https://app.joinhandshake.com/stu/jobs/6004",
+      "overall_score": 90,
+      "score": 1.8,
+      "duplicate_group_id": "grp-beta-1",
+      "explanation_summary": "Good fit with growth opportunity."
+    }
+  ],
+  "digest_top_jobs_sample": [
+    {
+      "job_id": "digest-1",
+      "rank": 1,
+      "title": "Senior ML Engineer",
+      "company": "Acme AI",
+      "location": "Remote",
+      "source": "linkedin",
+      "source_url": "https://www.linkedin.com/jobs/view/7001",
+      "salary_min": 180000,
+      "salary_max": 220000,
+      "explanation_summary": "Excellent profile overlap."
+    },
+    {
+      "job_id": "digest-2",
+      "rank": 2,
+      "title": "Machine Learning Engineer",
+      "company": "Beta Labs",
+      "location": "New York, NY",
+      "source": "indeed",
+      "source_url": "https://www.indeed.com/viewjob?jk=7002",
+      "salary_text": "USD 165,000 - 195,000",
+      "explanation_summary": "Strong technical fit."
+    }
+  ]
+}
+

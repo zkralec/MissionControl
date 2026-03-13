@@ -1,0 +1,12 @@
+{
+  "task_type": "notify_v1",
+  "payload": {
+    "channels": ["discord"],
+    "message": "Test alert from Mission Control",
+    "severity": "info",
+    "dedupe_key": "test:discord:001",
+    "dedupe_ttl_seconds": 21600,
+    "source_task_type": "deals_scan_v1",
+    "metadata": {"source": "manual"}
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_raw.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "scanned_at",
+    "request",
+    "raw_jobs",
+    "source_results",
+    "collection_status",
+    "partial_success"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs.collect.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_raw.v1"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "scanned_at": {"type": "string", "minLength": 1},
+    "request": {"type": "object"},
+    "raw_jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "source_url"],
+        "properties": {
+          "source": {"type": "string", "minLength": 1},
+          "source_url": {"type": ["string", "null"]},
+          "title": {"type": ["string", "null"]},
+          "company": {"type": ["string", "null"]},
+          "location": {"type": ["string", "null"]},
+          "url": {"type": ["string", "null"]},
+          "salary_min": {"type": ["number", "integer", "null"]},
+          "salary_max": {"type": ["number", "integer", "null"]},
+          "salary_currency": {"type": ["string", "null"]},
+          "experience_level": {"type": ["string", "null"]},
+          "work_mode": {"type": ["string", "null"]},
+          "posted_at": {"type": ["string", "null"]},
+          "scraped_at": {"type": ["string", "null"]},
+          "description_snippet": {"type": ["string", "null"]},
+          "source_metadata": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "source_counts": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "board_counts": {"type": "object", "additionalProperties": {"type": "integer"}},
+    "source_results": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status", "jobs_count", "warnings", "errors", "meta"],
+        "properties": {
+          "status": {"type": "string", "enum": ["success", "partial_success", "failed", "skipped"]},
+          "jobs_count": {"type": "integer", "minimum": 0},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "errors": {"type": "array", "items": {"type": "string"}},
+          "error": {"type": ["string", "null"]},
+          "meta": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "supported_fields_by_source": {"type": "object", "additionalProperties": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "collector_errors": {"type": "array", "items": {"type": "string"}},
+    "collection_status": {"type": "string", "enum": ["success", "partial_success"]},
+    "partial_success": {"type": "boolean"},
+    "successful_sources": {"type": "array", "items": {"type": "string"}},
+    "partial_sources": {"type": "array", "items": {"type": "string"}},
+    "failed_sources": {"type": "array", "items": {"type": "string"}},
+    "skipped_sources": {"type": "array", "items": {"type": "string"}},
+    "collection_summary": {"type": "object"},
+    "lineage": {"type": "object"}
+  },
+  "additionalProperties": true
+}

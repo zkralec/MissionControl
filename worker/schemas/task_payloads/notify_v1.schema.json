@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "notify_v1 payload",
+  "type": "object",
+  "required": ["channels", "message", "source_task_type"],
+  "properties": {
+    "channels": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["discord"]},
+      "minItems": 1,
+      "contains": {"const": "discord"}
+    },
+    "message": {"type": "string", "minLength": 1},
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warn", "urgent"],
+      "default": "info"
+    },
+    "dedupe_key": {"type": "string"},
+    "dedupe_ttl_seconds": {"type": "integer", "minimum": 1, "default": 21600},
+    "disable_dedupe": {"type": "boolean", "default": false},
+    "source_task_type": {"type": "string", "minLength": 1},
+    "metadata": {"type": "object"},
+    "include_header": {"type": "boolean", "default": true},
+    "include_metadata": {"type": "boolean", "default": true}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,77 @@
+import json
+import sys
+
+import pytest
+
+sys.path.insert(0, "/app")
+
+import planner_control
+
+
+@pytest.fixture(autouse=True)
+def _isolated_planner_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLANNER_CONTROL_DB_PATH", str(tmp_path / "planner-control.sqlite3"))
+
+
+def test_ensure_jobs_digest_template_accepts_expanded_configuration() -> None:
+    row = planner_control.ensure_jobs_digest_template(
+        interval_seconds=420,
+        desired_titles=["Machine Learning Engineer", "AI Engineer"],
+        keywords=["python", "llm"],
+        excluded_keywords=["intern"],
+        preferred_locations=["Remote", "New York, NY"],
+        remote_preference=["remote", "on-site"],
+        minimum_salary=140000,
+        experience_level="senior",
+        enabled_sources=["linkedin", "indeed"],
+        result_limit_per_source=33,
+        shortlist_count=5,
+        freshness_preference="prefer_recent",
+        enabled=True,
+    )
+    payload = json.loads(row["payload_json"])
+    request = payload["request"]
+
+    assert request["titles"] == ["Machine Learning Engineer", "AI Engineer"]
+    assert request["keywords"] == ["python", "llm"]
+    assert request["excluded_keywords"] == ["intern"]
+    assert request["locations"] == ["Remote", "New York, NY"]
+    assert request["work_mode_preference"] == ["remote", "onsite"]
+    assert request["minimum_salary"] == 140000.0
+    assert request["experience_level"] == "senior"
+    assert request["sources"] == ["linkedin", "indeed"]
+    assert request["result_limit_per_source"] == 33
+    assert request["shortlist_max_items"] == 5
+    assert request["shortlist_freshness_preference"] == "prefer_recent"
+    assert request["shortlist_freshness_weight_enabled"] is True
+    assert request["shortlist_freshness_max_bonus"] == 6.0
+
+
+def test_ensure_jobs_digest_template_maps_legacy_fields_for_compatibility() -> None:
+    row = planner_control.ensure_jobs_digest_template(
+        interval_seconds=300,
+        desired_title="Data Scientist",
+        location="Austin, TX",
+        boards=["glassdoor"],
+        desired_salary_min=125000,
+        enabled=True,
+    )
+    payload = json.loads(row["payload_json"])
+    request = payload["request"]
+
+    assert request["titles"][0] == "Data Scientist"
+    assert request["locations"][0] == "Austin, TX"
+    assert request["sources"] == ["glassdoor"]
+    assert request["minimum_salary"] == 125000.0
+
+
+def test_ensure_jobs_digest_template_falls_back_when_sources_invalid() -> None:
+    row = planner_control.ensure_jobs_digest_template(
+        interval_seconds=300,
+        desired_titles=["Backend Engineer"],
+        enabled_sources=["monster", "careerbuilder"],
+    )
+    payload = json.loads(row["payload_json"])
+    request = payload["request"]
+
+    assert request["sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]

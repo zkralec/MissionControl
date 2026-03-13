@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_deduped.v1 artifact",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_schema",
+    "pipeline_id",
+    "deduped_at",
+    "raw_count",
+    "normalized_count",
+    "deduped_count",
+    "duplicates_collapsed",
+    "jobs",
+    "duplicate_groups"
+  ],
+  "properties": {
+    "artifact_type": {"type": "string", "const": "jobs_deduped.v1"},
+    "artifact_schema": {"type": "string", "const": "jobs_deduped.v1"},
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "deduped_at": {"type": "string", "minLength": 1},
+    "request": {"type": "object"},
+    "raw_count": {"type": "integer", "minimum": 0},
+    "normalized_count": {"type": "integer", "minimum": 0},
+    "deduped_count": {"type": "integer", "minimum": 0},
+    "duplicates_collapsed": {"type": "integer", "minimum": 0},
+    "dedupe_strategy": {"type": "object"},
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "source", "duplicate_group_id", "duplicate_count"],
+        "properties": {
+          "title": {"type": "string"},
+          "company": {"type": ["string", "null"]},
+          "location": {"type": ["string", "null"]},
+          "remote_type": {"type": ["string", "null"]},
+          "salary_min": {"type": ["number", "integer", "null"]},
+          "salary_max": {"type": ["number", "integer", "null"]},
+          "salary_text": {"type": ["string", "null"]},
+          "source": {"type": "string"},
+          "source_url": {"type": ["string", "null"]},
+          "description_snippet": {"type": ["string", "null"]},
+          "posted_at": {"type": ["string", "null"]},
+          "experience_level": {"type": ["string", "null"]},
+          "duplicate_group_id": {"type": "string"},
+          "duplicate_count": {"type": "integer", "minimum": 1},
+          "duplicate_sources": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "duplicate_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_id", "member_count", "collapsed_count"],
+        "properties": {
+          "group_id": {"type": "string"},
+          "match_method": {"type": "string"},
+          "canonical_key": {"type": "string"},
+          "representative_id": {"type": ["string", "null"]},
+          "member_ids": {"type": "array", "items": {"type": "string"}},
+          "member_sources": {"type": "array", "items": {"type": "string"}},
+          "member_count": {"type": "integer", "minimum": 1},
+          "collapsed_count": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": true
+      }
+    },
+    "ambiguous_duplicate_cases": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "upstream": {"type": "object"}
+  },
+  "additionalProperties": true
+}

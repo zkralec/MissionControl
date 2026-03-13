@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "deals_scan_v1 payload",
+  "type": "object",
+  "properties": {
+    "source": {"type": "string", "description": "Optional source label for metadata."},
+    "collectors_enabled": {
+      "type": "boolean",
+      "description": "Enable scraping collectors (bestbuy/newegg/microcenter). Defaults to true."
+    },
+    "deals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {"type": "string"},
+          "title": {"type": "string"},
+          "name": {"type": "string"},
+          "url": {"type": "string"},
+          "link": {"type": "string"},
+          "price": {"type": ["number", "integer", "string", "null"]},
+          "old_price": {"type": ["number", "integer", "string", "null"]},
+          "discount_pct": {"type": ["number", "integer", "string", "null"]},
+          "score": {"type": ["number", "integer", "string", "null"]},
+          "sku": {"type": ["string", "null"]},
+          "in_stock": {"type": ["boolean", "string", "null"]},
+          "scraped_at": {"type": ["string", "null"]},
+          "raw": {"type": "object"},
+          "size_usd": {"type": ["number", "integer", "null"]},
+          "debt_ratio": {"type": ["number", "integer", "null"]},
+          "customer_churn": {"type": ["number", "integer", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "unicorn_gpu_5090_max_price": {
+      "type": ["number", "integer", "null"],
+      "description": "Optional per-task override for RTX 5090 GPU unicorn threshold."
+    },
+    "unicorn_pc_5090_max_price": {
+      "type": ["number", "integer", "null"],
+      "description": "Optional per-task override for RTX 5090 desktop/prebuilt unicorn threshold."
+    },
+    "deal_alert_cooldown_seconds": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Optional per-task cooldown override for repeated unicorn alerts."
+    },
+    "deal_alert_material_price_change_pct": {
+      "type": ["number", "integer", "null"],
+      "description": "Optional per-task material change percent override."
+    },
+    "deal_alert_material_price_change_abs_usd": {
+      "type": ["number", "integer", "null"],
+      "description": "Optional per-task material change absolute USD override."
+    }
+  },
+  "additionalProperties": true
+}

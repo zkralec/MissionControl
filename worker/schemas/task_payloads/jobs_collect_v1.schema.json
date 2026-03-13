@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "jobs_collect_v1 payload",
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "lineage": {
+      "type": "object",
+      "properties": {
+        "root_task_id": {"type": "string"},
+        "root_task_type": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string"},
+        "search_query": {"type": "string"},
+        "location": {"type": "string"},
+        "search_location": {"type": "string"},
+        "titles": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "excluded_keywords": {"type": "array", "items": {"type": "string"}},
+        "locations": {"type": "array", "items": {"type": "string"}},
+        "work_mode_preference": {
+          "oneOf": [
+            {"type": "string", "enum": ["remote", "hybrid", "onsite", "on-site"]},
+            {
+              "type": "array",
+              "items": {"type": "string", "enum": ["remote", "hybrid", "onsite", "on-site"]}
+            }
+          ]
+        },
+        "minimum_salary": {"type": ["number", "integer"]},
+        "experience_level": {"type": "string"},
+        "result_limit_per_source": {"type": "integer", "minimum": 1, "maximum": 100},
+        "sources": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["linkedin", "indeed", "glassdoor", "handshake", "manual"]}
+        },
+        "enabled_sources": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["linkedin", "indeed", "glassdoor", "handshake", "manual"]}
+        },
+        "collectors_enabled": {"type": "boolean"},
+        "max_jobs_per_source": {"type": "integer", "minimum": 1, "maximum": 100},
+        "max_jobs_per_board": {"type": "integer", "minimum": 1, "maximum": 100},
+        "manual_jobs": {
+          "type": "array",
+          "items": {"type": "object", "additionalProperties": true}
+        },
+        "board_url_overrides": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "profile_mode": {"type": "string", "enum": ["resume_profile", "inline_resume", "none"]},
+        "resume_text": {"type": "string"},
+        "resume_name": {"type": "string"},
+        "notify_on_empty": {"type": "boolean"},
+        "desired_title": {"type": "string"},
+        "desired_title_keywords": {"type": "array", "items": {"type": "string"}},
+        "excluded_title_keywords": {"type": "array", "items": {"type": "string"}},
+        "desired_salary_min": {"type": ["number", "integer"]},
+        "desired_salary_max": {"type": ["number", "integer"]},
+        "require_salary_data": {"type": "boolean"},
+        "experience_levels": {"type": "array", "items": {"type": "string"}},
+        "require_experience_match": {"type": "boolean"},
+        "clearance_required": {"oneOf": [{"type": "boolean"}, {"type": "string"}]},
+        "required_clearances": {"type": "array", "items": {"type": "string"}},
+        "require_clearance_match": {"type": "boolean"},
+        "work_modes": {"type": "array", "items": {"type": "string"}},
+        "require_work_mode_match": {"type": "boolean"},
+        "location_keywords": {"type": "array", "items": {"type": "string"}},
+        "shortlist_max_items": {"type": "integer", "minimum": 1, "maximum": 100},
+        "shortlist_count": {"type": "integer", "minimum": 1, "maximum": 100},
+        "shortlist_min_score": {"type": ["number", "integer"]},
+        "shortlist_per_source_cap": {"type": "integer", "minimum": 1, "maximum": 50},
+        "shortlist_diversity_mode": {"type": "string"},
+        "shortlist_freshness_preference": {"type": "string"},
+        "shortlist_freshness_weight_enabled": {"type": "boolean"},
+        "shortlist_freshness_max_bonus": {"type": ["number", "integer"]},
+        "freshness_preference": {"type": "string"},
+        "digest_format": {"type": "string"},
+        "notify_channels": {"type": "array", "items": {"type": "string"}},
+        "rank_llm_enabled": {"type": "boolean"},
+        "digest_llm_enabled": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

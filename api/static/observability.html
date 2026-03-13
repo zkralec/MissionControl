@@ -1,0 +1,1217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mission Control Observability</title>
+  <style>
+    :root {
+      --bg: #dce6f7;
+      --bg-deep: #cad8ef;
+      --ink: #172133;
+      --muted: #51617e;
+      --line: rgba(255, 255, 255, 0.52);
+      --glass: rgba(255, 255, 255, 0.36);
+      --glass-strong: rgba(255, 255, 255, 0.52);
+      --accent: #2a67ff;
+      --accent-soft: rgba(42, 103, 255, 0.14);
+      --warn: #b4232e;
+      --ok: #157d4f;
+      --run: #946a00;
+      --radius: 18px;
+      --shadow: 0 22px 44px rgba(11, 29, 61, 0.16);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(255, 255, 255, 0.9), transparent 32%),
+        radial-gradient(circle at 86% 22%, rgba(147, 185, 255, 0.7), transparent 30%),
+        radial-gradient(circle at 70% 88%, rgba(190, 214, 255, 0.72), transparent 40%),
+        linear-gradient(165deg, var(--bg), var(--bg-deep));
+      min-height: 100vh;
+    }
+
+    .page {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .header,
+    .card {
+      background: linear-gradient(160deg, var(--glass-strong), var(--glass));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px) saturate(135%);
+      -webkit-backdrop-filter: blur(16px) saturate(135%);
+    }
+
+    .header {
+      padding: 16px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      position: sticky;
+      top: 10px;
+      z-index: 20;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .view-tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 2px 2px 0;
+    }
+
+    .view-tab {
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 0.82rem;
+    }
+
+    .view-tab.active {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.56)),
+        rgba(42, 103, 255, 0.22);
+      border-color: rgba(42, 103, 255, 0.34);
+      box-shadow: 0 10px 18px rgba(45, 78, 156, 0.2);
+    }
+
+    .view-item[hidden] {
+      display: none !important;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(1.06rem, 1.5vw, 1.28rem);
+      color: #12284f;
+      font-weight: 680;
+    }
+
+    .subtitle {
+      margin: 4px 0 0;
+      color: #31486d;
+      font-size: 0.86rem;
+    }
+
+    .card {
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .card:hover {
+      box-shadow: 0 24px 46px rgba(11, 29, 61, 0.17);
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 0.98rem;
+      color: #1c3156;
+      font-weight: 670;
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      min-height: 34px;
+      flex-wrap: wrap;
+    }
+
+    .top-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 14px;
+      min-height: 0;
+      align-items: start;
+    }
+
+    .mid-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      min-height: 0;
+      align-items: start;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat {
+      background: rgba(255, 255, 255, 0.54);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 12px;
+      padding: 10px;
+      min-height: 74px;
+      display: grid;
+      align-content: center;
+    }
+
+    .k {
+      color: var(--muted);
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .v {
+      font-weight: 720;
+      margin-top: 3px;
+      color: #12284f;
+      line-height: 1.16;
+      font-size: 1rem;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 0.74rem;
+      margin-top: 2px;
+    }
+
+    .small-note {
+      color: var(--muted);
+      font-size: 0.78rem;
+      min-height: 1.1em;
+    }
+
+    #systemMeta,
+    #aiMeta,
+    #plannerMeta {
+      margin-top: 12px;
+    }
+
+    .error {
+      display: none;
+      background: rgba(255, 236, 239, 0.92);
+      color: var(--warn);
+      border: 1px solid rgba(219, 78, 89, 0.35);
+      border-radius: 14px;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      font-size: 0.82rem;
+    }
+
+    button {
+      border: 1px solid rgba(255, 255, 255, 0.56);
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.48)),
+        var(--accent-soft);
+      color: #133365;
+      padding: 8px 12px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 640;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+      box-shadow: 0 8px 16px rgba(70, 110, 195, 0.14);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 20px rgba(45, 78, 156, 0.18);
+    }
+
+    button:active {
+      transform: translateY(1px) scale(0.99);
+      box-shadow: 0 6px 12px rgba(45, 78, 156, 0.18);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.44)),
+        rgba(109, 147, 236, 0.24);
+    }
+
+    button:focus-visible {
+      outline: 2px solid rgba(42, 103, 255, 0.35);
+      outline-offset: 2px;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid rgba(255, 255, 255, 0.66);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.48);
+      max-height: 420px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 760px;
+      font-size: 0.78rem;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+      padding: 8px 9px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    tbody tr:hover td {
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: rgba(241, 247, 255, 0.92);
+      color: #28456f;
+      z-index: 1;
+      font-weight: 640;
+    }
+
+    .feed {
+      display: grid;
+      gap: 8px;
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .heartbeat-feed {
+      max-height: 260px;
+    }
+
+    .event-item {
+      background: rgba(255, 255, 255, 0.54);
+      border: 1px solid rgba(255, 255, 255, 0.62);
+      border-radius: 12px;
+      padding: 9px 10px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .event-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .event-meta {
+      color: var(--muted);
+      font-size: 0.73rem;
+    }
+
+    .badge {
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 0.71rem;
+      border: 1px solid rgba(255, 255, 255, 0.7);
+      background: rgba(255, 255, 255, 0.58);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      min-width: 88px;
+      text-align: center;
+      display: inline-block;
+    }
+
+    .status-succeeded,
+    .status-success {
+      color: var(--ok);
+      background: rgba(225, 248, 237, 0.85);
+      border-color: rgba(21, 125, 79, 0.28);
+    }
+
+    .status-failed,
+    .status-failed_permanent,
+    .status-blocked_budget {
+      color: var(--warn);
+      background: rgba(255, 234, 238, 0.9);
+      border-color: rgba(180, 35, 46, 0.28);
+    }
+
+    .status-running,
+    .status-pending,
+    .status-queued {
+      color: var(--run);
+      background: rgba(255, 246, 225, 0.9);
+      border-color: rgba(148, 106, 0, 0.25);
+    }
+
+    .status-error,
+    .status-warning {
+      color: var(--warn);
+      background: rgba(255, 234, 238, 0.9);
+      border-color: rgba(180, 35, 46, 0.28);
+    }
+
+    .status-info {
+      color: #21508f;
+      background: rgba(233, 243, 255, 0.88);
+      border-color: rgba(45, 90, 165, 0.22);
+    }
+
+    .status-alive {
+      color: var(--ok);
+      background: rgba(225, 248, 237, 0.85);
+      border-color: rgba(21, 125, 79, 0.28);
+    }
+
+    .status-stale,
+    .status-degraded {
+      color: var(--warn);
+      background: rgba(255, 234, 238, 0.9);
+      border-color: rgba(180, 35, 46, 0.28);
+    }
+
+    .mono {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      word-break: break-word;
+    }
+
+    .truncate {
+      max-width: 320px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .last-refresh {
+      color: #36527d;
+      font-size: 0.78rem;
+      min-width: 180px;
+      text-align: right;
+    }
+
+    @media (max-width: 1100px) {
+      .bottom-grid { grid-template-columns: 1fr; }
+      .mid-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 760px) {
+      .top-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: 1fr; }
+      .page { padding: 14px; }
+      .card { padding: 12px; }
+      .last-refresh { text-align: left; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <div>
+        <h1 class="title">Mission Control Observability</h1>
+        <p class="subtitle">Read-only dashboard for system health, AI usage, planner activity, task runs, and agent events.</p>
+      </div>
+      <div class="header-actions">
+        <div id="lastRefreshLabel" class="last-refresh">Last refresh: -</div>
+        <button id="backToConsoleBtn" type="button">Back to Console</button>
+        <button id="refreshBtn" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <div id="errorBox" class="error"></div>
+
+    <nav id="observabilityViewTabs" class="view-tabs" aria-label="Observability Views">
+      <button type="button" class="view-tab active" data-view="overview">Overview</button>
+      <button type="button" class="view-tab" data-view="activity">Task Activity</button>
+      <button type="button" class="view-tab" data-view="agents">Agents & Planner</button>
+    </nav>
+
+    <section class="top-grid view-item" data-view="overview">
+      <article class="card">
+        <div class="card-head">
+          <h2>System Status</h2>
+          <span id="healthBadge" class="badge">unknown</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="k">CPU</div>
+            <div id="cpuVal" class="v">-</div>
+            <div class="sub">latest snapshot</div>
+          </div>
+          <div class="stat">
+            <div class="k">Memory</div>
+            <div id="memVal" class="v">-</div>
+            <div class="sub">latest snapshot</div>
+          </div>
+          <div class="stat">
+            <div class="k">Disk</div>
+            <div id="diskVal" class="v">-</div>
+            <div class="sub">latest snapshot</div>
+          </div>
+        </div>
+        <div id="systemMeta" class="small-note">No system metrics yet.</div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>AI Usage Today</h2>
+          <span id="aiReqBadge" class="badge">0 req</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="k">Requests</div>
+            <div id="aiReqVal" class="v">0</div>
+            <div class="sub">today UTC</div>
+          </div>
+          <div class="stat">
+            <div class="k">Total Tokens</div>
+            <div id="aiTokVal" class="v">0</div>
+            <div class="sub">input + output</div>
+          </div>
+          <div class="stat">
+            <div class="k">Cost USD</div>
+            <div id="aiCostVal" class="v">0.000000</div>
+            <div class="sub">estimated</div>
+          </div>
+        </div>
+        <div id="aiMeta" class="small-note">No AI usage rows for today.</div>
+      </article>
+    </section>
+
+    <section class="mid-grid view-item" data-view="agents">
+      <article class="card">
+        <div class="card-head">
+          <h2>Agent Heartbeats</h2>
+          <span id="heartbeatBadge" class="badge">0 stale</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="k">Tracked Agents</div>
+            <div id="hbTrackedVal" class="v">0</div>
+            <div class="sub">recent rows</div>
+          </div>
+          <div class="stat">
+            <div class="k">Stale Agents</div>
+            <div id="hbStaleVal" class="v">0</div>
+            <div class="sub">threshold-based</div>
+          </div>
+          <div class="stat">
+            <div class="k">Threshold</div>
+            <div id="hbThresholdVal" class="v">180s</div>
+            <div class="sub">stale cutoff</div>
+          </div>
+        </div>
+        <div id="heartbeatsFeed" class="feed heartbeat-feed">
+          <div class="muted">No heartbeats found.</div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>Autonomous Planner</h2>
+          <span id="plannerBadge" class="badge status-info">unknown</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="k">Mode</div>
+            <div id="plannerModeVal" class="v">-</div>
+            <div class="sub">recommended vs execute</div>
+          </div>
+          <div class="stat">
+            <div class="k">Cycles (24h)</div>
+            <div id="plannerCyclesVal" class="v">0</div>
+            <div class="sub">planner runs</div>
+          </div>
+          <div class="stat">
+            <div class="k">Executed (24h)</div>
+            <div id="plannerExecVal" class="v">0</div>
+            <div class="sub">actions actually run</div>
+          </div>
+        </div>
+        <div id="plannerMeta" class="small-note">Planner status unavailable.</div>
+        <div id="plannerFeed" class="feed">
+          <div class="muted">No planner events found.</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="bottom-grid view-item" data-view="activity">
+      <article class="card">
+        <div class="card-head">
+          <h2>Recent Task Runs</h2>
+          <span id="taskCount" class="small-note"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Created</th>
+                <th>Task</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Worker</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="taskRunsBody">
+              <tr><td colspan="6" class="muted">No task runs found.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>Agent Activity / Recent Events</h2>
+          <span id="eventCount" class="small-note"></span>
+        </div>
+        <div id="eventsFeed" class="feed">
+          <div class="muted">No events found.</div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const state = {
+      refreshTimer: null,
+      taskRunLimit: 50,
+      eventLimit: 100,
+      heartbeatLimit: 100,
+      staleHeartbeatSeconds: 180,
+      requestTimeoutMs: 8000,
+      activeView: "overview",
+    };
+
+    function safe(v) {
+      return v == null ? "" : String(v);
+    }
+
+    function formatInt(v) {
+      if (v == null || v === "") return "0";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "0";
+      return Math.round(n).toLocaleString();
+    }
+
+    function formatPct(v) {
+      if (v == null || v === "") return "-";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toFixed(1) + "%";
+    }
+
+    function formatCost(v) {
+      if (v == null || v === "") return "0.000000";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "0.000000";
+      return n.toFixed(6);
+    }
+
+    function formatDuration(ms) {
+      if (ms == null || ms === "") return "-";
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n < 0) return "-";
+      if (n < 1000) return n.toFixed(0) + " ms";
+      return (n / 1000).toFixed(2) + " s";
+    }
+
+    function statusClass(status) {
+      const normalized = safe(status).toLowerCase().replace(/[^a-z0-9_]+/g, "_");
+      return "status-" + normalized;
+    }
+
+    function showError(message) {
+      const node = $("errorBox");
+      node.style.display = "block";
+      node.textContent = safe(message);
+    }
+
+    function clearError() {
+      const node = $("errorBox");
+      node.style.display = "none";
+      node.textContent = "";
+    }
+
+    async function apiGet(path, timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(path, { signal: controller.signal });
+        const raw = await res.text();
+        let body = null;
+        if (raw) {
+          try {
+            body = JSON.parse(raw);
+          } catch (_e) {
+            body = raw;
+          }
+        }
+        if (!res.ok) {
+          throw new Error(path + " failed (" + res.status + "): " + (typeof body === "string" ? body : JSON.stringify(body)));
+        }
+        return body;
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          throw new Error(path + " timed out after " + timeoutMs + "ms");
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function apiGetAny(paths, timeoutMs) {
+      let lastErr = null;
+      for (const path of paths) {
+        try {
+          return await apiGet(path, timeoutMs);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      throw (lastErr || new Error("all endpoint attempts failed"));
+    }
+
+    function rejectedMessage(result) {
+      if (!result || result.status !== "rejected") return "";
+      const reason = result.reason;
+      if (!reason) return "unknown error";
+      return reason.message ? reason.message : String(reason);
+    }
+
+    function setObservabilityView(view) {
+      const allowed = new Set(["overview", "activity", "agents"]);
+      const resolved = allowed.has(view) ? view : "overview";
+      state.activeView = resolved;
+
+      const buttons = document.querySelectorAll("#observabilityViewTabs .view-tab");
+      buttons.forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.view === resolved);
+      });
+
+      const sections = document.querySelectorAll(".view-item");
+      sections.forEach((section) => {
+        section.hidden = section.dataset.view !== resolved;
+      });
+    }
+
+    function normalizeTaskRuns(payload) {
+      if (payload && Array.isArray(payload.items)) return payload;
+      if (!Array.isArray(payload)) return { count: 0, items: [] };
+      const items = payload.map((row) => ({
+        id: row.id,
+        task_name: row.task_name || row.task_id || "(unknown)",
+        status: row.status,
+        duration_ms: row.duration_ms != null ? row.duration_ms : row.wall_time_ms,
+        worker_name: row.worker_name || row.model || null,
+        error_text: row.error_text || row.error || null,
+        created_at: row.created_at || row.started_at || row.ended_at || "",
+      }));
+      return { count: items.length, items: items };
+    }
+
+    function normalizeEvents(payload) {
+      if (payload && Array.isArray(payload.items)) return payload;
+      if (!Array.isArray(payload)) return { count: 0, items: [] };
+      return { count: payload.length, items: payload };
+    }
+
+    function normalizeAiUsage(payload, summary) {
+      if (payload && Array.isArray(payload.items)) return payload;
+      const items = Array.isArray(payload) ? payload : [];
+      let resolvedSummary = summary || null;
+      if (!resolvedSummary) {
+        let totalTokens = 0;
+        let totalCost = 0;
+        let hasTokens = false;
+        let hasCost = false;
+        for (const row of items) {
+          const rowTokens = Number(row && row.total_tokens);
+          if (Number.isFinite(rowTokens)) {
+            totalTokens += rowTokens;
+            hasTokens = true;
+          }
+          const rowCost = Number(row && row.cost_usd);
+          if (Number.isFinite(rowCost)) {
+            totalCost += rowCost;
+            hasCost = true;
+          }
+        }
+        resolvedSummary = {
+          start: "derived from rows",
+          end: "derived from rows",
+          requests_total: items.length,
+          total_tokens_sum: hasTokens ? totalTokens : null,
+          cost_usd_total: hasCost ? totalCost : null,
+        };
+      }
+      return {
+        count: items.length,
+        items: items,
+        summary: resolvedSummary,
+      };
+    }
+
+    function normalizeHeartbeats(payload) {
+      if (payload && Array.isArray(payload.items)) return payload;
+      if (!Array.isArray(payload)) return { count: 0, items: [] };
+      return { count: payload.length, items: payload };
+    }
+
+    function normalizePlannerStatus(payload) {
+      if (!payload || typeof payload !== "object") {
+        return {
+          enabled: false,
+          mode: "unknown",
+          recent_summary_24h: { cycles: 0, executed_actions: 0, alerts: 0 },
+          recent_events: [],
+        };
+      }
+      const summary = payload.recent_summary_24h && typeof payload.recent_summary_24h === "object"
+        ? payload.recent_summary_24h
+        : { cycles: 0, executed_actions: 0, alerts: 0 };
+      const recentEvents = Array.isArray(payload.recent_events) ? payload.recent_events : [];
+      return {
+        enabled: Boolean(payload.enabled),
+        mode: safe(payload.mode || "unknown"),
+        execution_enabled: Boolean(payload.execution_enabled),
+        require_approval: Boolean(payload.require_approval),
+        approved: Boolean(payload.approved),
+        interval_sec: Number(payload.interval_sec || 0),
+        create_task_type: payload.create_task_type ? safe(payload.create_task_type) : null,
+        last_tick: payload.last_tick || null,
+        recent_summary_24h: summary,
+        recent_events: recentEvents,
+      };
+    }
+
+    function renderSystem(health, latestSystem) {
+      const badge = $("healthBadge");
+      const isHealthy = health && health.status === "ok";
+      badge.textContent = isHealthy ? "healthy" : "unhealthy";
+      badge.className = "badge " + (isHealthy ? "status-success" : "status-failed");
+
+      $("cpuVal").textContent = latestSystem ? formatPct(latestSystem.cpu_percent) : "-";
+      $("memVal").textContent = latestSystem ? formatPct(latestSystem.memory_percent) : "-";
+      $("diskVal").textContent = latestSystem ? formatPct(latestSystem.disk_percent) : "-";
+
+      if (!latestSystem) {
+        $("systemMeta").textContent = "No system metrics yet.";
+        return;
+      }
+
+      const load = Array.isArray(latestSystem.load_avg_json)
+        ? latestSystem.load_avg_json.map((n) => Number.isFinite(Number(n)) ? Number(n).toFixed(2) : "-").join(" / ")
+        : "-";
+
+      $("systemMeta").textContent = "captured: " + safe(latestSystem.created_at) + " | load avg: " + load;
+    }
+
+    function renderAiUsage(aiPayload) {
+      const summary = aiPayload && aiPayload.summary ? aiPayload.summary : null;
+      const requestCount = summary ? summary.requests_total : 0;
+      const tokenCount = summary ? summary.total_tokens_sum : 0;
+      const cost = summary ? summary.cost_usd_total : 0;
+
+      $("aiReqBadge").textContent = formatInt(requestCount) + " req";
+      $("aiReqBadge").className = "badge " + (Number(requestCount) > 0 ? "status-success" : "status-running");
+
+      $("aiReqVal").textContent = formatInt(requestCount);
+      $("aiTokVal").textContent = formatInt(tokenCount);
+      $("aiCostVal").textContent = formatCost(cost);
+
+      const rowCount = aiPayload && typeof aiPayload.count === "number" ? aiPayload.count : 0;
+      if (!summary) {
+        $("aiMeta").textContent = "No AI usage rows for today.";
+        return;
+      }
+      $("aiMeta").textContent =
+        "window: " + safe(summary.start) + " to " + safe(summary.end) + " | rows: " + formatInt(rowCount);
+    }
+
+    function renderTaskRuns(payload) {
+      const body = $("taskRunsBody");
+      const rows = payload && Array.isArray(payload.items) ? payload.items : [];
+      $("taskCount").textContent = formatInt(rows.length) + " runs";
+
+      body.innerHTML = "";
+      if (rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="6" class="muted">No task runs found.</td></tr>';
+        return;
+      }
+
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+
+        const created = document.createElement("td");
+        created.textContent = safe(row.created_at);
+        created.className = "mono";
+
+        const taskName = document.createElement("td");
+        taskName.textContent = safe(row.task_name);
+
+        const statusTd = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = "badge " + statusClass(row.status);
+        badge.textContent = safe(row.status || "unknown");
+        statusTd.appendChild(badge);
+
+        const duration = document.createElement("td");
+        duration.textContent = formatDuration(row.duration_ms);
+
+        const worker = document.createElement("td");
+        worker.textContent = safe(row.worker_name) || "-";
+
+        const error = document.createElement("td");
+        error.textContent = safe(row.error_text) || "-";
+        error.className = "truncate";
+        error.title = safe(row.error_text);
+
+        tr.appendChild(created);
+        tr.appendChild(taskName);
+        tr.appendChild(statusTd);
+        tr.appendChild(duration);
+        tr.appendChild(worker);
+        tr.appendChild(error);
+
+        body.appendChild(tr);
+      }
+    }
+
+    function renderEvents(payload) {
+      const feed = $("eventsFeed");
+      const rows = payload && Array.isArray(payload.items) ? payload.items : [];
+      $("eventCount").textContent = formatInt(rows.length) + " events";
+
+      feed.innerHTML = "";
+      if (rows.length === 0) {
+        feed.innerHTML = '<div class="muted">No events found.</div>';
+        return;
+      }
+
+      for (const row of rows) {
+        const item = document.createElement("article");
+        item.className = "event-item";
+
+        const top = document.createElement("div");
+        top.className = "event-top";
+
+        const left = document.createElement("div");
+        left.className = "event-meta mono";
+        left.textContent = safe(row.created_at);
+
+        const right = document.createElement("span");
+        right.className = "badge " + statusClass(row.level);
+        right.textContent = safe(row.level || "info");
+
+        top.appendChild(left);
+        top.appendChild(right);
+
+        const title = document.createElement("div");
+        const strong = document.createElement("strong");
+        strong.textContent = safe(row.event_type);
+        const sourceText = document.createTextNode(" · " + safe(row.source));
+        title.appendChild(strong);
+        title.appendChild(sourceText);
+
+        const msg = document.createElement("div");
+        msg.textContent = safe(row.message);
+
+        item.appendChild(top);
+        item.appendChild(title);
+        item.appendChild(msg);
+
+        feed.appendChild(item);
+      }
+    }
+
+    function renderHeartbeats(payload, stalePayload) {
+      const feed = $("heartbeatsFeed");
+      const rows = payload && Array.isArray(payload.items) ? payload.items : [];
+      const staleRows = stalePayload && Array.isArray(stalePayload.items) ? stalePayload.items : [];
+      const staleSet = new Set(staleRows.map((row) => safe(row.agent_name)));
+
+      $("hbTrackedVal").textContent = formatInt(rows.length);
+      $("hbStaleVal").textContent = formatInt(staleSet.size);
+      $("hbThresholdVal").textContent = safe(state.staleHeartbeatSeconds) + "s";
+
+      const badge = $("heartbeatBadge");
+      badge.textContent = formatInt(staleSet.size) + " stale";
+      badge.className = "badge " + (staleSet.size > 0 ? "status-stale" : "status-alive");
+
+      feed.innerHTML = "";
+      if (rows.length === 0) {
+        feed.innerHTML = '<div class="muted">No heartbeats found.</div>';
+        return;
+      }
+
+      for (const row of rows.slice(0, 20)) {
+        const agentName = safe(row.agent_name);
+        const isStale = staleSet.has(agentName);
+        const status = isStale ? "stale" : (safe(row.status) || "unknown");
+
+        const item = document.createElement("article");
+        item.className = "event-item";
+
+        const top = document.createElement("div");
+        top.className = "event-top";
+
+        const left = document.createElement("div");
+        left.className = "event-meta mono";
+        left.textContent = agentName;
+
+        const right = document.createElement("span");
+        right.className = "badge " + statusClass(status);
+        right.textContent = status;
+
+        top.appendChild(left);
+        top.appendChild(right);
+
+        const seen = document.createElement("div");
+        seen.textContent = "last seen: " + safe(row.last_seen_at);
+        seen.className = "mono";
+
+        item.appendChild(top);
+        item.appendChild(seen);
+        feed.appendChild(item);
+      }
+    }
+
+    function renderPlanner(planner) {
+      const badge = $("plannerBadge");
+      const enabled = Boolean(planner && planner.enabled);
+      const mode = planner ? safe(planner.mode) : "unknown";
+      const summary = planner && planner.recent_summary_24h ? planner.recent_summary_24h : {};
+      const cycles = Number(summary.cycles || 0);
+      const executed = Number(summary.executed_actions || 0);
+      const alerts = Number(summary.alerts || 0);
+
+      if (!enabled) {
+        badge.textContent = "disabled";
+        badge.className = "badge status-running";
+      } else if (mode === "execute") {
+        badge.textContent = alerts > 0 ? "execute + alerts" : "execute";
+        badge.className = "badge " + (alerts > 0 ? "status-warning" : "status-success");
+      } else {
+        badge.textContent = alerts > 0 ? "recommend + alerts" : "recommendation";
+        badge.className = "badge " + (alerts > 0 ? "status-warning" : "status-info");
+      }
+
+      $("plannerModeVal").textContent = enabled ? mode : "disabled";
+      $("plannerCyclesVal").textContent = formatInt(cycles);
+      $("plannerExecVal").textContent = formatInt(executed);
+
+      const intervalSec = Number(planner && planner.interval_sec ? planner.interval_sec : 0);
+      const createTaskType = planner && planner.create_task_type ? planner.create_task_type : "(not configured)";
+      const approval = planner && planner.require_approval
+        ? (planner.approved ? "approved" : "awaiting approval")
+        : "not required";
+      const lastTick = planner && planner.last_tick && planner.last_tick.created_at
+        ? planner.last_tick.created_at
+        : "none";
+      $("plannerMeta").textContent =
+        "interval: " + formatInt(intervalSec) + "s | create_task_type: " + safe(createTaskType) +
+        " | approval: " + approval + " | last tick: " + safe(lastTick);
+
+      const feed = $("plannerFeed");
+      const rows = planner && Array.isArray(planner.recent_events) ? planner.recent_events : [];
+      feed.innerHTML = "";
+      if (rows.length === 0) {
+        feed.innerHTML = '<div class="muted">No planner events found.</div>';
+        return;
+      }
+      for (const row of rows.slice(0, 8)) {
+        const item = document.createElement("article");
+        item.className = "event-item";
+
+        const top = document.createElement("div");
+        top.className = "event-top";
+        const ts = document.createElement("div");
+        ts.className = "event-meta mono";
+        ts.textContent = safe(row.created_at);
+        const level = document.createElement("span");
+        level.className = "badge " + statusClass(row.level || "info");
+        level.textContent = safe(row.level || "INFO");
+        top.appendChild(ts);
+        top.appendChild(level);
+
+        const title = document.createElement("div");
+        const strong = document.createElement("strong");
+        strong.textContent = safe(row.event_type);
+        title.appendChild(strong);
+
+        const metadata = row.metadata_json && typeof row.metadata_json === "object" ? row.metadata_json : {};
+        const details = document.createElement("div");
+        const modeText = metadata.mode ? "mode=" + safe(metadata.mode) : "";
+        const decisionsText = metadata.decision_counts ? " decisions=" + safe(JSON.stringify(metadata.decision_counts)) : "";
+        const executedText = metadata.executed_count != null ? " executed=" + formatInt(metadata.executed_count) : "";
+        details.textContent = (modeText + decisionsText + executedText).trim() || safe(row.message);
+        details.className = "mono";
+
+        item.appendChild(top);
+        item.appendChild(title);
+        item.appendChild(details);
+        feed.appendChild(item);
+      }
+    }
+
+    async function loadDashboard() {
+      clearError();
+      $("refreshBtn").disabled = true;
+      $("lastRefreshLabel").textContent = "Refreshing...";
+      try {
+        const [healthRes, systemRes, aiRes, runsRes, eventsRes, heartbeatsRes, staleRes, plannerRes] = await Promise.allSettled([
+          apiGetAny(["/health"], state.requestTimeoutMs),
+          apiGetAny(["/api/system/latest", "/telemetry/system-metrics/latest"], state.requestTimeoutMs),
+          (async function () {
+            const payload = await apiGetAny(
+              ["/api/ai-usage/today?limit=100", "/telemetry/ai-usage/today?limit=100"],
+              state.requestTimeoutMs
+            );
+            let summary = null;
+            try {
+              summary = await apiGetAny(
+                ["/api/ai-usage/summary", "/telemetry/ai-usage/summary"],
+                state.requestTimeoutMs
+              );
+            } catch (_err) {
+              summary = null;
+            }
+            return normalizeAiUsage(payload, summary);
+          })(),
+          (async function () {
+            const payload = await apiGetAny(
+              [
+                "/api/task-runs?limit=" + encodeURIComponent(state.taskRunLimit),
+                "/runs?limit=" + encodeURIComponent(state.taskRunLimit),
+              ],
+              state.requestTimeoutMs
+            );
+            return normalizeTaskRuns(payload);
+          })(),
+          (async function () {
+            const payload = await apiGetAny(
+              [
+                "/api/events?limit=" + encodeURIComponent(state.eventLimit),
+                "/telemetry/events?limit=" + encodeURIComponent(state.eventLimit),
+              ],
+              state.requestTimeoutMs
+            );
+            return normalizeEvents(payload);
+          })(),
+          (async function () {
+            const payload = await apiGetAny(
+              [
+                "/api/heartbeats?limit=" + encodeURIComponent(state.heartbeatLimit),
+                "/telemetry/heartbeats?limit=" + encodeURIComponent(state.heartbeatLimit),
+              ],
+              state.requestTimeoutMs
+            );
+            return normalizeHeartbeats(payload);
+          })(),
+          (async function () {
+            const payload = await apiGetAny(
+              [
+                "/api/heartbeats/stale?stale_after_seconds=" + encodeURIComponent(state.staleHeartbeatSeconds) + "&limit=" + encodeURIComponent(state.heartbeatLimit),
+                "/telemetry/heartbeats/stale?stale_after_seconds=" + encodeURIComponent(state.staleHeartbeatSeconds) + "&limit=" + encodeURIComponent(state.heartbeatLimit),
+              ],
+              state.requestTimeoutMs
+            );
+            return normalizeHeartbeats(payload);
+          })(),
+          (async function () {
+            const payload = await apiGetAny(
+              [
+                "/api/planner/status?event_limit=300",
+                "/telemetry/planner/status?event_limit=300",
+              ],
+              state.requestTimeoutMs
+            );
+            return normalizePlannerStatus(payload);
+          })(),
+        ]);
+
+        const health = healthRes.status === "fulfilled" ? healthRes.value : { status: "unhealthy" };
+        const system = systemRes.status === "fulfilled" ? systemRes.value : null;
+        const aiToday = aiRes.status === "fulfilled" ? aiRes.value : { count: 0, summary: null, items: [] };
+        const taskRuns = runsRes.status === "fulfilled" ? runsRes.value : { count: 0, items: [] };
+        const events = eventsRes.status === "fulfilled" ? eventsRes.value : { count: 0, items: [] };
+        const heartbeats = heartbeatsRes.status === "fulfilled" ? heartbeatsRes.value : { count: 0, items: [] };
+        const stale = staleRes.status === "fulfilled" ? staleRes.value : { count: 0, items: [] };
+        const planner = plannerRes.status === "fulfilled"
+          ? plannerRes.value
+          : normalizePlannerStatus(null);
+
+        renderSystem(health, system);
+        renderAiUsage(aiToday);
+        renderTaskRuns(taskRuns);
+        renderEvents(events);
+        renderHeartbeats(heartbeats, stale);
+        renderPlanner(planner);
+
+        const errors = [
+          rejectedMessage(healthRes),
+          rejectedMessage(systemRes),
+          rejectedMessage(aiRes),
+          rejectedMessage(runsRes),
+          rejectedMessage(eventsRes),
+          rejectedMessage(heartbeatsRes),
+          rejectedMessage(staleRes),
+          rejectedMessage(plannerRes),
+        ].filter(Boolean);
+        if (errors.length > 0) {
+          showError(errors.join("\n"));
+        }
+        $("lastRefreshLabel").textContent = "Last refresh: " + new Date().toLocaleTimeString();
+      } catch (err) {
+        showError(err && err.message ? err.message : String(err));
+        $("lastRefreshLabel").textContent = "Last refresh failed";
+      } finally {
+        $("refreshBtn").disabled = false;
+      }
+    }
+
+    $("refreshBtn").addEventListener("click", loadDashboard);
+    $("backToConsoleBtn").addEventListener("click", () => {
+      if (window.location.pathname === "/") {
+        window.location.href = window.location.protocol + "//" + window.location.hostname + ":8000/";
+        return;
+      }
+      window.location.href = "/";
+    });
+    document.querySelectorAll("#observabilityViewTabs .view-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setObservabilityView(btn.dataset.view || "overview");
+      });
+    });
+
+    (async function init() {
+      setObservabilityView("overview");
+      await loadDashboard();
+      state.refreshTimer = setInterval(loadDashboard, 15000);
+    })();
+  </script>
+</body>
+</html>
