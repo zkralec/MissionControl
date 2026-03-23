@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from jsonschema import Draft7Validator
 
@@ -32,6 +35,24 @@ DEFAULT_LLM_RETRY_COST_CAP_USD = Decimal("0.00150000")
 STRICT_LLM_RETRY_COST_CAP_USD = Decimal("0.00400000")
 MAX_LLM_RETRY_COST_CAP_USD = Decimal("0.10000000")
 _DIGEST_OUTPUT_VALIDATOR = Draft7Validator(DIGEST_OUTPUT_SCHEMA)
+_UNKNOWN_COMPANY_CANONICAL = {
+    "unknown",
+    "unknown company",
+    "unknown employer",
+    "unknown organization",
+    "not provided",
+    "not listed",
+    "n a",
+    "na",
+    "none",
+    "undisclosed",
+}
+_SOURCE_LABELS = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "glassdoor": "Glassdoor",
+    "handshake": "Handshake",
+}
 
 
 def _llm_runtime_enabled() -> bool:
@@ -100,6 +121,12 @@ def _compact_text(value: Any, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
+def _canonical_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9\s]+", " ", text)
+    return " ".join(text.split())
+
+
 def _as_int_or_none(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
@@ -138,6 +165,226 @@ def _salary_text(job: dict[str, Any]) -> str:
     if high:
         return f"Up to {high}"
     return "Not listed"
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _clean_company(value: Any) -> str:
+    text = _compact_text(value, 120)
+    if not text:
+        return ""
+    if _canonical_text(text) in _UNKNOWN_COMPANY_CANONICAL:
+        return ""
+    return text
+
+
+def _clean_location(value: Any) -> str:
+    text = _compact_text(value, 120)
+    if not text or _canonical_text(text) in {"not listed", "unknown", "unspecified"}:
+        return ""
+    return text
+
+
+def _source_label(value: Any) -> str:
+    text = _compact_text(value, 80)
+    if not text:
+        return ""
+    return _SOURCE_LABELS.get(text.lower(), text[:1].upper() + text[1:])
+
+
+def _source_url_kind(value: Any) -> str:
+    url = _compact_text(value, 260)
+    if not url or not url.startswith(("http://", "https://")):
+        return "missing"
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    query_keys = {key.lower() for key in parse_qs(parsed.query).keys()}
+    if any(key in query_keys for key in {"q", "query", "keywords", "sc.keyword"}):
+        return "search"
+    if "search" in path and not any(token in path for token in ("view", "listing")):
+        return "search"
+    if any(token in path for token in ("/jobs/view", "/viewjob", "joblisting", "/stu/jobs/")):
+        return "direct"
+    if path and path not in {"/", "/jobs"}:
+        return "direct"
+    return "unknown"
+
+
+def _preferred_job_link(job: dict[str, Any]) -> str:
+    candidates = [
+        _compact_text(job.get("source_url"), 260),
+        _compact_text(job.get("url"), 260),
+    ]
+    for candidate in candidates:
+        if candidate and _source_url_kind(candidate) == "direct":
+            return candidate
+    for candidate in candidates:
+        if candidate and candidate.startswith(("http://", "https://")):
+            return candidate
+    return ""
+
+
+def _posted_display(job: dict[str, Any], *, now_utc: datetime | None = None) -> str:
+    raw = _compact_text(job.get("posted_at_raw"), 48)
+    parsed = _parse_datetime(job.get("posted_at"))
+    if parsed is None:
+        if not raw:
+            return ""
+        low = raw.lower()
+        return raw if low.startswith("posted ") else f"Posted {raw}"
+
+    now = now_utc or datetime.now(timezone.utc)
+    delta_days = max((now - parsed).total_seconds() / 86400.0, 0.0)
+    if delta_days < 1.0:
+        return "Posted today"
+    if delta_days < 14.5:
+        return f"Posted {int(round(delta_days))}d ago"
+    fmt = "%b %d"
+    if parsed.year != now.year:
+        fmt = "%b %d, %Y"
+    return f"Posted {parsed.strftime(fmt)}"
+
+
+def _metadata_quality_score(job: dict[str, Any]) -> float:
+    try:
+        return max(0.0, min(float(job.get("metadata_quality_score") or 0.0), 100.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_weak_for_showcase(job: dict[str, Any]) -> bool:
+    return (
+        _metadata_quality_score(job) < 40.0
+        and not _clean_company(job.get("company"))
+        and not _preferred_job_link(job)
+        and not _posted_display(job)
+    )
+
+
+def _showcase_jobs(jobs: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    strong = [row for row in jobs if not _is_weak_for_showcase(row)]
+    selected = strong[:limit] if strong else jobs[:limit]
+    return selected
+
+
+def _job_heading(job: dict[str, Any]) -> str:
+    title = _compact_text(job.get("title") or "Unknown role", 120) or "Unknown role"
+    company = _clean_company(job.get("company"))
+    if company:
+        return f"{title} at {company}"
+    return title
+
+
+def _job_reason(job: dict[str, Any]) -> str:
+    return _compact_text(job.get("why_it_fits") or "Matches core title and profile preferences.", 180) or (
+        "Matches core title and profile preferences."
+    )
+
+
+def _job_tradeoff(job: dict[str, Any]) -> str:
+    tradeoff = _compact_text(job.get("tradeoffs"), 180)
+    if tradeoff:
+        return tradeoff
+    gaps: list[str] = []
+    if not _clean_company(job.get("company")):
+        gaps.append("Company not listed.")
+    if not _clean_location(job.get("location")):
+        gaps.append("Location details are limited.")
+    if not _preferred_job_link(job):
+        gaps.append("Direct application link is limited.")
+    if not _posted_display(job):
+        gaps.append("Posted date is unavailable.")
+    return " ".join(gaps) or "Needs deeper role-level validation before applying."
+
+
+def _build_notification_excerpt(report: dict[str, Any], pipeline_counts: dict[str, int | None]) -> str:
+    summary = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
+    jobs = report.get("jobs") if isinstance(report.get("jobs"), list) else []
+    headline = _compact_text(summary.get("summary_text"), 220) or "Jobs digest generated."
+    shortlisted_count = pipeline_counts.get("shortlisted_count") or len(jobs)
+    collected_count = pipeline_counts.get("collected_count")
+    deduped_count = pipeline_counts.get("deduped_count")
+
+    if collected_count is not None and deduped_count is not None:
+        count_line = f"Shortlisted {shortlisted_count} from {collected_count} collected / {deduped_count} deduped."
+    elif deduped_count is not None:
+        count_line = f"Shortlisted {shortlisted_count} from {deduped_count} deduped."
+    else:
+        count_line = f"Shortlisted {shortlisted_count} jobs."
+
+    showcase = _showcase_jobs(jobs, limit=3)
+    if not showcase:
+        return _compact_text(f"{headline} {count_line}", 500)
+    top_line = "; ".join(_job_heading(row) for row in showcase)
+    return _compact_text(f"{headline} {count_line} Top picks: {top_line}.", 500)
+
+
+def _truncate_multiline(lines: list[str], max_chars: int) -> str:
+    filtered = [line.rstrip() for line in lines if isinstance(line, str) and line.strip()]
+    text = "\n".join(filtered).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _finalize_digest_job(row: dict[str, Any], source: dict[str, Any], *, rank: int) -> dict[str, Any]:
+    merged = dict(source)
+    merged.update(row)
+    merged["job_id"] = str(merged.get("job_id") or source.get("job_id") or f"digest-job-{rank:04d}").strip()
+    merged["rank"] = rank
+    merged["title"] = _compact_text(merged.get("title") or source.get("title") or "Unknown role", 120) or "Unknown role"
+    merged["company"] = _clean_company(merged.get("company") or source.get("company"))
+    merged["location"] = _clean_location(merged.get("location") or source.get("location"))
+    merged["salary"] = _compact_text(merged.get("salary") or source.get("salary_text") or _salary_text(source), 120) or "Not listed"
+    merged["source"] = _source_label(merged.get("source") or source.get("source"))
+    merged["source_url"] = _preferred_job_link(merged)
+    merged["posted_display"] = _posted_display(merged)
+    merged["why_it_fits"] = _job_reason(merged)
+    merged["tradeoffs"] = _job_tradeoff(merged)
+    return merged
+
+
+def _finalize_digest_report(
+    *,
+    report: dict[str, Any],
+    expected_jobs: list[dict[str, Any]],
+    pipeline_counts: dict[str, int | None],
+) -> dict[str, Any]:
+    expected_by_id = {
+        str(row.get("job_id") or ""): row
+        for row in expected_jobs
+        if isinstance(row, dict) and str(row.get("job_id") or "").strip()
+    }
+    raw_jobs = report.get("jobs") if isinstance(report.get("jobs"), list) else []
+    finalized_jobs: list[dict[str, Any]] = []
+    for idx, row in enumerate(raw_jobs, start=1):
+        if not isinstance(row, dict):
+            continue
+        job_id = str(row.get("job_id") or "").strip()
+        source = expected_by_id.get(job_id, {})
+        finalized_jobs.append(_finalize_digest_job(row, source, rank=idx))
+
+    summary = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
+    finalized = dict(report)
+    finalized["executive_summary"] = dict(summary)
+    finalized["jobs"] = finalized_jobs
+    finalized["notification_excerpt"] = _build_notification_excerpt(finalized, pipeline_counts)
+    return finalized
 
 
 def _normalize_top_jobs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -277,36 +524,21 @@ def _build_fallback_digest(
 ) -> dict[str, Any]:
     jobs: list[dict[str, Any]] = []
     for idx, row in enumerate(top_jobs, start=1):
-        why = _compact_text(
-            row.get("explanation_summary")
-            or row.get("fit_reason")
-            or "Matches core title and profile preferences.",
-            180,
-        )
-        if not why:
-            why = "Matches core title and profile preferences."
-
-        tradeoffs = []
-        if _salary_text(row) == "Not listed":
-            tradeoffs.append("Salary not listed.")
-        if str(row.get("source") or "").strip().lower() in {"unknown", ""}:
-            tradeoffs.append("Source quality signal is limited.")
-        if str(row.get("location") or "").strip() == "":
-            tradeoffs.append("Location details are limited.")
-        tradeoff_text = _compact_text(" ".join(tradeoffs) or "Needs deeper role-level validation before applying.", 180)
-
         jobs.append(
             {
                 "job_id": str(row.get("job_id") or f"digest-job-{idx:04d}"),
                 "rank": idx,
-                "title": str(row.get("title") or "Unknown role"),
-                "company": str(row.get("company") or "Unknown company"),
-                "location": str(row.get("location") or "Not listed"),
+                "title": row.get("title"),
+                "company": row.get("company"),
+                "location": row.get("location"),
                 "salary": _salary_text(row),
-                "source": str(row.get("source") or "unknown"),
-                "source_url": str(row.get("source_url") or row.get("url") or ""),
-                "why_it_fits": why,
-                "tradeoffs": tradeoff_text or "Needs deeper role-level validation before applying.",
+                "source": row.get("source"),
+                "source_url": row.get("source_url") or row.get("url") or "",
+                "posted_at": row.get("posted_at"),
+                "posted_at_raw": row.get("posted_at_raw"),
+                "why_it_fits": row.get("explanation_summary") or row.get("fit_reason"),
+                "tradeoffs": "",
+                "metadata_quality_score": row.get("metadata_quality_score"),
             }
         )
 
@@ -323,12 +555,7 @@ def _build_fallback_digest(
     else:
         summary_text = f"Shortlisted {shortlist_count} strongest matches from available ranked jobs."
 
-    excerpt = summary_text
-    if jobs:
-        top_line = "; ".join(f"{row['rank']}) {row['title']} @ {row['company']}" for row in jobs[:3])
-        excerpt = _compact_text(f"{summary_text} Top picks: {top_line}.", 500)
-
-    return {
+    report = {
         "executive_summary": {
             "collected_count": collected,
             "deduped_count": deduped,
@@ -338,8 +565,9 @@ def _build_fallback_digest(
             "best_fit_roles": _best_fit_roles(top_jobs),
         },
         "jobs": jobs,
-        "notification_excerpt": excerpt,
+        "notification_excerpt": "",
     }
+    return _finalize_digest_report(report=report, expected_jobs=top_jobs, pipeline_counts=pipeline_counts)
 
 
 def _extract_json(text: Any) -> dict[str, Any]:
@@ -417,13 +645,16 @@ def _parse_llm_digest(
             "job_id": job_id,
             "rank": _as_int_or_none(row.get("rank")) or (_as_int_or_none(source.get("rank")) or 0),
             "title": _compact_text(row.get("title") or source.get("title") or "Unknown role", 120),
-            "company": _compact_text(row.get("company") or source.get("company") or "Unknown company", 120),
-            "location": _compact_text(row.get("location") or source.get("location") or "Not listed", 120),
+            "company": _compact_text(row.get("company") or source.get("company") or "", 120),
+            "location": _compact_text(row.get("location") or source.get("location") or "", 120),
             "salary": _compact_text(row.get("salary") or source.get("salary_text") or _salary_text(source), 120),
-            "source": _compact_text(row.get("source") or source.get("source") or "unknown", 80),
+            "source": _compact_text(row.get("source") or source.get("source") or "", 80),
             "source_url": _compact_text(row.get("source_url") or source.get("source_url") or source.get("url") or "", 260),
+            "posted_at": source.get("posted_at"),
+            "posted_at_raw": source.get("posted_at_raw"),
             "why_it_fits": _compact_text(row.get("why_it_fits"), 180),
             "tradeoffs": _compact_text(row.get("tradeoffs"), 180),
+            "metadata_quality_score": source.get("metadata_quality_score"),
         }
 
         if not parsed_rows[job_id]["why_it_fits"]:
@@ -473,11 +704,7 @@ def _parse_llm_digest(
     if not best_fit_roles:
         best_fit_roles = _best_fit_roles(expected_jobs)
 
-    excerpt = _compact_text(payload.get("notification_excerpt"), 500)
-    if not excerpt:
-        excerpt = _compact_text(summary_text, 500)
-
-    return {
+    report = {
         "executive_summary": {
             "collected_count": pipeline_counts.get("collected_count"),
             "deduped_count": pipeline_counts.get("deduped_count"),
@@ -487,8 +714,9 @@ def _parse_llm_digest(
             "best_fit_roles": best_fit_roles,
         },
         "jobs": ordered,
-        "notification_excerpt": excerpt,
+        "notification_excerpt": _compact_text(payload.get("notification_excerpt"), 500),
     }
+    return _finalize_digest_report(report=report, expected_jobs=expected_jobs, pipeline_counts=pipeline_counts)
 
 
 def _llm_generate_digest(
@@ -644,16 +872,23 @@ def _render_markdown(report: dict[str, Any]) -> str:
 
     for row in jobs:
         rank = int(row.get("rank") or 0)
-        title = str(row.get("title") or "Unknown role")
-        company = str(row.get("company") or "Unknown company")
-        source = str(row.get("source") or "unknown")
-        source_url = str(row.get("source_url") or "").strip()
-        lines.append(f"### {rank}. {title} - {company}")
-        lines.append(f"- Location: {row.get('location') or 'Not listed'}")
-        lines.append(f"- Salary: {row.get('salary') or 'Not listed'}")
-        lines.append(f"- Source: {source}" + (f" ({source_url})" if source_url else ""))
-        lines.append(f"- Why it fits: {row.get('why_it_fits') or 'Not provided.'}")
-        lines.append(f"- Tradeoffs: {row.get('tradeoffs') or 'Not provided.'}")
+        heading = _job_heading(row)
+        source = _source_label(row.get("source")) or "Unknown source"
+        source_url = _preferred_job_link(row)
+        location = _clean_location(row.get("location"))
+        posted = _posted_display(row)
+        salary = _compact_text(row.get("salary") or "Not listed", 120) or "Not listed"
+        lines.append(f"### {rank}. {heading}")
+        lines.append(f"- Source: {source}")
+        if source_url:
+            lines.append(f"- Link: {source_url}")
+        if posted:
+            lines.append(f"- {posted}")
+        if location:
+            lines.append(f"- Location: {location}")
+        lines.append(f"- Salary: {salary}")
+        lines.append(f"- Why selected: {_job_reason(row)}")
+        lines.append(f"- Watchouts: {_job_tradeoff(row)}")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -714,28 +949,32 @@ def _build_discord_digest_message(
 
     if jobs:
         lines.append("Top roles:")
-        for row in jobs[:3]:
-            title = _compact_text(row.get("title") or "Unknown role", 70)
-            company = _compact_text(row.get("company") or "Unknown company", 50)
-            source = _compact_text(row.get("source") or "unknown", 24)
-            why = _compact_text(row.get("why_it_fits") or "", 80)
-            base = f"{row.get('rank')}. {title} @ {company} ({source})"
-            lines.append(base if not why else f"{base} - {why}")
+        for row in _showcase_jobs(jobs, limit=3):
+            heading = _compact_text(_job_heading(row), 90)
+            source = _source_label(row.get("source"))
+            posted = _posted_display(row)
+            reason = _compact_text(_job_reason(row), 100)
+            meta_parts = [part for part in (f"via {source}" if source else "", posted) if part]
+            line = f"{row.get('rank')}. {heading}"
+            if meta_parts:
+                line = f"{line} ({' · '.join(meta_parts)})"
+            lines.append(line)
+            if reason:
+                lines.append(f"Why: {reason}")
+            job_link = _preferred_job_link(row)
+            if job_link:
+                lines.append(f"Apply: <{job_link}>")
     else:
         lines.append("No shortlist items matched this run.")
 
     result_url = artifact_refs.get("result_url")
     result_path = artifact_refs.get("result_path")
-    task_id = artifact_refs.get("task_id")
-    run_id = artifact_refs.get("run_id")
-    ref_line = f"Ref: task={task_id} run={run_id}"
-    lines.append(ref_line)
     if isinstance(result_url, str) and result_url.strip():
-        lines.append(f"Result: {result_url}")
+        lines.append(f"Mission Control: {result_url}")
     elif isinstance(result_path, str) and result_path.strip():
-        lines.append(f"Result: {result_path}")
+        lines.append(f"Mission Control: {result_path}")
 
-    return _compact_text("\n".join(lines), 1800)
+    return _truncate_multiline(lines, 1800)
 
 
 def execute(task: Any, db: Any) -> dict[str, Any]:
@@ -947,10 +1186,13 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "jobs": [
                 {
                     "rank": row.get("rank"),
+                    "heading": _job_heading(row),
                     "title": row.get("title"),
                     "company": row.get("company"),
                     "source": row.get("source"),
-                    "source_url": row.get("source_url"),
+                    "source_url": _preferred_job_link(row),
+                    "posted": row.get("posted_display"),
+                    "why_it_fits": row.get("why_it_fits"),
                 }
                 for row in digest_report.get("jobs", [])[:3]
                 if isinstance(row, dict)
@@ -987,6 +1229,17 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
                 "digest_format": digest_format,
                 "generation_mode": generation_mode,
                 "artifact_references": artifact_refs,
+                "jobs_history_updates": [
+                    {
+                        "canonical_job_key": row.get("canonical_job_key"),
+                        "title": row.get("title"),
+                        "company": row.get("company"),
+                        "source": row.get("source"),
+                        "source_url": row.get("source_url"),
+                    }
+                    for row in top_jobs
+                    if isinstance(row, dict) and str(row.get("canonical_job_key") or "").strip()
+                ],
             },
         }
 

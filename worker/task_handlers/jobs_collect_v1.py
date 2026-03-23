@@ -29,6 +29,12 @@ MANUAL_SUPPORTED_FIELDS = {
     "max_pages_per_source": True,
     "max_jobs_per_source": True,
     "max_queries_per_title_location_pair": True,
+    "max_queries_per_run": True,
+    "enable_query_expansion": True,
+    "max_total_jobs": True,
+    "jobs_notification_cooldown_days": True,
+    "jobs_shortlist_repeat_penalty": True,
+    "resurface_seen_jobs": True,
     "early_stop_when_no_new_results": True,
     "enabled_sources": True,
     "input_mode": {
@@ -43,6 +49,12 @@ MANUAL_SUPPORTED_FIELDS = {
         "max_pages_per_source": "manual_input",
         "max_jobs_per_source": "manual_input",
         "max_queries_per_title_location_pair": "manual_input",
+        "max_queries_per_run": "manual_input",
+        "enable_query_expansion": "manual_input",
+        "max_total_jobs": "manual_input",
+        "jobs_notification_cooldown_days": "manual_input",
+        "jobs_shortlist_repeat_penalty": "manual_input",
+        "resurface_seen_jobs": "manual_input",
         "early_stop_when_no_new_results": "manual_input",
         "enabled_sources": "pipeline_routing",
     },
@@ -102,6 +114,12 @@ def _meta_count(meta: dict[str, Any], key: str, fallback: int = 0) -> int:
         return fallback
 
 
+def _rate(count: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round((float(count) / float(total)) * 100.0, 1)
+
+
 def _empty_metadata_summary() -> dict[str, int]:
     return {
         "job_count": 0,
@@ -109,6 +127,169 @@ def _empty_metadata_summary() -> dict[str, int]:
         "missing_posted_at": 0,
         "missing_source_url": 0,
         "missing_location": 0,
+    }
+
+
+def _compact_missing_summary(missing_rates: dict[str, float]) -> str:
+    labels = {
+        "missing_company_rate": "company",
+        "missing_posted_at_rate": "post date",
+        "missing_source_url_rate": "link",
+        "missing_location_rate": "location",
+    }
+    gaps = [
+        (label, float(missing_rates.get(key) or 0.0))
+        for key, label in labels.items()
+        if float(missing_rates.get(key) or 0.0) > 0.0
+    ]
+    gaps.sort(key=lambda item: item[1], reverse=True)
+    if not gaps:
+        return "metadata mostly complete"
+    return ", ".join(f"{label} {rate:.0f}%" for label, rate in gaps[:2])
+
+
+def _build_collection_observability(
+    *,
+    source_results: dict[str, dict[str, Any]],
+    source_metadata_quality: dict[str, dict[str, int]],
+    discovered_raw_count: int,
+    kept_after_basic_filter_count: int,
+    dropped_by_basic_filter_count: int,
+    deduped_count: int,
+    raw_job_count: int,
+    successful_sources: list[str],
+    max_total_jobs: int,
+    truncated_by_run_limit_count: int,
+) -> dict[str, Any]:
+    by_source: dict[str, dict[str, Any]] = {}
+    breadth_candidates: list[tuple[str, int]] = []
+    weak_candidates: list[tuple[str, float]] = []
+    query_examples: list[str] = []
+    query_runs: list[dict[str, Any]] = []
+    total_queries_executed = 0
+    total_empty_queries = 0
+
+    for source_key, result in source_results.items():
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        jobs_count = int(result.get("jobs_count", 0) or 0)
+        discovered = _meta_count(meta, "discovered_raw_count", jobs_count)
+        kept = _meta_count(meta, "kept_after_basic_filter_count", jobs_count)
+        dropped = _meta_count(meta, "dropped_by_basic_filter_count", max(discovered - kept, 0))
+        deduped = _meta_count(meta, "deduped_count", max(kept - jobs_count, 0))
+        pages_fetched = _meta_count(meta, "pages_fetched", 0)
+        queries_attempted = meta.get("queries_attempted") if isinstance(meta.get("queries_attempted"), list) else []
+        queries_executed = _meta_count(meta, "queries_executed_count", len(queries_attempted))
+        empty_queries = _meta_count(meta, "empty_queries_count", 0)
+        metadata = source_metadata_quality.get(source_key) or _empty_metadata_summary()
+        job_count = max(_meta_count(metadata, "job_count", jobs_count), jobs_count)
+        missing_rates = {
+            "missing_company_rate": _rate(_meta_count(metadata, "missing_company", 0), job_count),
+            "missing_posted_at_rate": _rate(_meta_count(metadata, "missing_posted_at", 0), job_count),
+            "missing_source_url_rate": _rate(_meta_count(metadata, "missing_source_url", 0), job_count),
+            "missing_location_rate": _rate(_meta_count(metadata, "missing_location", 0), job_count),
+        }
+        highest_gap = max(missing_rates.values()) if missing_rates else 0.0
+        if result.get("status") in SUCCESSFUL_SOURCE_STATUSES:
+            breadth_candidates.append((source_key, discovered))
+            weak_candidates.append((source_key, highest_gap))
+
+        total_queries_executed += queries_executed
+        total_empty_queries += empty_queries
+        source_examples = meta.get("query_examples") if isinstance(meta.get("query_examples"), list) else []
+        for value in source_examples:
+            if not isinstance(value, str):
+                continue
+            trimmed = value.strip()
+            if trimmed and trimmed not in query_examples:
+                query_examples.append(trimmed)
+        search_attempts = meta.get("search_attempts") if isinstance(meta.get("search_attempts"), list) else []
+        for row in search_attempts:
+            if not isinstance(row, dict):
+                continue
+            query_runs.append(
+                {
+                    "source": source_key,
+                    "query": str(row.get("query") or "").strip(),
+                    "location": str(row.get("location") or "").strip(),
+                    "expansion_type": str(row.get("expansion_type") or "").strip() or None,
+                    "jobs_found": _meta_count(row, "jobs_found", 0),
+                    "new_unique_jobs": _meta_count(row, "new_unique_jobs", 0),
+                    "returned_count": _meta_count(row, "returned_count", 0),
+                    "stop_reason": str(row.get("stop_reason") or "").strip() or None,
+                }
+            )
+
+        by_source[source_key] = {
+            "status": result.get("status"),
+            "raw_jobs_discovered": discovered,
+            "kept_after_basic_filter": kept,
+            "jobs_dropped": dropped,
+            "deduped_in_collection": deduped,
+            "final_raw_jobs": jobs_count,
+            "pages_fetched": pages_fetched,
+            "jobs_found_per_source": discovered,
+            "queries_executed_count": queries_executed,
+            "queries_attempted_count": len([row for row in queries_attempted if isinstance(row, str) and row.strip()]),
+            "empty_queries_count": empty_queries,
+            "query_examples": source_examples[:3],
+            "missing_counts": {
+                "company": _meta_count(metadata, "missing_company", 0),
+                "posted_at": _meta_count(metadata, "missing_posted_at", 0),
+                "source_url": _meta_count(metadata, "missing_source_url", 0),
+                "location": _meta_count(metadata, "missing_location", 0),
+            },
+            "missing_rates": missing_rates,
+            "weakness_summary": _compact_missing_summary(missing_rates),
+        }
+
+    strongest_source = max(breadth_candidates, key=lambda item: item[1])[0] if breadth_candidates else None
+    weakest_source = min(breadth_candidates, key=lambda item: item[1])[0] if breadth_candidates else None
+    weakest_metadata_entry = max(weak_candidates, key=lambda item: item[1]) if weak_candidates else None
+    weakest_metadata_source = (
+        weakest_metadata_entry[0]
+        if weakest_metadata_entry and float(weakest_metadata_entry[1]) > 0.0
+        else None
+    )
+
+    searched_enough = (
+        f"{discovered_raw_count} raw discovered across {len(successful_sources)} live sources"
+        f" from {total_queries_executed} executed queries."
+        + (f" Strongest {strongest_source}." if strongest_source else "")
+        + (f" Weakest {weakest_source}." if weakest_source and weakest_source != strongest_source else "")
+    )
+    collapse_reason = (
+        f"{dropped_by_basic_filter_count} dropped in basic filtering and {deduped_count} deduped before returning {raw_job_count} raw jobs."
+    )
+    if truncated_by_run_limit_count > 0:
+        collapse_reason += f" Run cap truncated another {truncated_by_run_limit_count} jobs at the artifact level."
+    metadata_gap = (
+        f"Weakest metadata source: {weakest_metadata_source}."
+        if weakest_metadata_source
+        else "No source-level metadata gaps were detected."
+    )
+
+    return {
+        "waterfall": {
+            "raw_jobs_discovered": discovered_raw_count,
+            "kept_after_basic_filter": kept_after_basic_filter_count,
+            "jobs_dropped": dropped_by_basic_filter_count,
+            "deduped_in_collection": deduped_count,
+            "final_raw_jobs": raw_job_count,
+        },
+        "query_summary": {
+            "queries_executed": total_queries_executed,
+            "empty_queries_count": total_empty_queries,
+            "max_total_jobs": max_total_jobs,
+            "query_examples": query_examples[:10],
+            "query_runs": query_runs,
+        },
+        "by_source": by_source,
+        "operator_questions": {
+            "searched_enough": searched_enough,
+            "which_source_is_weak": metadata_gap,
+            "why_raw_count_collapsed": collapse_reason,
+            "are_we_missing_metadata": metadata_gap,
+        },
     }
 
 
@@ -126,16 +307,33 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     supported_fields_by_source: dict[str, dict[str, Any]] = {}
 
     sources = list(request.get("sources") or [])
+    max_total_jobs = max(1, int(request.get("max_total_jobs") or len(sources) or 1))
     board_url_overrides = request.get("board_url_overrides") if isinstance(request.get("board_url_overrides"), dict) else {}
     collectors_enabled = bool(request.get("collectors_enabled", True))
+    truncated_by_run_limit_count = 0
 
     for source in sources:
         source_key = str(source).strip().lower()
         if not source_key:
             continue
 
+        remaining_total_jobs = max_total_jobs - len(raw_jobs)
+        if remaining_total_jobs <= 0:
+            source_results[source_key] = {
+                "status": "skipped",
+                "jobs_count": 0,
+                "warnings": [],
+                "errors": [],
+                "error": None,
+                "meta": {"reason": "max_total_jobs_reached", "remaining_total_jobs": 0},
+            }
+            continue
+
         if source_key == "manual":
             manual_jobs = _normalize_manual_jobs(request)
+            if len(manual_jobs) > remaining_total_jobs:
+                truncated_by_run_limit_count += len(manual_jobs) - remaining_total_jobs
+                manual_jobs = manual_jobs[:remaining_total_jobs]
             raw_jobs.extend(manual_jobs)
             source_results[source_key] = {
                 "status": "success",
@@ -150,6 +348,12 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
                     "dropped_by_basic_filter_count": 0,
                     "deduped_count": 0,
                     "returned_count": len(manual_jobs),
+                    "jobs_found_per_source": len(manual_jobs),
+                    "queries_executed_count": 0,
+                    "empty_queries_count": 0,
+                    "query_examples": [],
+                    "search_attempts": [],
+                    "truncated_by_run_limit_count": truncated_by_run_limit_count,
                 },
             }
             supported_fields_by_source[source_key] = dict(MANUAL_SUPPORTED_FIELDS)
@@ -181,8 +385,13 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
 
         try:
             collector = _load_collector_module(source_key)
+            source_request = dict(request)
+            per_source_limit = min(int(source_request.get("result_limit_per_source") or remaining_total_jobs), remaining_total_jobs)
+            source_request["result_limit_per_source"] = per_source_limit
+            source_request["max_jobs_per_source"] = per_source_limit
+            source_request["max_jobs_per_board"] = per_source_limit
             collector_result = collector.collect_jobs(
-                request,
+                source_request,
                 url_override=(str(board_url_overrides.get(source_key) or "").strip() or None),
             )
 
@@ -191,7 +400,21 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             source_errors_raw = collector_result.get("errors") if isinstance(collector_result.get("errors"), list) else []
             source_warnings = [_prefix_source_message(source_key, str(row)) for row in source_warnings_raw if str(row).strip()]
             source_errors = [_prefix_source_message(source_key, str(row)) for row in source_errors_raw if str(row).strip()]
-            source_meta = collector_result.get("meta") if isinstance(collector_result.get("meta"), dict) else {}
+            source_meta = dict(collector_result.get("meta") if isinstance(collector_result.get("meta"), dict) else {})
+            source_truncated_by_run_limit = 0
+
+            if len(collected) > remaining_total_jobs:
+                source_truncated_by_run_limit = len(collected) - remaining_total_jobs
+                truncated_by_run_limit_count += source_truncated_by_run_limit
+                collected = collected[:remaining_total_jobs]
+                source_warnings.append(
+                    _prefix_source_message(source_key, f"truncated_to_run_limit:{remaining_total_jobs}")
+                )
+            source_meta["truncated_by_run_limit_count"] = max(
+                _meta_count(source_meta, "truncated_by_run_limit_count", 0),
+                source_truncated_by_run_limit,
+            )
+            source_meta["jobs_found_per_source"] = _meta_count(source_meta, "jobs_found_per_source", len(collected))
 
             status_raw = str(collector_result.get("status") or "").strip().lower()
             if status_raw not in {"success", "partial_success", "failed"}:
@@ -253,6 +476,9 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     deduped_count = 0
     pages_fetched = 0
     queries_attempted: list[str] = []
+    queries_executed_count = 0
+    empty_queries_count = 0
+    query_examples: list[str] = []
     metadata_completeness_summary = _empty_metadata_summary()
     source_metadata_quality: dict[str, dict[str, int]] = {}
     for source_key, result in source_results.items():
@@ -263,10 +489,16 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         dropped_by_basic_filter_count += _meta_count(meta, "dropped_by_basic_filter_count", 0)
         deduped_count += _meta_count(meta, "deduped_count", 0)
         pages_fetched += _meta_count(meta, "pages_fetched", 0)
+        queries_executed_count += _meta_count(meta, "queries_executed_count", 0)
+        empty_queries_count += _meta_count(meta, "empty_queries_count", 0)
         if isinstance(meta.get("queries_attempted"), list):
             for value in meta.get("queries_attempted") or []:
                 if isinstance(value, str) and value.strip() and value.strip() not in queries_attempted:
                     queries_attempted.append(value.strip())
+        if isinstance(meta.get("query_examples"), list):
+            for value in meta.get("query_examples") or []:
+                if isinstance(value, str) and value.strip() and value.strip() not in query_examples:
+                    query_examples.append(value.strip())
         source_summary = meta.get("metadata_completeness_summary") if isinstance(meta.get("metadata_completeness_summary"), dict) else None
         if source_summary:
             normalized_summary = {
@@ -279,6 +511,19 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             source_metadata_quality[source_key] = normalized_summary
             for key, value in normalized_summary.items():
                 metadata_completeness_summary[key] += value
+
+    collection_observability = _build_collection_observability(
+        source_results=source_results,
+        source_metadata_quality=source_metadata_quality,
+        discovered_raw_count=discovered_raw_count,
+        kept_after_basic_filter_count=kept_after_basic_filter_count,
+        dropped_by_basic_filter_count=dropped_by_basic_filter_count,
+        deduped_count=deduped_count,
+        raw_job_count=len(raw_jobs),
+        successful_sources=successful_sources,
+        max_total_jobs=max_total_jobs,
+        truncated_by_run_limit_count=truncated_by_run_limit_count,
+    )
 
     artifact = {
         "artifact_type": "jobs.collect.v1",
@@ -305,9 +550,13 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "kept_after_basic_filter_count": kept_after_basic_filter_count,
             "dropped_by_basic_filter_count": dropped_by_basic_filter_count,
             "deduped_count": deduped_count,
+            "queries_executed_count": queries_executed_count,
+            "empty_queries_count": empty_queries_count,
+            "truncated_by_run_limit_count": truncated_by_run_limit_count,
         },
         "source_metadata_quality": source_metadata_quality,
         "metadata_completeness_summary": metadata_completeness_summary,
+        "collection_observability": collection_observability,
         "collection_summary": {
             "requested_sources": sources,
             "collectors_enabled": collectors_enabled,
@@ -322,6 +571,11 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "deduped_count": deduped_count,
             "pages_fetched": pages_fetched,
             "queries_attempted": queries_attempted,
+            "queries_executed_count": queries_executed_count,
+            "empty_queries_count": empty_queries_count,
+            "query_examples": query_examples[:10],
+            "max_total_jobs": max_total_jobs,
+            "truncated_by_run_limit_count": truncated_by_run_limit_count,
             "missing_company": metadata_completeness_summary["missing_company"],
             "missing_posted_at": metadata_completeness_summary["missing_posted_at"],
             "missing_source_url": metadata_completeness_summary["missing_source_url"],

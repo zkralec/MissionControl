@@ -25,6 +25,18 @@ def test_jobs_normalize_v1_enriches_and_dedupes_cross_source(monkeypatch) -> Non
         "fetch_upstream_result_content_json",
         lambda db, upstream: {
             "artifact_type": "jobs.collect.v1",
+            "collection_summary": {
+                "discovered_raw_count": 3,
+                "kept_after_basic_filter_count": 3,
+                "dropped_by_basic_filter_count": 0,
+            },
+            "collection_observability": {
+                "by_source": {
+                    "linkedin": {"raw_jobs_discovered": 1, "kept_after_basic_filter": 1, "jobs_dropped": 0},
+                    "indeed": {"raw_jobs_discovered": 1, "kept_after_basic_filter": 1, "jobs_dropped": 0},
+                    "glassdoor": {"raw_jobs_discovered": 1, "kept_after_basic_filter": 1, "jobs_dropped": 0},
+                }
+            },
             "raw_jobs": [
                 {
                     "source": "linkedin",
@@ -85,9 +97,72 @@ def test_jobs_normalize_v1_enriches_and_dedupes_cross_source(monkeypatch) -> Non
     acme = next(job for job in deduped_jobs if (job.get("company") or "").lower().startswith("acme"))
     assert acme["remote_type"] == "hybrid"
     assert acme["experience_level"] == "senior"
+    assert acme["seniority"] == "senior"
     assert acme["salary_min"] <= acme["salary_max"]
+    assert acme["source_url"].startswith("https://")
+    assert acme["source_url_kind"] == "direct"
+    assert acme["metadata_quality_score"] > 70
     assert sorted(acme["duplicate_sources"]) == ["indeed", "linkedin"]
+    observability = artifact["normalization_observability"]
+    assert observability["waterfall"]["raw_jobs_discovered"] == 3
+    assert observability["waterfall"]["normalized_count"] == 3
+    assert observability["waterfall"]["deduped_count"] == 2
+    assert observability["by_source"]["linkedin"]["deduped_unique_groups"] == 1
+    assert observability["by_source"]["indeed"]["dedupe_collapsed"] == 0
+    assert "3 raw discovered, 3 kept after filtering, 2 unique after normalization." in observability["operator_questions"]["searched_enough"]
     assert result["next_tasks"][0]["task_type"] == "jobs_rank_v1"
+
+
+def test_jobs_normalize_v1_applies_safe_enrichment_and_quality_flags(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs_normalize_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs.collect.v1",
+            "raw_jobs": [
+                {
+                    "source": "indeed",
+                    "source_url": "https://www.indeed.com/jobs?q=senior+software+engineer",
+                    "title": "SENIOR SOFTWARE ENGINEER",
+                    "company": "Unknown company",
+                    "location": "new york city",
+                    "description_snippet": "Remote senior role shipping backend systems.",
+                    "url": "https://www.indeed.com/viewjob?jk=123",
+                    "posted_at": "2 days ago",
+                    "scraped_at": "2026-03-20T10:30:00Z",
+                    "salary_text": "From $150k a year",
+                }
+            ],
+            "warnings": [],
+        },
+    )
+
+    payload = {
+        "pipeline_id": "pipe-norm-quality",
+        "upstream": {"task_id": "collect-task", "run_id": "collect-run", "task_type": "jobs_collect_v1"},
+        "request": {"query": "senior software engineer", "location": "United States"},
+    }
+    result = jobs_normalize_v1.execute(_task(payload), db=object())
+
+    job = result["content_json"]["normalized_jobs"][0]
+    assert job["title"] == "Senior Software Engineer"
+    assert job["company"] is None
+    assert job["location"] == "New York, NY"
+    assert job["remote_type"] == "remote"
+    assert job["work_mode"] == "remote"
+    assert job["experience_level"] == "senior"
+    assert job["seniority"] == "senior"
+    assert job["source_url"] == "https://www.indeed.com/viewjob?jk=123"
+    assert job["source_url_kind"] == "direct"
+    assert job["posted_at"] == "2026-03-18T10:30:00Z"
+    assert job["posted_at_raw"] == "2 days ago"
+    assert job["salary_min"] == 150000
+    assert job["salary_max"] is None
+    assert job["salary_text"] == "$150,000"
+    assert job["missing_company"] is True
+    assert job["missing_source_url"] is False
+    assert job["missing_posted_at"] is False
+    assert job["metadata_quality_score"] < 90
 
 
 def test_jobs_normalize_v1_reports_ambiguous_duplicate_cases(monkeypatch) -> None:
@@ -156,6 +231,49 @@ def test_jobs_normalize_v1_empty_raw_jobs_keeps_contract(monkeypatch) -> None:
     assert artifact["jobs_deduped_artifact"]["jobs"] == []
     assert artifact["normalized_jobs"] == []
     assert result["next_tasks"][0]["task_type"] == "jobs_rank_v1"
+
+
+def test_jobs_normalize_v1_same_run_duplicates_still_collapse_with_canonical_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs_normalize_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs.collect.v1",
+            "raw_jobs": [
+                {
+                    "source": "linkedin",
+                    "title": "Software Engineer",
+                    "company": "Acme",
+                    "location": "Remote",
+                    "url": "https://example.test/jobs/1",
+                },
+                {
+                    "source": "indeed",
+                    "title": "Software Engineer",
+                    "company": "Acme",
+                    "location": "Remote",
+                    "url": "https://example.test/jobs/2",
+                },
+            ],
+            "warnings": [],
+        },
+    )
+
+    result = jobs_normalize_v1.execute(
+        _task(
+            {
+                "pipeline_id": "pipe-norm-same-run-dup",
+                "upstream": {"task_id": "collect-task", "run_id": "collect-run", "task_type": "jobs_collect_v1"},
+                "request": {"query": "software engineer"},
+            }
+        ),
+        db=object(),
+    )
+
+    artifact = result["content_json"]
+    assert artifact["counts"]["deduped_count"] == 1
+    assert artifact["counts"]["duplicates_collapsed"] == 1
+    assert artifact["normalized_jobs"][0]["canonical_job_key"] == "job:acme|software engineer|remote"
 
 
 def test_jobs_normalize_v1_duplicate_heavy_fixture(monkeypatch, jobs_v2_samples) -> None:

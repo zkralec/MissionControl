@@ -739,8 +739,12 @@ def ensure_jobs_digest_template(
     experience_level: str | None = None,
     enabled_sources: list[str] | None = None,
     result_limit_per_source: int | None = None,
+    max_queries_per_run: int | None = None,
     shortlist_count: int | None = None,
     freshness_preference: str | None = None,
+    jobs_notification_cooldown_days: int | None = None,
+    jobs_shortlist_repeat_penalty: float | None = None,
+    resurface_seen_jobs: bool | None = None,
     desired_salary_min: float | None = None,
     desired_salary_max: float | None = None,
     experience_levels: list[str] | None = None,
@@ -841,11 +845,15 @@ def ensure_jobs_digest_template(
     if not safe_boards:
         safe_boards = ["linkedin", "indeed", "glassdoor", "handshake"]
 
-    max_jobs = max(1, min(int(result_limit_per_source or 25), 100))
+    max_jobs = max(1, min(int(result_limit_per_source or 250), 1000))
+    max_queries = max(1, min(int(max_queries_per_run or 12), 20))
     shortlist_size = max(1, min(int(shortlist_count or 10), 10))
     freshness = str(freshness_preference or "off").strip().lower().replace("-", "_").replace(" ", "_")
     if freshness not in allowed_freshness:
         freshness = "off"
+    cooldown_days = max(0, min(int(jobs_notification_cooldown_days or 3), 30))
+    repeat_penalty = max(0.0, min(float(jobs_shortlist_repeat_penalty or 4.0), 20.0))
+    resurface_seen = True if resurface_seen_jobs is None else bool(resurface_seen_jobs)
 
     salary_min = minimum_salary if minimum_salary is not None else desired_salary_min
     salary_max = desired_salary_max
@@ -860,6 +868,8 @@ def ensure_jobs_digest_template(
         "enabled_sources": safe_boards,
         "max_jobs_per_source": max_jobs,
         "result_limit_per_source": max_jobs,
+        "max_queries_per_run": max_queries,
+        "enable_query_expansion": True,
         "profile_mode": "resume_profile",
         "titles": title_list,
         "desired_title_keywords": title_list,
@@ -876,6 +886,9 @@ def ensure_jobs_digest_template(
         "shortlist_freshness_preference": freshness,
         "shortlist_freshness_weight_enabled": freshness in {"prefer_recent", "strong_prefer_recent"},
         "shortlist_freshness_max_bonus": 6.0 if freshness == "prefer_recent" else (12.0 if freshness == "strong_prefer_recent" else 0.0),
+        "jobs_notification_cooldown_days": cooldown_days,
+        "jobs_shortlist_repeat_penalty": repeat_penalty,
+        "resurface_seen_jobs": resurface_seen,
         "notify_on_empty": True,
         "payload_nonce": "{{uuid4}}",
     }

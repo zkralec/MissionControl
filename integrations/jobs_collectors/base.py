@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from integrations.job_boards_scrape import collect_jobs_from_board
+from integrations.jobs_collectors.query_expansion import (
+    DEFAULT_CONSECUTIVE_EMPTY_QUERIES_STOP,
+    DEFAULT_MAX_QUERIES_PER_RUN,
+    MAX_MAX_QUERIES_PER_RUN,
+    build_query_plan,
+)
 
 DEFAULT_QUERY = "software engineer"
 DEFAULT_LOCATION = "United States"
@@ -13,6 +19,7 @@ DEFAULT_MAX_PAGES_PER_SOURCE = 5
 MAX_MAX_PAGES_PER_SOURCE = 20
 DEFAULT_MAX_QUERIES_PER_TITLE_LOCATION_PAIR = 4
 MAX_MAX_QUERIES_PER_TITLE_LOCATION_PAIR = 10
+DEFAULT_ENABLE_QUERY_EXPANSION = True
 
 
 def _as_text_list(value: Any) -> list[str]:
@@ -68,7 +75,7 @@ def _as_bool(value: Any) -> bool | None:
 
 
 def _normalize_query(request: dict[str, Any]) -> str:
-    query = str(request.get("query") or request.get("search_query") or "").strip()
+    query = _explicit_query(request)
     titles = _as_text_list(request.get("titles"))
     keywords = _as_text_list(request.get("keywords"))
 
@@ -82,6 +89,10 @@ def _normalize_query(request: dict[str, Any]) -> str:
         parts.extend(keywords[:3])
     query = " ".join(parts).strip()
     return query or DEFAULT_QUERY
+
+
+def _explicit_query(request: dict[str, Any]) -> str:
+    return str(request.get("query") or request.get("search_query") or "").strip()
 
 
 def _normalize_locations(request: dict[str, Any]) -> list[str]:
@@ -124,6 +135,21 @@ def _normalize_max_queries(request: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_MAX_QUERIES_PER_TITLE_LOCATION_PAIR
     return max(1, min(value, MAX_MAX_QUERIES_PER_TITLE_LOCATION_PAIR))
+
+
+def _normalize_max_queries_per_run(request: dict[str, Any]) -> int:
+    try:
+        value = int(request.get("max_queries_per_run") or DEFAULT_MAX_QUERIES_PER_RUN)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_QUERIES_PER_RUN
+    return max(1, min(value, MAX_MAX_QUERIES_PER_RUN))
+
+
+def _normalize_enable_query_expansion(request: dict[str, Any]) -> bool:
+    parsed = _as_bool(request.get("enable_query_expansion"))
+    if parsed is None:
+        return DEFAULT_ENABLE_QUERY_EXPANSION
+    return parsed
 
 
 def _normalize_early_stop(request: dict[str, Any]) -> bool:
@@ -217,12 +243,26 @@ def _accumulate_metadata_summary(summary: dict[str, int], diagnostics: dict[str,
         summary[key] = int(summary.get(key, 0)) + int(bool(diagnostics.get(key)))
 
 
+def _company_frequency(jobs: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    for job in jobs:
+        company = str(job.get("company") or "").strip()
+        if not company:
+            continue
+        key = company.lower()
+        counts[key] = counts.get(key, 0) + 1
+        labels.setdefault(key, company)
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [{"company": labels[key], "count": count} for key, count in ordered[:limit]]
+
+
 def _title_seeds(request: dict[str, Any]) -> list[str]:
     titles = _dedupe_text_list(_as_text_list(request.get("titles")))
     desired_title = str(request.get("desired_title") or "").strip()
     if desired_title and desired_title.lower() not in {row.lower() for row in titles}:
         titles.insert(0, desired_title)
-    explicit_query = str(request.get("query") or request.get("search_query") or "").strip()
+    explicit_query = _explicit_query(request)
     if explicit_query and explicit_query.lower() not in {row.lower() for row in titles}:
         titles.insert(0, explicit_query)
     return titles or [_normalize_query(request)]
@@ -315,6 +355,12 @@ def supported_fields(board: str | None = None) -> dict[str, Any]:
         "max_pages_per_source": True,
         "max_jobs_per_source": True,
         "max_queries_per_title_location_pair": True,
+        "max_queries_per_run": True,
+        "enable_query_expansion": True,
+        "max_total_jobs": True,
+        "jobs_notification_cooldown_days": True,
+        "jobs_shortlist_repeat_penalty": True,
+        "resurface_seen_jobs": True,
         "early_stop_when_no_new_results": True,
         "enabled_sources": True,
         "input_mode": {
@@ -329,6 +375,12 @@ def supported_fields(board: str | None = None) -> dict[str, Any]:
             "max_pages_per_source": "pagination_limit",
             "max_jobs_per_source": "collector_limit",
             "max_queries_per_title_location_pair": "query_expansion_limit",
+            "max_queries_per_run": "run_level_query_cap",
+            "enable_query_expansion": "query_expansion_toggle",
+            "max_total_jobs": "pipeline_run_cap",
+            "jobs_notification_cooldown_days": "shortlist_history_policy",
+            "jobs_shortlist_repeat_penalty": "shortlist_history_policy",
+            "resurface_seen_jobs": "shortlist_history_policy",
             "early_stop_when_no_new_results": "pagination_stop_condition",
             "enabled_sources": "pipeline_routing",
         },
@@ -338,102 +390,210 @@ def supported_fields(board: str | None = None) -> dict[str, Any]:
 
 def collect_board_jobs(board: str, request: dict[str, Any], *, url_override: str | None = None) -> dict[str, Any]:
     query = _normalize_query(request)
+    explicit_query = _explicit_query(request)
     title_seeds = _title_seeds(request)
     locations = _normalize_locations(request)
     max_jobs = _normalize_result_limit(request)
     max_pages = _normalize_max_pages(request)
     max_queries = _normalize_max_queries(request)
+    max_queries_per_run = _normalize_max_queries_per_run(request)
+    enable_query_expansion = _normalize_enable_query_expansion(request)
     early_stop_when_no_new_results = _normalize_early_stop(request)
+    work_mode_preferences = _normalize_work_mode_preferences(request)
+    experience_preferences = sorted(_normalize_experience_preferences(request))
 
-    collected: list[dict[str, Any]] = []
-    seen_jobs: set[tuple[str, str, str]] = set()
+    query_plan = build_query_plan(
+        explicit_query=explicit_query,
+        title_seeds=title_seeds,
+        locations=locations,
+        keywords=_dedupe_text_list(
+            _as_text_list(request.get("keywords")) + _as_text_list(request.get("desired_title_keywords"))
+        ),
+        experience_levels=experience_preferences,
+        work_mode_preferences=work_mode_preferences,
+        max_queries_per_run=max_queries_per_run,
+        max_queries_per_title_location_pair=max_queries,
+        enable_query_expansion=enable_query_expansion,
+    )
+
+    raw_candidates: list[dict[str, Any]] = []
     warnings: list[str] = []
     errors: list[str] = []
     locations_attempted: list[str] = []
     queries_attempted: list[str] = []
     failed_locations: list[str] = []
     search_attempts: list[dict[str, Any]] = []
+    jobs_found_per_query: list[dict[str, Any]] = []
     discovered_raw_count = 0
     kept_after_basic_filter_count = 0
     dropped_by_basic_filter_count = 0
     deduped_count = 0
     pages_fetched = 0
     metadata_completeness_summary = _empty_metadata_summary()
+    empty_queries_count = 0
+    consecutive_empty_queries = 0
+    seen_candidate_keys: set[tuple[str, str, str]] = set()
 
-    for location in locations:
-        locations_attempted.append(location)
-        for title_seed in title_seeds:
-            if len(collected) >= max_jobs:
-                break
-            for query_variant in _query_variants(request, title_seed=title_seed, max_queries=max_queries):
-                if len(collected) >= max_jobs:
-                    break
-                remaining = max_jobs - len(collected)
-                queries_attempted.append(query_variant)
-                attempt_limit = min(max_jobs, max(remaining * 3, remaining + 25))
-                jobs, board_messages, board_meta = collect_jobs_from_board(
-                    board,
-                    query=query_variant,
-                    location=location,
-                    max_jobs=attempt_limit,
-                    max_pages=max_pages,
-                    early_stop_when_no_new_results=early_stop_when_no_new_results,
-                    url_override=url_override,
-                )
-                pages_fetched += int(board_meta.get("pages_fetched") or 0)
-                discovered_raw_count += int(board_meta.get("discovered_raw_count") or len(jobs))
+    for query_index, query_spec in enumerate(query_plan, start=1):
+        query_variant = str(query_spec.get("query") or "").strip()
+        location = str(query_spec.get("location") or "").strip() or (locations[0] if locations else DEFAULT_LOCATION)
+        title_seed = str(query_spec.get("title_seed") or "").strip() or (title_seeds[0] if title_seeds else query_variant)
+        expansion_type = str(query_spec.get("expansion_type") or "base_title").strip()
+        if not query_variant:
+            continue
 
-                board_warnings, board_errors = _split_warnings_and_errors(board, board_messages)
-                warnings.extend(board_warnings)
-                errors.extend(board_errors)
-                if board_errors and location not in failed_locations:
-                    failed_locations.append(location)
+        if location not in locations_attempted:
+            locations_attempted.append(location)
+        queries_attempted.append(query_variant)
 
-                kept_before = kept_after_basic_filter_count
-                dropped_before = dropped_by_basic_filter_count
-                deduped_before = deduped_count
-                collected_before = len(collected)
+        jobs, board_messages, board_meta = collect_jobs_from_board(
+            board,
+            query=query_variant,
+            location=location,
+            max_jobs=max_jobs,
+            max_pages=max_pages,
+            early_stop_when_no_new_results=early_stop_when_no_new_results,
+            url_override=url_override,
+        )
+        pages_fetched += int(board_meta.get("pages_fetched") or 0)
+        discovered_raw_count += int(board_meta.get("discovered_raw_count") or len(jobs))
 
-                for row in jobs:
-                    if not isinstance(row, dict):
-                        continue
-                    if not _job_matches_basic_filters(row, request):
-                        dropped_by_basic_filter_count += 1
-                        continue
+        board_warnings, board_errors = _split_warnings_and_errors(board, board_messages)
+        warnings.extend(board_warnings)
+        errors.extend(board_errors)
+        if board_errors and location not in failed_locations:
+            failed_locations.append(location)
 
-                    kept_after_basic_filter_count += 1
-                    normalized = _normalize_job(board, row, url_override=url_override)
-                    key = _job_key(normalized)
-                    if key in seen_jobs:
-                        deduped_count += 1
-                        continue
-                    seen_jobs.add(key)
-                    _accumulate_metadata_summary(
-                        metadata_completeness_summary,
-                        normalized.get("metadata_diagnostics") if isinstance(normalized.get("metadata_diagnostics"), dict) else {},
-                    )
-                    collected.append(normalized)
-                    if len(collected) >= max_jobs:
-                        break
+        new_unique_candidates = 0
+        for row in jobs:
+            if not isinstance(row, dict):
+                continue
+            normalized = _normalize_job(board, row, url_override=url_override)
+            source_metadata = dict(normalized.get("source_metadata") or {})
+            source_metadata.update(
+                {
+                    "query_text": query_variant,
+                    "query_index": query_index,
+                    "query_location": location,
+                    "query_title_seed": title_seed,
+                    "query_expansion_type": expansion_type,
+                }
+            )
+            normalized["source_metadata"] = source_metadata
+            normalized["query_context"] = {
+                "query": query_variant,
+                "query_index": query_index,
+                "location": location,
+                "title_seed": title_seed,
+                "expansion_type": expansion_type,
+            }
+            raw_candidates.append(normalized)
+            key = _job_key(normalized)
+            if key not in seen_candidate_keys:
+                seen_candidate_keys.add(key)
+                new_unique_candidates += 1
 
-                search_attempts.append(
-                    {
-                        "query": query_variant,
-                        "location": location,
-                        "title_seed": title_seed,
-                        "pages_fetched": int(board_meta.get("pages_fetched") or 0),
-                        "pages_with_results": int(board_meta.get("pages_with_results") or 0),
-                        "discovered_raw_count": int(board_meta.get("discovered_raw_count") or len(jobs)),
-                        "kept_after_basic_filter_count": kept_after_basic_filter_count - kept_before,
-                        "dropped_by_basic_filter_count": dropped_by_basic_filter_count - dropped_before,
-                        "deduped_count": deduped_count - deduped_before,
-                        "returned_count": len(collected) - collected_before,
-                        "stop_reason": str(board_meta.get("stop_reason") or ""),
-                    }
-                )
+        if new_unique_candidates <= 0:
+            empty_queries_count += 1
+            consecutive_empty_queries += 1
+        else:
+            consecutive_empty_queries = 0
 
-            if len(collected) >= max_jobs:
-                break
+        jobs_found_per_query.append(
+            {
+                "query": query_variant,
+                "location": location,
+                "title_seed": title_seed,
+                "expansion_type": expansion_type,
+                "query_index": query_index,
+                "jobs_found": len(jobs),
+                "new_unique_jobs": new_unique_candidates,
+            }
+        )
+        search_attempts.append(
+            {
+                "query": query_variant,
+                "location": location,
+                "title_seed": title_seed,
+                "expansion_type": expansion_type,
+                "query_index": query_index,
+                "pages_fetched": int(board_meta.get("pages_fetched") or 0),
+                "pages_with_results": int(board_meta.get("pages_with_results") or 0),
+                "discovered_raw_count": int(board_meta.get("discovered_raw_count") or len(jobs)),
+                "jobs_found": len(jobs),
+                "new_unique_jobs": new_unique_candidates,
+                "stop_reason": str(board_meta.get("stop_reason") or ""),
+            }
+        )
+
+        if consecutive_empty_queries >= DEFAULT_CONSECUTIVE_EMPTY_QUERIES_STOP:
+            break
+
+    filtered_candidates: list[dict[str, Any]] = []
+    for row in raw_candidates:
+        if not _job_matches_basic_filters(row, request):
+            dropped_by_basic_filter_count += 1
+            continue
+        kept_after_basic_filter_count += 1
+        filtered_candidates.append(row)
+
+    collected: list[dict[str, Any]] = []
+    seen_jobs: set[tuple[str, str, str]] = set()
+    for row in filtered_candidates:
+        key = _job_key(row)
+        if key in seen_jobs:
+            deduped_count += 1
+            continue
+        seen_jobs.add(key)
+        _accumulate_metadata_summary(
+            metadata_completeness_summary,
+            row.get("metadata_diagnostics") if isinstance(row.get("metadata_diagnostics"), dict) else {},
+        )
+        collected.append(row)
+
+    truncated_by_source_limit_count = 0
+    if len(collected) > max_jobs:
+        truncated_by_source_limit_count = len(collected) - max_jobs
+        collected = collected[:max_jobs]
+
+    search_attempts_by_query = {
+        f"{row.get('query_index')}:{row.get('query')}": row for row in search_attempts
+    }
+    for row in jobs_found_per_query:
+        key = f"{row.get('query_index')}:{row.get('query')}"
+        attempt = search_attempts_by_query.get(key)
+        if attempt is None:
+            continue
+        attempt["kept_after_basic_filter_count"] = 0
+        attempt["dropped_by_basic_filter_count"] = 0
+        attempt["deduped_count"] = 0
+        attempt["returned_count"] = 0
+
+    seen_jobs_by_query: set[tuple[str, str, str]] = set()
+    collected_by_query: dict[str, int] = {}
+    deduped_by_query: dict[str, int] = {}
+    dropped_by_query: dict[str, int] = {}
+    kept_by_query: dict[str, int] = {}
+    for row in raw_candidates:
+        query_context = row.get("query_context") if isinstance(row.get("query_context"), dict) else {}
+        key = f"{query_context.get('query_index')}:{query_context.get('query')}"
+        if not _job_matches_basic_filters(row, request):
+            dropped_by_query[key] = dropped_by_query.get(key, 0) + 1
+            continue
+        kept_by_query[key] = kept_by_query.get(key, 0) + 1
+        job_key = _job_key(row)
+        if job_key in seen_jobs_by_query:
+            deduped_by_query[key] = deduped_by_query.get(key, 0) + 1
+            continue
+        seen_jobs_by_query.add(job_key)
+        collected_by_query[key] = collected_by_query.get(key, 0) + 1
+
+    for row in search_attempts:
+        key = f"{row.get('query_index')}:{row.get('query')}"
+        row["kept_after_basic_filter_count"] = kept_by_query.get(key, 0)
+        row["dropped_by_basic_filter_count"] = dropped_by_query.get(key, 0)
+        row["deduped_count"] = deduped_by_query.get(key, 0)
+        row["returned_count"] = collected_by_query.get(key, 0)
 
     status = "success"
     if errors and collected:
@@ -450,9 +610,15 @@ def collect_board_jobs(board: str, request: dict[str, Any], *, url_override: str
             "query": query,
             "title_seeds": title_seeds,
             "query_variants_per_title_location_pair": max_queries,
+            "max_queries_per_run": max_queries_per_run,
+            "enable_query_expansion": enable_query_expansion,
             "locations": locations,
             "locations_attempted": locations_attempted,
             "queries_attempted": _dedupe_text_list(queries_attempted),
+            "query_plan": query_plan,
+            "queries_executed_count": len(search_attempts),
+            "empty_queries_count": empty_queries_count,
+            "consecutive_empty_queries_stop": DEFAULT_CONSECUTIVE_EMPTY_QUERIES_STOP,
             "failed_locations": failed_locations,
             "requested_limit": max_jobs,
             "max_pages_per_source": max_pages,
@@ -461,8 +627,13 @@ def collect_board_jobs(board: str, request: dict[str, Any], *, url_override: str
             "kept_after_basic_filter_count": kept_after_basic_filter_count,
             "dropped_by_basic_filter_count": dropped_by_basic_filter_count,
             "deduped_count": deduped_count,
+            "truncated_by_source_limit_count": truncated_by_source_limit_count,
             "returned_count": len(collected),
             "pages_fetched": pages_fetched,
+            "jobs_found_per_query": jobs_found_per_query,
+            "jobs_found_per_source": len(collected),
+            "query_examples": [row.get("query") for row in query_plan[:5] if isinstance(row.get("query"), str)],
+            "company_frequency": _company_frequency(collected),
             "search_attempts": search_attempts,
             "basic_filter_mode": "minimal_exclude_only",
             "metadata_completeness_summary": metadata_completeness_summary,

@@ -35,21 +35,35 @@ def test_collect_board_jobs_expands_queries_and_defers_strict_filtering(monkeypa
     ) -> tuple[list[dict], list[str], dict[str, object]]:
         del board, max_jobs, url_override
         calls.append((query, location, max_pages, early_stop_when_no_new_results))
-        if query == "Machine Learning Engineer":
+        if query == "Software Engineer remote":
             jobs = [
-                _job("Platform Engineer", "https://www.linkedin.com/jobs/view/1", description="distributed systems"),
-                _job("Machine Learning Engineer", "https://www.linkedin.com/jobs/view/2", description="python systems"),
+                _job("Software Engineer", "https://www.linkedin.com/jobs/view/1", description="distributed systems"),
+                _job("Software Engineer", "https://www.linkedin.com/jobs/view/2", description="python systems"),
+            ]
+        elif query == "Backend Software Engineer remote":
+            jobs = [
+                _job("Software Engineer", "https://www.linkedin.com/jobs/view/2", description="python systems"),
                 _job(
-                    "Contract Machine Learning Engineer",
+                    "Contract Software Engineer",
                     "https://www.linkedin.com/jobs/view/3",
                     description="contract role",
                 ),
             ]
-        elif query == "Machine Learning Engineer python":
+        elif query == "Backend Engineer remote":
             jobs = [
-                _job("Machine Learning Engineer", "https://www.linkedin.com/jobs/view/2", description="python systems"),
-                _job("Data Engineer", "https://www.linkedin.com/jobs/view/4", description="warehouse pipelines"),
-                _job("Backend Engineer", "https://www.linkedin.com/jobs/view/5", description="api services"),
+                _job("Backend Engineer", "https://www.linkedin.com/jobs/view/4", description="api services"),
+            ]
+        elif query == "Software Engineer New York":
+            jobs = [
+                _job("Software Engineer", "https://www.linkedin.com/jobs/view/5", location="New York, NY"),
+            ]
+        elif query == "Backend Software Engineer New York":
+            jobs = [
+                _job(
+                    "Backend Software Engineer",
+                    "https://www.linkedin.com/jobs/view/6",
+                    location="New York, NY",
+                ),
             ]
         else:
             jobs = []
@@ -65,39 +79,116 @@ def test_collect_board_jobs_expands_queries_and_defers_strict_filtering(monkeypa
     result = base.collect_board_jobs(
         "linkedin",
         {
-            "titles": ["Machine Learning Engineer"],
-            "keywords": ["python", "llm"],
+            "titles": ["Software Engineer"],
+            "keywords": ["backend"],
             "excluded_keywords": ["contract"],
-            "locations": ["Remote"],
-            "result_limit_per_source": 3,
+            "locations": ["Remote", "New York"],
+            "result_limit_per_source": 10,
             "max_pages_per_source": 4,
-            "max_queries_per_title_location_pair": 2,
+            "max_queries_per_title_location_pair": 3,
+            "max_queries_per_run": 5,
             "early_stop_when_no_new_results": False,
         },
     )
 
     assert result["status"] == "success"
     assert [query for query, _location, _pages, _early_stop in calls] == [
-        "Machine Learning Engineer",
-        "Machine Learning Engineer python",
+        "Software Engineer remote",
+        "Backend Software Engineer remote",
+        "Backend Engineer remote",
+        "Software Engineer New York",
+        "Backend Software Engineer New York",
     ]
     assert all(max_pages == 4 for _query, _location, max_pages, _early_stop in calls)
     assert all(early_stop is False for _query, _location, _pages, early_stop in calls)
 
     jobs = result["jobs"]
-    assert len(jobs) == 3
-    assert any(job["title"] == "Platform Engineer" for job in jobs)
-    assert any(job["title"] == "Data Engineer" for job in jobs)
-    assert all(job["title"] != "Contract Machine Learning Engineer" for job in jobs)
+    assert len(jobs) == 5
+    assert any(job["title"] == "Backend Engineer" for job in jobs)
+    assert any(job["title"] == "Backend Software Engineer" for job in jobs)
+    assert all(job["title"] != "Contract Software Engineer" for job in jobs)
+    assert jobs[0]["query_context"]["query"] == "Software Engineer remote"
+    assert jobs[0]["source_metadata"]["query_text"] == "Software Engineer remote"
 
     meta = result["meta"]
-    assert meta["discovered_raw_count"] == 6
-    assert meta["kept_after_basic_filter_count"] == 4
+    assert meta["discovered_raw_count"] == 7
+    assert meta["kept_after_basic_filter_count"] == 6
     assert meta["dropped_by_basic_filter_count"] == 1
     assert meta["deduped_count"] == 1
-    assert meta["returned_count"] == 3
-    assert meta["queries_attempted"] == ["Machine Learning Engineer", "Machine Learning Engineer python"]
+    assert meta["returned_count"] == 5
+    assert meta["queries_executed_count"] == 5
+    assert meta["empty_queries_count"] == 0
+    assert meta["queries_attempted"] == [
+        "Software Engineer remote",
+        "Backend Software Engineer remote",
+        "Backend Engineer remote",
+        "Software Engineer New York",
+        "Backend Software Engineer New York",
+    ]
+    assert meta["query_examples"] == [
+        "Software Engineer remote",
+        "Backend Software Engineer remote",
+        "Backend Engineer remote",
+        "Software Engineer New York",
+        "Backend Software Engineer New York",
+    ]
     assert meta["basic_filter_mode"] == "minimal_exclude_only"
+
+
+def test_collect_board_jobs_stops_after_consecutive_empty_queries(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _fake_collect(
+        board: str,
+        *,
+        query: str,
+        location: str,
+        max_jobs: int = 25,
+        max_pages: int = 1,
+        early_stop_when_no_new_results: bool = True,
+        url_override: str | None = None,
+    ) -> tuple[list[dict], list[str], dict[str, object]]:
+        del board, location, max_jobs, max_pages, early_stop_when_no_new_results, url_override
+        calls.append(query)
+        jobs = []
+        if len(calls) == 1:
+            jobs = [
+                {
+                    "source": "linkedin",
+                    "title": "Software Engineer",
+                    "company": "Acme",
+                    "location": "Remote",
+                    "url": "https://www.linkedin.com/jobs/view/100",
+                    "raw": {"search_url": "https://example.test/search"},
+                }
+            ]
+        return jobs, [], {
+            "discovered_raw_count": len(jobs),
+            "pages_fetched": 1,
+            "pages_with_results": 1 if jobs else 0,
+            "stop_reason": "max_pages_reached",
+        }
+
+    monkeypatch.setattr(base, "collect_jobs_from_board", _fake_collect)
+
+    result = base.collect_board_jobs(
+        "linkedin",
+        {
+            "titles": ["Software Engineer"],
+            "locations": ["Remote"],
+            "experience_level": "entry",
+            "max_queries_per_title_location_pair": 4,
+            "max_queries_per_run": 8,
+        },
+    )
+
+    assert result["status"] == "success"
+    assert len(calls) == 4
+    assert result["meta"]["queries_executed_count"] == 4
+    assert result["meta"]["empty_queries_count"] == 3
+    assert result["meta"]["queries_attempted"] == calls
+    assert result["meta"]["jobs_found_per_query"][0]["new_unique_jobs"] == 1
+    assert result["meta"]["jobs_found_per_query"][1]["new_unique_jobs"] == 0
 
 
 def test_collect_jobs_from_board_paginates_until_no_new_results(monkeypatch) -> None:

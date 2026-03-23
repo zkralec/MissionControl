@@ -1,12 +1,17 @@
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "worker"))
 
+from jobs_history_state import record_jobs_notified, record_jobs_seen
 from task_handlers import jobs_shortlist_v1
 
 
@@ -17,6 +22,11 @@ def _task(payload: dict, *, task_id: str = "task-shortlist-1", run_id: str = "ru
         _run_id=run_id,
         payload_json=json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
     )
+
+
+def _sqlite_session(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'jobs_shortlist_history.db'}")
+    return sessionmaker(bind=engine, future=True)()
 
 
 def test_jobs_shortlist_v1_consumes_jobs_scored_from_rank_artifact(monkeypatch) -> None:
@@ -174,6 +184,58 @@ def test_jobs_shortlist_v1_freshness_weighting_promotes_recent_jobs(monkeypatch)
     assert top["job_id"] == "new-slightly-lower"
 
 
+def test_jobs_shortlist_v1_prefers_more_complete_metadata_when_scores_are_close(monkeypatch) -> None:
+    monkeypatch.setattr(
+        jobs_shortlist_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs_scored.v1",
+            "jobs_scored": [
+                {
+                    "job_id": "weak-topline",
+                    "title": "Senior ML Engineer",
+                    "company": "",
+                    "source": "linkedin",
+                    "overall_score": 91,
+                    "score": 1.82,
+                    "location": "Remote",
+                    "source_url": None,
+                    "posted_at": None,
+                    "metadata_quality_score": 30,
+                    "missing_company": True,
+                    "missing_source_url": True,
+                    "missing_posted_at": True,
+                },
+                {
+                    "job_id": "complete-close",
+                    "title": "Senior ML Engineer",
+                    "company": "Acme",
+                    "source": "indeed",
+                    "overall_score": 89,
+                    "score": 1.78,
+                    "location": "Remote",
+                    "source_url": "https://www.indeed.com/viewjob?jk=123",
+                    "posted_at": "2026-03-20T00:00:00Z",
+                    "metadata_quality_score": 94,
+                    "has_direct_source_url": True,
+                },
+            ],
+        },
+    )
+
+    payload = {
+        "pipeline_id": "pipe-short-quality",
+        "upstream": {"task_id": "rank-task", "run_id": "rank-run", "task_type": "jobs_rank_v1"},
+        "request": {"shortlist_max_items": 1, "shortlist_min_score": 0.1},
+        "shortlist_policy": {"max_items": 1, "freshness_weight_enabled": False},
+    }
+    result = jobs_shortlist_v1.execute(_task(payload), db=object())
+    top = result["content_json"]["shortlist"][0]
+
+    assert top["job_id"] == "complete-close"
+    assert top["metadata_quality_score"] > 90
+
+
 def test_jobs_shortlist_v1_empty_input_keeps_artifact_shape(monkeypatch) -> None:
     monkeypatch.setattr(
         jobs_shortlist_v1,
@@ -226,3 +288,181 @@ def test_jobs_shortlist_v1_duplicate_heavy_fixture_prefers_diversity(monkeypatch
     companies = sorted(str(row.get("company")) for row in artifact["shortlist"])
     assert companies == ["Acme AI", "Beta Labs"]
     assert artifact["anti_repetition_summary"]["rejected_summary"]["per_company_cap"] >= 1
+
+
+def test_jobs_shortlist_v1_previously_seen_never_shortlisted_can_resurface(monkeypatch, tmp_path) -> None:
+    db = _sqlite_session(tmp_path)
+
+    def _upstream(score: int) -> dict:
+        return {
+            "artifact_type": "jobs_scored.v1",
+            "jobs_scored": [
+                {
+                    "job_id": "j1",
+                    "canonical_job_key": "job:acme|software engineer|remote",
+                    "title": "Software Engineer",
+                    "company": "Acme",
+                    "source": "linkedin",
+                    "location": "Remote",
+                    "source_url": "https://example.test/jobs/1",
+                    "overall_score": score,
+                    "score": score / 50.0,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        jobs_shortlist_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: _upstream(70),
+    )
+    first = jobs_shortlist_v1.execute(
+        _task(
+            {
+                "pipeline_id": "pipe-short-history-1",
+                "upstream": {"task_id": "rank-task", "run_id": "rank-run", "task_type": "jobs_rank_v1"},
+                "request": {"shortlist_max_items": 1, "shortlist_min_score": 99},
+            },
+            run_id="run-short-history-1",
+        ),
+        db=db,
+    )
+    assert first["content_json"]["shortlist_count"] == 0
+
+    monkeypatch.setattr(
+        jobs_shortlist_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: _upstream(92),
+    )
+    second = jobs_shortlist_v1.execute(
+        _task(
+            {
+                "pipeline_id": "pipe-short-history-2",
+                "upstream": {"task_id": "rank-task", "run_id": "rank-run", "task_type": "jobs_rank_v1"},
+                "request": {"shortlist_max_items": 1, "shortlist_min_score": 0.1},
+            },
+            run_id="run-short-history-2",
+        ),
+        db=db,
+    )
+
+    top = second["content_json"]["shortlist"][0]
+    assert top["newly_discovered"] is False
+    assert top["resurfaced_from_prior_runs"] is True
+    assert top["previously_shortlisted"] is False
+    assert top["suppressed_due_to_cooldown"] is False
+    assert second["content_json"]["history_observability"]["seen_before_count"] == 1
+
+
+def test_jobs_shortlist_v1_recently_notified_jobs_are_suppressed_during_cooldown(monkeypatch, tmp_path) -> None:
+    db = _sqlite_session(tmp_path)
+    seed_job = {
+        "canonical_job_key": "job:acme|software engineer|remote",
+        "title": "Software Engineer",
+        "company": "Acme",
+        "source": "linkedin",
+        "source_url": "https://example.test/jobs/1",
+    }
+    now_utc = datetime.now(timezone.utc)
+    record_jobs_seen(db, [seed_job], seen_at=now_utc - timedelta(days=1))
+    record_jobs_notified(db, [seed_job], notified_at=now_utc)
+    db.commit()
+
+    monkeypatch.setattr(
+        jobs_shortlist_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs_scored.v1",
+            "jobs_scored": [
+                {
+                    "job_id": "j1",
+                    "canonical_job_key": seed_job["canonical_job_key"],
+                    "title": "Software Engineer",
+                    "company": "Acme",
+                    "source": "linkedin",
+                    "location": "Remote",
+                    "source_url": seed_job["source_url"],
+                    "overall_score": 94,
+                    "score": 1.88,
+                }
+            ],
+        },
+    )
+
+    result = jobs_shortlist_v1.execute(
+        _task(
+            {
+                "pipeline_id": "pipe-short-cooldown",
+                "upstream": {"task_id": "rank-task", "run_id": "rank-run", "task_type": "jobs_rank_v1"},
+                "request": {
+                    "shortlist_max_items": 1,
+                    "shortlist_min_score": 0.1,
+                    "jobs_notification_cooldown_days": 7,
+                },
+            },
+            run_id="run-short-cooldown",
+        ),
+        db=db,
+    )
+
+    artifact = result["content_json"]
+    assert artifact["shortlist_count"] == 0
+    assert artifact["rejected_summary"]["notification_cooldown"] == 1
+    assert artifact["history_observability"]["cooldown_suppressed_count"] == 1
+
+
+def test_jobs_shortlist_v1_old_notified_jobs_can_reappear_after_cooldown(monkeypatch, tmp_path) -> None:
+    db = _sqlite_session(tmp_path)
+    seed_job = {
+        "canonical_job_key": "job:beta|data engineer|remote",
+        "title": "Data Engineer",
+        "company": "Beta",
+        "source": "indeed",
+        "source_url": "https://example.test/jobs/2",
+    }
+    now_utc = datetime.now(timezone.utc)
+    record_jobs_seen(db, [seed_job], seen_at=now_utc - timedelta(days=10))
+    record_jobs_notified(db, [seed_job], notified_at=now_utc - timedelta(days=10))
+    db.commit()
+
+    monkeypatch.setattr(
+        jobs_shortlist_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs_scored.v1",
+            "jobs_scored": [
+                {
+                    "job_id": "j2",
+                    "canonical_job_key": seed_job["canonical_job_key"],
+                    "title": "Data Engineer",
+                    "company": "Beta",
+                    "source": "indeed",
+                    "location": "Remote",
+                    "source_url": seed_job["source_url"],
+                    "overall_score": 93,
+                    "score": 1.86,
+                }
+            ],
+        },
+    )
+
+    result = jobs_shortlist_v1.execute(
+        _task(
+            {
+                "pipeline_id": "pipe-short-post-cooldown",
+                "upstream": {"task_id": "rank-task", "run_id": "rank-run", "task_type": "jobs_rank_v1"},
+                "request": {
+                    "shortlist_max_items": 1,
+                    "shortlist_min_score": 0.1,
+                    "jobs_notification_cooldown_days": 3,
+                },
+            },
+            run_id="run-short-post-cooldown",
+        ),
+        db=db,
+    )
+
+    top = result["content_json"]["shortlist"][0]
+    assert top["previously_notified"] is True
+    assert top["suppressed_due_to_cooldown"] is False
+    assert top["resurfaced_from_prior_runs"] is True

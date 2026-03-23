@@ -73,8 +73,14 @@ def test_resolve_request_preserves_structured_collect_inputs() -> None:
             "minimum_salary": 150000,
             "experience_level": "entry-level",
             "result_limit_per_source": 450,
+            "max_total_jobs": 1200,
             "max_pages_per_source": 7,
             "max_queries_per_title_location_pair": 6,
+            "max_queries_per_run": 14,
+            "enable_query_expansion": False,
+            "jobs_notification_cooldown_days": 5,
+            "jobs_shortlist_repeat_penalty": 6,
+            "resurface_seen_jobs": True,
             "early_stop_when_no_new_results": False,
             "enabled_sources": ["linkedin", "indeed", "glassdoor", "handshake"],
             "shortlist_count": 6,
@@ -92,8 +98,14 @@ def test_resolve_request_preserves_structured_collect_inputs() -> None:
     assert request["result_limit_per_source"] == 450
     assert request["max_jobs_per_source"] == 450
     assert request["max_jobs_per_board"] == 450
+    assert request["max_total_jobs"] == 1200
     assert request["max_pages_per_source"] == 7
     assert request["max_queries_per_title_location_pair"] == 6
+    assert request["max_queries_per_run"] == 14
+    assert request["enable_query_expansion"] is False
+    assert request["jobs_notification_cooldown_days"] == 5
+    assert request["jobs_shortlist_repeat_penalty"] == 6.0
+    assert request["resurface_seen_jobs"] is True
     assert request["early_stop_when_no_new_results"] is False
     assert request["sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
     assert request["enabled_sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
@@ -332,3 +344,123 @@ def test_jobs_collect_v1_surfaces_source_metadata_quality(monkeypatch) -> None:
     assert artifact["metadata_completeness_summary"]["missing_company"] == 1
     assert artifact["collection_summary"]["missing_company"] == 1
     assert artifact["collection_summary"]["missing_posted_at"] == 1
+    observability = artifact["collection_observability"]
+    assert observability["waterfall"]["raw_jobs_discovered"] == 1
+    assert observability["by_source"]["indeed"]["raw_jobs_discovered"] == 1
+    assert observability["by_source"]["indeed"]["kept_after_basic_filter"] == 1
+    assert observability["by_source"]["indeed"]["jobs_dropped"] == 0
+    assert observability["by_source"]["indeed"]["missing_rates"]["missing_company_rate"] == 100.0
+    assert "Weakest metadata source: indeed." in observability["operator_questions"]["which_source_is_weak"]
+
+
+def test_jobs_collect_v1_aggregates_query_observability_and_run_cap(monkeypatch) -> None:
+    requested_limits: dict[str, int] = {}
+
+    def _collector_for(source: str):
+        class _Collector:
+            SUPPORTED_FIELDS = {"source": source}
+
+            @staticmethod
+            def collect_jobs(request: dict, *, url_override: str | None = None) -> dict:
+                del url_override
+                requested_limits[source] = int(request.get("result_limit_per_source") or 0)
+                limit = requested_limits[source]
+                jobs = [
+                    {
+                        "source": source,
+                        "source_url": f"https://example.test/{source}/{index}",
+                        "title": f"Software Engineer {source} {index}",
+                        "company": f"{source.title()} Corp",
+                        "location": "Remote",
+                        "url": f"https://example.test/{source}/{index}",
+                        "source_metadata": {"search_url": f"https://example.test/{source}/search"},
+                    }
+                    for index in range(limit)
+                ]
+                return {
+                    "status": "success",
+                    "jobs": jobs,
+                    "warnings": [],
+                    "errors": [],
+                    "meta": {
+                        "requested_limit": limit,
+                        "returned_count": len(jobs),
+                        "discovered_raw_count": len(jobs),
+                        "kept_after_basic_filter_count": len(jobs),
+                        "dropped_by_basic_filter_count": 0,
+                        "deduped_count": 0,
+                        "queries_attempted": [f"{source} base", f"{source} expansion"],
+                        "queries_executed_count": 2,
+                        "empty_queries_count": 1 if source == "indeed" else 0,
+                        "query_examples": [f"{source} base", f"{source} expansion"],
+                        "search_attempts": [
+                            {
+                                "query": f"{source} base",
+                                "location": "Remote",
+                                "expansion_type": "base_title",
+                                "jobs_found": max(limit - 1, 0),
+                                "new_unique_jobs": max(limit - 1, 0),
+                                "returned_count": max(limit - 1, 0),
+                                "stop_reason": "max_pages_reached",
+                            },
+                            {
+                                "query": f"{source} expansion",
+                                "location": "Remote",
+                                "expansion_type": "title_synonym",
+                                "jobs_found": 1 if limit else 0,
+                                "new_unique_jobs": 1 if limit else 0,
+                                "returned_count": 1 if limit else 0,
+                                "stop_reason": "max_pages_reached",
+                            },
+                        ],
+                    },
+                }
+
+        return _Collector
+
+    monkeypatch.setattr(jobs_collect_v1, "_load_collector_module", _collector_for)
+
+    payload = {
+        "pipeline_id": "pipe-query-observability",
+        "request": {
+            "collectors_enabled": True,
+            "sources": ["linkedin", "indeed", "glassdoor"],
+            "titles": ["Software Engineer"],
+            "locations": ["Remote"],
+            "result_limit_per_source": 3,
+            "max_total_jobs": 4,
+            "max_queries_per_run": 6,
+            "enable_query_expansion": True,
+        },
+    }
+    result = jobs_collect_v1.execute(_task(payload), db=None)
+    artifact = result["content_json"]
+
+    assert requested_limits == {"linkedin": 3, "indeed": 1}
+    assert artifact["skipped_sources"] == ["glassdoor"]
+    assert len(artifact["raw_jobs"]) == 4
+    assert artifact["collection_summary"]["max_total_jobs"] == 4
+    assert artifact["collection_summary"]["truncated_by_run_limit_count"] == 0
+    assert artifact["collection_summary"]["queries_executed_count"] == 4
+    assert artifact["collection_summary"]["empty_queries_count"] == 1
+    assert artifact["collection_summary"]["query_examples"] == [
+        "linkedin base",
+        "linkedin expansion",
+        "indeed base",
+        "indeed expansion",
+    ]
+    observability = artifact["collection_observability"]
+    assert observability["query_summary"]["queries_executed"] == 4
+    assert observability["query_summary"]["empty_queries_count"] == 1
+    assert observability["query_summary"]["max_total_jobs"] == 4
+    assert observability["query_summary"]["query_examples"] == [
+        "linkedin base",
+        "linkedin expansion",
+        "indeed base",
+        "indeed expansion",
+    ]
+    assert observability["query_summary"]["query_runs"][0]["source"] == "linkedin"
+    assert observability["by_source"]["linkedin"]["queries_executed_count"] == 2
+    assert observability["by_source"]["indeed"]["queries_executed_count"] == 2
+    assert observability["by_source"]["indeed"]["jobs_found_per_source"] == 1
+    assert artifact["source_results"]["glassdoor"]["meta"]["reason"] == "max_total_jobs_reached"

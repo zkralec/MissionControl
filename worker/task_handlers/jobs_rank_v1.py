@@ -9,6 +9,7 @@ from jsonschema import Draft7Validator
 
 from llm.openai_adapter import run_chat_completion
 from models.catalog import get_model_info, get_model_price, tier_model
+from task_handlers.jobs_normalize_helpers import metadata_quality_details
 from task_handlers.jobs_pipeline_common import (
     build_upstream_ref,
     expect_artifact_type,
@@ -78,6 +79,56 @@ def _canonical_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text)
     return " ".join(text.split())
+
+
+def _metadata_quality(row: dict[str, Any]) -> dict[str, Any]:
+    computed = metadata_quality_details(row)
+    details = dict(computed)
+    if isinstance(row.get("metadata_quality_score"), (int, float)):
+        details["metadata_quality_score"] = _bounded_score(row.get("metadata_quality_score"))
+    for key in (
+        "missing_company",
+        "missing_source_url",
+        "missing_posted_at",
+        "missing_location",
+        "has_direct_source_url",
+    ):
+        if isinstance(row.get(key), bool):
+            details[key] = bool(row.get(key))
+    source_url_kind = row.get("source_url_kind")
+    if isinstance(source_url_kind, str) and source_url_kind.strip():
+        details["source_url_kind"] = source_url_kind.strip().lower()
+    return details
+
+
+def _metadata_quality_penalty(row: dict[str, Any]) -> tuple[dict[str, Any], float]:
+    details = _metadata_quality(row)
+    score = float(details.get("metadata_quality_score") or 0.0)
+    penalty = max(0.0, (100.0 - score) * 0.06)
+    if details.get("missing_company"):
+        penalty += 3.0
+    if details.get("missing_source_url"):
+        penalty += 2.5
+    elif not details.get("has_direct_source_url"):
+        penalty += 0.75
+    if details.get("missing_posted_at"):
+        penalty += 1.5
+    if details.get("missing_location"):
+        penalty += 1.0
+    if not str(row.get("work_mode") or row.get("remote_type") or "").strip():
+        penalty += 0.75
+    return details, _round(min(max(penalty, 0.0), 15.0), 2)
+
+
+def _pre_llm_priority(job: dict[str, Any], request: dict[str, Any]) -> tuple[float, float, float]:
+    details, penalty = _metadata_quality_penalty(job)
+    deterministic = float(score_job(job, request))
+    quality_score = float(details.get("metadata_quality_score") or 0.0)
+    return (
+        _round(deterministic - (penalty / 100.0), 4),
+        quality_score,
+        float(job.get("salary_max") or job.get("salary_min") or 0.0),
+    )
 
 
 def _llm_runtime_enabled() -> bool:
@@ -413,6 +464,7 @@ def _apply_diversity_controls(scored_jobs: list[dict[str, Any]]) -> list[dict[st
         source_penalty = 2.5 if source_ratio > 0.5 and source_count > 0 else 0.0
         source_bonus = max(0.0, (1.0 - source_ratio) * 2.0)
         low_signal_penalty = 4.0 if len(str(entry.get("explanation_summary") or "")) < 30 else 0.0
+        metadata_quality_penalty = float(entry.get("metadata_quality_penalty") or 0.0)
 
         adjusted_100 = (
             float(entry.get("overall_score") or 0.0)
@@ -420,6 +472,7 @@ def _apply_diversity_controls(scored_jobs: list[dict[str, Any]]) -> list[dict[st
             - title_penalty
             - source_penalty
             - low_signal_penalty
+            - metadata_quality_penalty
             + source_bonus
         )
         adjusted_100 = max(0.0, min(adjusted_100, 100.0))
@@ -430,6 +483,7 @@ def _apply_diversity_controls(scored_jobs: list[dict[str, Any]]) -> list[dict[st
             "source_penalty": _round(source_penalty, 2),
             "source_bonus": _round(source_bonus, 2),
             "low_signal_penalty": _round(low_signal_penalty, 2),
+            "metadata_quality_penalty": _round(metadata_quality_penalty, 2),
         }
         entry["overall_score_adjusted"] = _round(adjusted_100, 2)
         entry["score"] = _round(adjusted_100 / 50.0, 4)
@@ -561,10 +615,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     filtered_jobs = [job for job in normalized_jobs if isinstance(job, dict) and matches_filters(job, request)]
     base_ranked = sorted(
         filtered_jobs,
-        key=lambda row: (
-            score_job(row, request),
-            float(row.get("salary_max") or row.get("salary_min") or 0.0),
-        ),
+        key=lambda row: _pre_llm_priority(row, request),
         reverse=True,
     )[:max_ranked]
     prepared_jobs: list[dict[str, Any]] = []
@@ -667,6 +718,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         if overall_raw <= 0:
             overall_raw = computed_overall
         overall_raw = _bounded_score(overall_raw)
+        quality_details, quality_penalty = _metadata_quality_penalty(row)
 
         row.update(
             {
@@ -679,6 +731,14 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
                 "explanation": _short_summary(llm_score.get("explanation"), 220),
                 "explanation_summary": _short_summary(llm_score.get("explanation_summary") or llm_score.get("explanation"), 140),
                 "scoring_mode": str(llm_score.get("scoring_mode") or ("llm_structured" if job_id in llm_scores_by_id else "deterministic_fallback")),
+                "metadata_quality_score": float(quality_details.get("metadata_quality_score") or 0.0),
+                "missing_company": bool(quality_details.get("missing_company")),
+                "missing_source_url": bool(quality_details.get("missing_source_url")),
+                "missing_posted_at": bool(quality_details.get("missing_posted_at")),
+                "missing_location": bool(quality_details.get("missing_location")),
+                "source_url_kind": quality_details.get("source_url_kind"),
+                "has_direct_source_url": bool(quality_details.get("has_direct_source_url")),
+                "metadata_quality_penalty": quality_penalty,
             }
         )
         scored_jobs.append(row)
@@ -805,6 +865,12 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         next_shortlist_policy["freshness_weight_enabled"] = bool(request.get("shortlist_freshness_weight_enabled", False))
     if "freshness_max_bonus" not in next_shortlist_policy:
         next_shortlist_policy["freshness_max_bonus"] = float(request.get("shortlist_freshness_max_bonus") or 0.0)
+    if "jobs_notification_cooldown_days" not in next_shortlist_policy:
+        next_shortlist_policy["jobs_notification_cooldown_days"] = int(request.get("jobs_notification_cooldown_days") or 3)
+    if "jobs_shortlist_repeat_penalty" not in next_shortlist_policy:
+        next_shortlist_policy["jobs_shortlist_repeat_penalty"] = float(request.get("jobs_shortlist_repeat_penalty") or 4.0)
+    if "resurface_seen_jobs" not in next_shortlist_policy:
+        next_shortlist_policy["resurface_seen_jobs"] = bool(request.get("resurface_seen_jobs", True))
 
     next_payload = {
         "pipeline_id": pipeline_id,

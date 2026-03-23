@@ -16,6 +16,186 @@ from task_handlers.jobs_pipeline_common import (
 )
 
 
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _rate(count: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round((float(count) / float(total)) * 100.0, 1)
+
+
+def _compact_missing_summary(missing_rates: dict[str, float]) -> str:
+    labels = {
+        "missing_company_rate": "company",
+        "missing_posted_at_rate": "post date",
+        "missing_source_url_rate": "link",
+        "missing_location_rate": "location",
+    }
+    gaps = [
+        (label, float(missing_rates.get(key) or 0.0))
+        for key, label in labels.items()
+        if float(missing_rates.get(key) or 0.0) > 0.0
+    ]
+    gaps.sort(key=lambda item: item[1], reverse=True)
+    if not gaps:
+        return "metadata mostly complete"
+    return ", ".join(f"{label} {rate:.0f}%" for label, rate in gaps[:2])
+
+
+def _build_normalization_observability(
+    *,
+    upstream_result: dict[str, Any],
+    raw_count: int,
+    normalized_clean: list[dict[str, Any]],
+    deduped_clean: list[dict[str, Any]],
+    drop_reasons: dict[str, int],
+    duplicates_collapsed: int,
+) -> dict[str, Any]:
+    upstream_collection_summary = (
+        upstream_result.get("collection_summary") if isinstance(upstream_result.get("collection_summary"), dict) else {}
+    )
+    upstream_observability = (
+        upstream_result.get("collection_observability")
+        if isinstance(upstream_result.get("collection_observability"), dict)
+        else {}
+    )
+    upstream_by_source = (
+        upstream_observability.get("by_source") if isinstance(upstream_observability.get("by_source"), dict) else {}
+    )
+
+    normalized_by_source: dict[str, dict[str, Any]] = {}
+    deduped_unique_groups_by_source: dict[str, int] = {}
+
+    for row in normalized_clean:
+        source = str(row.get("source") or "unknown").strip().lower() or "unknown"
+        stats = normalized_by_source.setdefault(
+            source,
+            {
+                "normalized_count": 0,
+                "missing_company": 0,
+                "missing_posted_at": 0,
+                "missing_source_url": 0,
+                "missing_location": 0,
+            },
+        )
+        stats["normalized_count"] += 1
+        for key in ("missing_company", "missing_posted_at", "missing_source_url", "missing_location"):
+            if row.get(key) is True:
+                stats[key] += 1
+
+    for row in deduped_clean:
+        duplicate_sources = row.get("duplicate_sources") if isinstance(row.get("duplicate_sources"), list) else None
+        sources = [
+            str(value).strip().lower()
+            for value in (duplicate_sources or [row.get("source")])
+            if str(value).strip()
+        ]
+        unique_sources = set(sources or [str(row.get("source") or "unknown").strip().lower() or "unknown"])
+        for source in unique_sources:
+            deduped_unique_groups_by_source[source] = deduped_unique_groups_by_source.get(source, 0) + 1
+
+    all_sources = set(upstream_by_source.keys()) | set(normalized_by_source.keys()) | set(deduped_unique_groups_by_source.keys())
+    by_source: dict[str, dict[str, Any]] = {}
+    collapse_candidates: list[tuple[str, int]] = []
+    weak_candidates: list[tuple[str, float]] = []
+
+    for source in sorted(all_sources):
+        upstream_source = upstream_by_source.get(source) if isinstance(upstream_by_source.get(source), dict) else {}
+        normalized_source = normalized_by_source.get(source) or {}
+        normalized_count = _safe_int(normalized_source.get("normalized_count"), 0)
+        unique_groups = deduped_unique_groups_by_source.get(source, 0)
+        dedupe_collapsed = max(normalized_count - unique_groups, 0)
+        discovered = _safe_int(
+            upstream_source.get("raw_jobs_discovered"),
+            _safe_int(upstream_source.get("final_raw_jobs"), normalized_count),
+        )
+        kept = _safe_int(upstream_source.get("kept_after_basic_filter"), normalized_count)
+        dropped = _safe_int(upstream_source.get("jobs_dropped"), max(discovered - kept, 0))
+        missing_rates = {
+            "missing_company_rate": _rate(_safe_int(normalized_source.get("missing_company"), 0), normalized_count),
+            "missing_posted_at_rate": _rate(_safe_int(normalized_source.get("missing_posted_at"), 0), normalized_count),
+            "missing_source_url_rate": _rate(_safe_int(normalized_source.get("missing_source_url"), 0), normalized_count),
+            "missing_location_rate": _rate(_safe_int(normalized_source.get("missing_location"), 0), normalized_count),
+        }
+        highest_gap = max(missing_rates.values()) if missing_rates else 0.0
+        collapse_candidates.append((source, dedupe_collapsed))
+        weak_candidates.append((source, highest_gap))
+
+        by_source[source] = {
+            "raw_jobs_discovered": discovered,
+            "kept_after_basic_filter": kept,
+            "jobs_dropped": dropped,
+            "normalized_count": normalized_count,
+            "deduped_unique_groups": unique_groups,
+            "dedupe_collapsed": dedupe_collapsed,
+            "missing_counts": {
+                "company": _safe_int(normalized_source.get("missing_company"), 0),
+                "posted_at": _safe_int(normalized_source.get("missing_posted_at"), 0),
+                "source_url": _safe_int(normalized_source.get("missing_source_url"), 0),
+                "location": _safe_int(normalized_source.get("missing_location"), 0),
+            },
+            "missing_rates": missing_rates,
+            "weakness_summary": _compact_missing_summary(missing_rates),
+        }
+
+    largest_collapse_entry = max(collapse_candidates, key=lambda item: item[1]) if collapse_candidates else None
+    largest_collapse_source = (
+        largest_collapse_entry[0]
+        if largest_collapse_entry and int(largest_collapse_entry[1]) > 0
+        else None
+    )
+    weakest_metadata_entry = max(weak_candidates, key=lambda item: item[1]) if weak_candidates else None
+    weakest_metadata_source = (
+        weakest_metadata_entry[0]
+        if weakest_metadata_entry and float(weakest_metadata_entry[1]) > 0.0
+        else None
+    )
+    invalid_dropped = int(drop_reasons.get("invalid_item_type", 0) + drop_reasons.get("missing_title", 0))
+
+    dedupe_reason = (
+        f"{duplicates_collapsed} collapsed in normalization dedupe."
+        + (f" Largest collapse: {largest_collapse_source}." if largest_collapse_source else "")
+    )
+    metadata_gap = (
+        f"Weakest normalized metadata source: {weakest_metadata_source}."
+        if weakest_metadata_source
+        else "No source-level metadata gaps were detected."
+    )
+
+    return {
+        "waterfall": {
+            "raw_jobs_discovered": _safe_int(upstream_collection_summary.get("discovered_raw_count"), raw_count),
+            "kept_after_basic_filter": _safe_int(upstream_collection_summary.get("kept_after_basic_filter_count"), raw_count),
+            "jobs_dropped_in_collection": _safe_int(upstream_collection_summary.get("dropped_by_basic_filter_count"), 0),
+            "normalized_count": len(normalized_clean),
+            "invalid_dropped_before_normalize": invalid_dropped,
+            "deduped_count": len(deduped_clean),
+            "duplicates_collapsed": duplicates_collapsed,
+        },
+        "by_source": by_source,
+        "operator_questions": {
+            "searched_enough": (
+                f"{_safe_int(upstream_collection_summary.get('discovered_raw_count'), raw_count)} raw discovered,"
+                f" {_safe_int(upstream_collection_summary.get('kept_after_basic_filter_count'), raw_count)} kept after filtering,"
+                f" {len(deduped_clean)} unique after normalization."
+            ),
+            "which_source_is_weak": metadata_gap,
+            "why_raw_count_collapsed": (
+                f"{_safe_int(upstream_collection_summary.get('dropped_by_basic_filter_count'), 0)} dropped in collection,"
+                f" {invalid_dropped} invalid before normalize,"
+                f" {duplicates_collapsed} deduped."
+            ),
+            "are_we_missing_metadata": metadata_gap,
+            "dedupe_impact": dedupe_reason,
+        },
+    }
+
+
 def _dedupe_policy(normalization_policy: dict[str, Any]) -> dict[str, Any]:
     fuzzy_cfg = normalization_policy.get("fuzzy_matching")
     if not isinstance(fuzzy_cfg, dict):
@@ -79,6 +259,14 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     deduped_clean = [_strip_internal_keys(row) for row in deduped_jobs]
     normalized_count = len(normalized_clean)
     deduped_count = len(deduped_clean)
+    normalization_observability = _build_normalization_observability(
+        upstream_result=upstream_result,
+        raw_count=raw_count,
+        normalized_clean=normalized_clean,
+        deduped_clean=deduped_clean,
+        drop_reasons=drop_reasons,
+        duplicates_collapsed=duplicates_collapsed,
+    )
 
     jobs_normalized_artifact = {
         "artifact_type": "jobs_normalized.v1",
@@ -168,6 +356,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "dropped_by_basic_filter_count": int(upstream_collection_summary.get("dropped_by_basic_filter_count") or 0),
             "deduped_count": int(upstream_collection_summary.get("deduped_count") or 0),
         },
+        "normalization_observability": normalization_observability,
         "ambiguous_duplicate_cases": ambiguous_cases,
         "warnings": warnings,
         "upstream": upstream,

@@ -1549,9 +1549,13 @@ class PlannerJobsPresetCreate(BaseModel):
     minimum_salary: Optional[float] = Field(default=None, gt=0)
     experience_level: Optional[str] = None
     enabled_sources: Optional[List[str]] = None
-    result_limit_per_source: Optional[int] = Field(default=None, ge=1, le=100)
+    result_limit_per_source: Optional[int] = Field(default=None, ge=1, le=1000)
+    max_queries_per_run: Optional[int] = Field(default=None, ge=1, le=20)
     shortlist_count: Optional[int] = Field(default=None, ge=1, le=10)
     freshness_preference: Optional[str] = None
+    jobs_notification_cooldown_days: Optional[int] = Field(default=None, ge=0, le=30)
+    jobs_shortlist_repeat_penalty: Optional[float] = Field(default=None, ge=0, le=20)
+    resurface_seen_jobs: Optional[bool] = None
     desired_salary_min: Optional[float] = Field(default=None, gt=0)
     desired_salary_max: Optional[float] = Field(default=None, gt=0)
     experience_levels: Optional[List[str]] = None
@@ -1748,6 +1752,7 @@ class WatcherOut(BaseModel):
     updated_at: str
     last_run_summary: Optional[WatcherRunSummaryOut] = None
     last_outcome_summary: Optional[WatcherOutcomeSummaryOut] = None
+    workflow_summary: Optional[dict[str, Any]] = None
 
 
 class WatcherCreate(BaseModel):
@@ -1822,11 +1827,243 @@ def _coerce_notification_behavior(value: Any) -> dict[str, Any] | None:
     return None
 
 
+JOBS_WATCHER_TASK_TYPES = {
+    "jobs_collect_v1",
+    "jobs_normalize_v1",
+    "jobs_rank_v1",
+    "jobs_shortlist_v1",
+    "jobs_digest_v2",
+    "jobs_digest_v1",
+}
+JOBS_PIPELINE_TASK_TYPES = {
+    "jobs_collect_v1",
+    "jobs_normalize_v1",
+    "jobs_rank_v1",
+    "jobs_shortlist_v1",
+    "jobs_digest_v2",
+    "notify_v1",
+}
+JOBS_PIPELINE_STAGE_ORDER = [
+    "jobs_collect_v1",
+    "jobs_normalize_v1",
+    "jobs_rank_v1",
+    "jobs_shortlist_v1",
+    "jobs_digest_v2",
+    "notify_v1",
+]
+
+
 def _compact_preview_text(value: str, limit: int = 220) -> str:
     collapsed = " ".join(value.split())
     if len(collapsed) <= limit:
         return collapsed
     return f"{collapsed[: max(limit - 1, 1)].rstrip()}…"
+
+
+def _as_summary_int(value: Any, fallback: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed
+
+
+def _extract_pipeline_id(payload: dict[str, Any]) -> str | None:
+    direct = payload.get("pipeline_id")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        candidate = metadata.get("pipeline_id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _parse_task_pipeline_id(task: Task) -> str | None:
+    return _extract_pipeline_id(_parse_payload_obj(task.payload_json))
+
+
+def _artifact_content_json(artifact: Artifact | None) -> dict[str, Any]:
+    if artifact is None or not isinstance(artifact.content_json, dict):
+        return {}
+    return dict(artifact.content_json)
+
+
+def _summary_sources_from_request(request: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+    for key in ("enabled_sources", "sources", "boards"):
+        raw = request.get(key)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            text = item.strip().lower()
+            if text and text not in sources:
+                sources.append(text)
+    return sources
+
+
+def _job_preview_rows(digest_json: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_rows = digest_json.get("digest_jobs")
+    if not isinstance(raw_rows, list):
+        raw_rows = digest_json.get("top_jobs")
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows or []:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or "").strip()
+        source = str(row.get("source") or "").strip()
+        if not title:
+            continue
+        rows.append(
+            {
+                "title": title,
+                "company": str(row.get("company") or "").strip() or None,
+                "source": source or None,
+                "source_url": str(row.get("source_url") or row.get("url") or "").strip() or None,
+                "posted": str(row.get("posted_display") or row.get("posted") or "").strip() or None,
+                "reason": str(row.get("why_it_fits") or row.get("explanation_summary") or "").strip() or None,
+            }
+        )
+        if len(rows) >= 3:
+            break
+    return rows
+
+
+def _build_jobs_workflow_summary(
+    *,
+    watcher: Task,
+    stage_tasks: dict[str, Task],
+    latest_run_by_task_id: dict[str, Run],
+    result_artifact_by_task_id: dict[str, Artifact],
+) -> dict[str, Any] | None:
+    pipeline_id = _parse_task_pipeline_id(watcher)
+    if not pipeline_id:
+        return None
+
+    collect_task = stage_tasks.get("jobs_collect_v1") or watcher
+    normalize_task = stage_tasks.get("jobs_normalize_v1")
+    shortlist_task = stage_tasks.get("jobs_shortlist_v1")
+    digest_task = stage_tasks.get("jobs_digest_v2")
+    collect_json = _artifact_content_json(result_artifact_by_task_id.get(collect_task.id))
+    normalize_json = _artifact_content_json(result_artifact_by_task_id.get(normalize_task.id if normalize_task else None))
+    shortlist_json = _artifact_content_json(result_artifact_by_task_id.get(shortlist_task.id if shortlist_task else None))
+    digest_json = _artifact_content_json(result_artifact_by_task_id.get(digest_task.id if digest_task else None))
+    request = collect_json.get("request") if isinstance(collect_json.get("request"), dict) else _parse_payload_obj(collect_task.payload_json).get("request")
+    request = request if isinstance(request, dict) else {}
+
+    collection_counts = collect_json.get("collection_counts") if isinstance(collect_json.get("collection_counts"), dict) else {}
+    normalization_counts = normalize_json.get("counts") if isinstance(normalize_json.get("counts"), dict) else {}
+    pipeline_counts = shortlist_json.get("pipeline_counts") if isinstance(shortlist_json.get("pipeline_counts"), dict) else {}
+    collection_observability = collect_json.get("collection_observability") if isinstance(collect_json.get("collection_observability"), dict) else {}
+    by_source = collection_observability.get("by_source") if isinstance(collection_observability.get("by_source"), dict) else {}
+
+    source_rows: list[dict[str, Any]] = []
+    for source, value in by_source.items():
+        if not isinstance(value, dict):
+            continue
+        missing_rates = value.get("missing_rates") if isinstance(value.get("missing_rates"), dict) else {}
+        source_rows.append(
+            {
+                "source": source,
+                "raw_jobs_found": _as_summary_int(value.get("raw_jobs_discovered")),
+                "kept_after_basic_filter": _as_summary_int(value.get("kept_after_basic_filter")),
+                "jobs_dropped": _as_summary_int(value.get("jobs_dropped")),
+                "missing_company_rate": float(missing_rates.get("missing_company_rate") or 0.0),
+                "missing_posted_at_rate": float(missing_rates.get("missing_posted_at_rate") or 0.0),
+                "missing_source_url_rate": float(missing_rates.get("missing_source_url_rate") or 0.0),
+                "missing_location_rate": float(missing_rates.get("missing_location_rate") or 0.0),
+                "weakness_summary": str(value.get("weakness_summary") or "").strip() or None,
+            }
+        )
+
+    digest_jobs = _job_preview_rows(digest_json)
+    source_diversity: list[str] = []
+    for row in digest_jobs:
+        source = row.get("source")
+        if isinstance(source, str) and source and source not in source_diversity:
+            source_diversity.append(source)
+
+    notify_status = "unknown"
+    notify_reason = None
+    notify_task = stage_tasks.get("notify_v1")
+    if notify_task is not None:
+        normalized_status = _status_to_str(notify_task.status).lower()
+        if normalized_status == "success":
+            notify_status = "sent"
+        elif normalized_status in {"queued", "running"}:
+            notify_status = "pending"
+        elif normalized_status in {"failed", "failed_permanent", "blocked_budget"}:
+            notify_status = "failed"
+        else:
+            notify_status = normalized_status or "unknown"
+        notify_reason = notify_task.error
+    else:
+        notify_decision = digest_json.get("notify_decision") if isinstance(digest_json.get("notify_decision"), dict) else {}
+        should_notify = bool(notify_decision.get("should_notify"))
+        notify_reason = str(notify_decision.get("reason") or "").strip() or None
+        if should_notify:
+            notify_status = "requested"
+        elif notify_reason:
+            notify_status = "skipped"
+
+    stages: list[dict[str, Any]] = []
+    for stage in JOBS_PIPELINE_STAGE_ORDER:
+        stage_task = stage_tasks.get(stage)
+        if stage_task is None:
+            continue
+        latest_run = latest_run_by_task_id.get(stage_task.id)
+        stages.append(
+            {
+                "task_type": stage,
+                "status": _status_to_str(stage_task.status),
+                "updated_at": stage_task.updated_at,
+                "run_status": _status_to_str(latest_run.status) if latest_run else None,
+            }
+        )
+
+    return {
+        "kind": "jobs_watcher",
+        "pipeline_id": pipeline_id,
+        "enabled_sources": _summary_sources_from_request(request),
+        "query_count_used": _as_summary_int(collection_counts.get("queries_executed_count"), _as_summary_int(collection_observability.get("queries_executed"))),
+        "counts": {
+            "raw_jobs_found": _as_summary_int(collection_counts.get("discovered_raw_count"), _as_summary_int(collection_counts.get("raw_job_count"))),
+            "jobs_after_filtering": _as_summary_int(collection_counts.get("kept_after_basic_filter_count")),
+            "jobs_after_dedupe": _as_summary_int(normalization_counts.get("deduped_count"), _as_summary_int(pipeline_counts.get("deduped_count"))),
+            "shortlisted_count": _as_summary_int(shortlist_json.get("shortlist_count"), _as_summary_int(pipeline_counts.get("shortlisted_count"))),
+        },
+        "notify": {
+            "status": notify_status,
+            "reason": notify_reason,
+        },
+        "digest_preview": {
+            "executive_summary": str(digest_json.get("summary") or "").strip() or None,
+            "headline": (
+                digest_json.get("summary_for_ui", {}).get("headline")
+                if isinstance(digest_json.get("summary_for_ui"), dict)
+                else None
+            ),
+            "top_jobs": digest_jobs,
+            "source_diversity": source_diversity,
+            "why_top_jobs_won": [
+                str(value).strip()
+                for value in (digest_json.get("why_these") if isinstance(digest_json.get("why_these"), list) else [])
+                if isinstance(value, str) and value.strip()
+            ][:3],
+        },
+        "collection_quality": {
+            "by_source": source_rows,
+            "operator_summary": (
+                collection_observability.get("operator_questions")
+                if isinstance(collection_observability.get("operator_questions"), dict)
+                else {}
+            ),
+        },
+        "stages": stages,
+    }
 
 
 def _artifact_preview(artifact: Artifact) -> str | None:
@@ -1862,9 +2099,9 @@ def _resolve_watcher_interval(
 def _build_watcher_summaries(
     db,
     template_rows: List[dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     if not template_rows:
-        return {}, {}
+        return {}, {}, {}
 
     watcher_counts_by_task_type: dict[str, int] = defaultdict(int)
     task_types: set[str] = set()
@@ -1876,7 +2113,7 @@ def _build_watcher_summaries(
         watcher_counts_by_task_type[task_type] += 1
 
     if not task_types:
-        return {}, {}
+        return {}, {}, {}
 
     recent_tasks = (
         db.query(Task)
@@ -1912,12 +2149,47 @@ def _build_watcher_summaries(
             selected_task_by_watcher_id[watcher_id] = task_rows[0]
 
     task_ids = [task.id for task in selected_task_by_watcher_id.values()]
-    if not task_ids:
-        return {}, {}
+    jobs_pipeline_ids_by_watcher: dict[str, str] = {}
+    for watcher_id, task in selected_task_by_watcher_id.items():
+        if str(task.task_type) not in JOBS_WATCHER_TASK_TYPES:
+            continue
+        pipeline_id = _parse_task_pipeline_id(task)
+        if pipeline_id:
+            jobs_pipeline_ids_by_watcher[watcher_id] = pipeline_id
+
+    jobs_stage_tasks_by_pipeline: dict[str, dict[str, Task]] = {}
+    extra_task_ids: set[str] = set()
+    if jobs_pipeline_ids_by_watcher:
+        candidate_tasks = (
+            db.query(Task)
+            .filter(Task.task_type.in_(list(JOBS_PIPELINE_TASK_TYPES)))
+            .order_by(Task.updated_at.desc(), Task.created_at.desc())
+            .limit(8000)
+            .all()
+        )
+        relevant_pipeline_ids = set(jobs_pipeline_ids_by_watcher.values())
+        for task in candidate_tasks:
+            payload = _parse_payload_obj(task.payload_json)
+            pipeline_id = _extract_pipeline_id(payload)
+            if pipeline_id not in relevant_pipeline_ids:
+                continue
+            if task.task_type == "notify_v1":
+                source_task_type = str(payload.get("source_task_type") or "").strip()
+                if source_task_type != "jobs_digest_v2":
+                    continue
+            stage_map = jobs_stage_tasks_by_pipeline.setdefault(pipeline_id, {})
+            existing = stage_map.get(str(task.task_type))
+            if existing is None or (task.updated_at, task.created_at) > (existing.updated_at, existing.created_at):
+                stage_map[str(task.task_type)] = task
+                extra_task_ids.add(task.id)
+
+    combined_task_ids = set(task_ids) | extra_task_ids
+    if not combined_task_ids:
+        return {}, {}, {}
 
     runs = (
         db.query(Run)
-        .filter(Run.task_id.in_(task_ids))
+        .filter(Run.task_id.in_(list(combined_task_ids)))
         .order_by(Run.created_at.desc(), Run.attempt.desc())
         .all()
     )
@@ -1928,7 +2200,7 @@ def _build_watcher_summaries(
 
     artifacts = (
         db.query(Artifact)
-        .filter(Artifact.task_id.in_(task_ids))
+        .filter(Artifact.task_id.in_(list(combined_task_ids)))
         .order_by(Artifact.created_at.desc())
         .all()
     )
@@ -1942,6 +2214,7 @@ def _build_watcher_summaries(
 
     run_summary_by_watcher_id: dict[str, dict[str, Any]] = {}
     outcome_summary_by_watcher_id: dict[str, dict[str, Any]] = {}
+    workflow_summary_by_watcher_id: dict[str, dict[str, Any]] = {}
     for watcher_id, task in selected_task_by_watcher_id.items():
         latest_run = latest_run_by_task_id.get(task.id)
         run_summary_by_watcher_id[watcher_id] = {
@@ -1973,8 +2246,21 @@ def _build_watcher_summaries(
                 "artifact_type": None,
                 "created_at": task.updated_at,
             }
+        pipeline_id = jobs_pipeline_ids_by_watcher.get(watcher_id)
+        if pipeline_id:
+            stage_tasks = jobs_stage_tasks_by_pipeline.get(pipeline_id, {})
+            if "jobs_collect_v1" not in stage_tasks:
+                stage_tasks = {**stage_tasks, "jobs_collect_v1": task}
+            workflow_summary = _build_jobs_workflow_summary(
+                watcher=task,
+                stage_tasks=stage_tasks,
+                latest_run_by_task_id=latest_run_by_task_id,
+                result_artifact_by_task_id=result_artifact_by_task_id,
+            )
+            if workflow_summary:
+                workflow_summary_by_watcher_id[watcher_id] = workflow_summary
 
-    return run_summary_by_watcher_id, outcome_summary_by_watcher_id
+    return run_summary_by_watcher_id, outcome_summary_by_watcher_id, workflow_summary_by_watcher_id
 
 
 def _template_row_to_watcher(
@@ -1982,6 +2268,7 @@ def _template_row_to_watcher(
     *,
     last_run_summary: Optional[dict[str, Any]] = None,
     last_outcome_summary: Optional[dict[str, Any]] = None,
+    workflow_summary: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     metadata_full = _normalize_metadata_obj(row.get("metadata_json"))
     notification_behavior = _coerce_notification_behavior(metadata_full.get("notification_behavior"))
@@ -2005,6 +2292,7 @@ def _template_row_to_watcher(
         "updated_at": row.get("updated_at"),
         "last_run_summary": last_run_summary,
         "last_outcome_summary": last_outcome_summary,
+        "workflow_summary": workflow_summary,
     }
 
 
@@ -2012,12 +2300,13 @@ def _hydrate_watcher_rows(template_rows: List[dict[str, Any]]) -> list[dict[str,
     if not template_rows:
         return []
     with SessionLocal() as db:
-        run_summaries, outcome_summaries = _build_watcher_summaries(db, template_rows)
+        run_summaries, outcome_summaries, workflow_summaries = _build_watcher_summaries(db, template_rows)
     return [
         _template_row_to_watcher(
             row,
             last_run_summary=run_summaries.get(str(row.get("id") or "")),
             last_outcome_summary=outcome_summaries.get(str(row.get("id") or "")),
+            workflow_summary=workflow_summaries.get(str(row.get("id") or "")),
         )
         for row in template_rows
     ]
@@ -2482,8 +2771,12 @@ def upsert_jobs_digest_planner_template_route(req: PlannerJobsPresetCreate):
             experience_level=req.experience_level,
             enabled_sources=req.enabled_sources,
             result_limit_per_source=req.result_limit_per_source,
+            max_queries_per_run=req.max_queries_per_run,
             shortlist_count=req.shortlist_count,
             freshness_preference=req.freshness_preference,
+            jobs_notification_cooldown_days=req.jobs_notification_cooldown_days,
+            jobs_shortlist_repeat_penalty=req.jobs_shortlist_repeat_penalty,
+            resurface_seen_jobs=req.resurface_seen_jobs,
             desired_salary_min=req.desired_salary_min,
             desired_salary_max=req.desired_salary_max,
             experience_levels=req.experience_levels,
@@ -2506,8 +2799,12 @@ def upsert_jobs_digest_planner_template_route(req: PlannerJobsPresetCreate):
             experience_level=req.experience_level,
             enabled_sources=req.enabled_sources,
             result_limit_per_source=req.result_limit_per_source,
+            max_queries_per_run=req.max_queries_per_run,
             shortlist_count=req.shortlist_count,
             freshness_preference=req.freshness_preference,
+            jobs_notification_cooldown_days=req.jobs_notification_cooldown_days,
+            jobs_shortlist_repeat_penalty=req.jobs_shortlist_repeat_penalty,
+            resurface_seen_jobs=req.resurface_seen_jobs,
             desired_salary_min=req.desired_salary_min,
             desired_salary_max=req.desired_salary_max,
             location=req.location,

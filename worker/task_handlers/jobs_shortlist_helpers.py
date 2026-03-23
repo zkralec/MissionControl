@@ -4,6 +4,8 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
+from task_handlers.jobs_normalize_helpers import canonical_job_key as build_canonical_job_key, metadata_quality_details
+
 
 def _canonical_text(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -62,6 +64,21 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _history_recency_factor(value: Any, *, now_utc: datetime | None = None) -> float:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return 0.35
+    now = now_utc or datetime.now(timezone.utc)
+    delta_days = max((now - parsed).total_seconds() / 86400.0, 0.0)
+    if delta_days <= 7.0:
+        return 1.0
+    if delta_days <= 30.0:
+        return 0.65
+    if delta_days <= 90.0:
+        return 0.35
+    return 0.2
+
+
 def _freshness_factor(posted_at: Any, *, now_utc: datetime | None = None) -> float:
     posted = _parse_datetime(posted_at)
     if posted is None:
@@ -73,6 +90,10 @@ def _freshness_factor(posted_at: Any, *, now_utc: datetime | None = None) -> flo
 
 
 def _score_100(row: dict[str, Any]) -> float:
+    adjusted = _as_float(row.get("overall_score_adjusted"))
+    if adjusted is not None:
+        return max(0.0, min(adjusted, 100.0))
+
     direct = _as_float(row.get("overall_score"))
     if direct is not None:
         return max(0.0, min(direct, 100.0))
@@ -83,6 +104,46 @@ def _score_100(row: dict[str, Any]) -> float:
             return max(0.0, min(scaled * 50.0, 100.0))
         return max(0.0, min(scaled, 100.0))
     return 0.0
+
+
+def _metadata_quality(row: dict[str, Any]) -> dict[str, Any]:
+    details = metadata_quality_details(row)
+    if isinstance(row.get("metadata_quality_score"), (int, float)):
+        details["metadata_quality_score"] = max(0.0, min(float(row.get("metadata_quality_score")), 100.0))
+    for key in (
+        "missing_company",
+        "missing_source_url",
+        "missing_posted_at",
+        "missing_location",
+        "has_direct_source_url",
+    ):
+        if isinstance(row.get(key), bool):
+            details[key] = bool(row.get(key))
+    return details
+
+
+def _metadata_quality_adjustment(row: dict[str, Any]) -> tuple[dict[str, Any], float]:
+    details = _metadata_quality(row)
+    score = float(details.get("metadata_quality_score") or 0.0)
+
+    adjustment = 0.0
+    if score >= 85.0:
+        adjustment += min((score - 85.0) * 0.08, 1.2)
+    elif score < 60.0:
+        adjustment -= min((60.0 - score) * 0.08, 3.0)
+
+    if details.get("has_direct_source_url"):
+        adjustment += 0.75
+    elif details.get("missing_source_url"):
+        adjustment -= 1.5
+    if details.get("missing_company"):
+        adjustment -= 1.5
+    if details.get("missing_posted_at"):
+        adjustment -= 1.0
+    if details.get("missing_location"):
+        adjustment -= 0.75
+
+    return details, round(max(-6.0, min(adjustment, 3.0)), 4)
 
 
 def normalize_scored_jobs(rows: Any) -> list[dict[str, Any]]:
@@ -106,6 +167,7 @@ def normalize_scored_jobs(rows: Any) -> list[dict[str, Any]]:
         item["source"] = source
         item["company"] = company
         item["title"] = title
+        item["canonical_job_key"] = str(raw.get("canonical_job_key") or build_canonical_job_key(raw) or item["job_id"]).strip()
         item["duplicate_group_id"] = duplicate_group_id
         item["duplicate_count"] = duplicate_count
         item["_base_score_100"] = _score_100(raw)
@@ -113,6 +175,14 @@ def normalize_scored_jobs(rows: Any) -> list[dict[str, Any]]:
         item["_title_key"] = _canonical_text(title)
         item["_source_key"] = source
         item["_freshness_factor"] = _freshness_factor(raw.get("posted_at"))
+        quality_details, quality_adjustment = _metadata_quality_adjustment(raw)
+        item["metadata_quality_score"] = float(quality_details.get("metadata_quality_score") or 0.0)
+        item["missing_company"] = bool(quality_details.get("missing_company"))
+        item["missing_source_url"] = bool(quality_details.get("missing_source_url"))
+        item["missing_posted_at"] = bool(quality_details.get("missing_posted_at"))
+        item["missing_location"] = bool(quality_details.get("missing_location"))
+        item["has_direct_source_url"] = bool(quality_details.get("has_direct_source_url"))
+        item["_metadata_quality_adjustment"] = quality_adjustment
         output.append(item)
     return output
 
@@ -138,15 +208,22 @@ def shortlist_jobs(
     near_duplicate_title_similarity_threshold: float,
     freshness_weight_enabled: bool,
     freshness_max_bonus: float,
+    jobs_shortlist_repeat_penalty: float = 0.0,
+    jobs_notification_cooldown_days: int = 0,
+    resurface_seen_jobs: bool = True,
+    now_utc: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, Any]]:
     remaining = scored_jobs[:]
     shortlist: list[dict[str, Any]] = []
     source_counts: dict[str, int] = {}
     company_counts: dict[str, int] = {}
     selected_duplicate_groups: set[str] = set()
+    now = now_utc or datetime.now(timezone.utc)
 
     rejected_summary = {
         "below_min_score": 0,
+        "notification_cooldown": 0,
+        "resurface_disabled": 0,
         "per_source_cap": 0,
         "per_company_cap": 0,
         "duplicate_group_repeat": 0,
@@ -162,7 +239,11 @@ def shortlist_jobs(
             "company_repetition_penalty": company_repetition_penalty,
             "freshness_weight_enabled": freshness_weight_enabled,
             "freshness_max_bonus": freshness_max_bonus,
+            "jobs_shortlist_repeat_penalty": jobs_shortlist_repeat_penalty,
+            "jobs_notification_cooldown_days": jobs_notification_cooldown_days,
+            "resurface_seen_jobs": resurface_seen_jobs,
         },
+        "cooldown_suppressed_job_ids": [],
     }
 
     while remaining and len(shortlist) < max_items:
@@ -179,6 +260,15 @@ def shortlist_jobs(
 
             if base < min_score_100:
                 continue
+            if bool(row.get("suppressed_due_to_cooldown")):
+                continue
+            if (
+                not resurface_seen_jobs
+                and bool(row.get("resurfaced_from_prior_runs"))
+                and not bool(row.get("previously_shortlisted"))
+                and not bool(row.get("previously_notified"))
+            ):
+                continue
             if source_counts.get(source_key, 0) >= per_source_cap:
                 continue
             if company_counts.get(company_key, 0) >= per_company_cap:
@@ -189,6 +279,18 @@ def shortlist_jobs(
             source_penalty = float(source_counts.get(source_key, 0)) * source_diversity_weight
             company_penalty = float(company_counts.get(company_key, 0)) * company_repetition_penalty
             freshness_bonus = float(row.get("_freshness_factor") or 0.0) * freshness_max_bonus if freshness_weight_enabled else 0.0
+            metadata_quality_adjustment = float(row.get("_metadata_quality_adjustment") or 0.0)
+            repeat_penalty = 0.0
+            if bool(row.get("previously_shortlisted")):
+                repeat_penalty += jobs_shortlist_repeat_penalty * _history_recency_factor(
+                    row.get("history_last_shortlisted_at"),
+                    now_utc=now,
+                )
+            elif bool(row.get("previously_notified")):
+                repeat_penalty += (jobs_shortlist_repeat_penalty * 0.5) * _history_recency_factor(
+                    row.get("history_last_notified_at"),
+                    now_utc=now,
+                )
 
             near_duplicate_penalty = 0.0
             title_key = str(row.get("_title_key") or "")
@@ -199,11 +301,20 @@ def shortlist_jobs(
                 if similarity >= near_duplicate_title_similarity_threshold:
                     near_duplicate_penalty = max(near_duplicate_penalty, 10.0 + similarity * 10.0)
 
-            effective = base + freshness_bonus - source_penalty - company_penalty - near_duplicate_penalty
+            effective = (
+                base
+                + freshness_bonus
+                + metadata_quality_adjustment
+                - source_penalty
+                - company_penalty
+                - repeat_penalty
+                - near_duplicate_penalty
+            )
             if effective > best_effective:
                 best_effective = effective
                 best_idx = idx
                 best_row = row
+                row["_historical_repeat_penalty"] = round(repeat_penalty, 4)
 
         if best_idx < 0 or best_row is None:
             break
@@ -228,11 +339,20 @@ def shortlist_jobs(
         duplicate_group_id = row.get("duplicate_group_id")
         title_key = str(row.get("_title_key") or "")
 
-        if len(shortlist) >= max_items:
-            rejected_summary["max_items"] += 1
-            continue
         if base < min_score_100:
             rejected_summary["below_min_score"] += 1
+            continue
+        if bool(row.get("suppressed_due_to_cooldown")):
+            rejected_summary["notification_cooldown"] += 1
+            diagnostics["cooldown_suppressed_job_ids"].append(row.get("job_id"))
+            continue
+        if (
+            not resurface_seen_jobs
+            and bool(row.get("resurfaced_from_prior_runs"))
+            and not bool(row.get("previously_shortlisted"))
+            and not bool(row.get("previously_notified"))
+        ):
+            rejected_summary["resurface_disabled"] += 1
             continue
         if source_counts.get(source_key, 0) >= per_source_cap:
             rejected_summary["per_source_cap"] += 1
@@ -254,6 +374,9 @@ def shortlist_jobs(
                 break
         if near_duplicate:
             rejected_summary["near_duplicate_company_title"] += 1
+            continue
+        if len(shortlist) >= max_items:
+            rejected_summary["max_items"] += 1
             continue
         rejected_summary["max_items"] += 1
 

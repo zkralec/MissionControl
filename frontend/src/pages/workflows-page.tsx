@@ -123,8 +123,12 @@ type JobsWatcherFormState = {
   experienceLevel: string;
   enabledSources: Record<JobSourceOption, boolean>;
   resultLimitPerSourceText: string;
+  maxQueriesPerRunText: string;
   shortlistCountText: string;
   freshnessPreference: string;
+  notificationCooldownDaysText: string;
+  shortlistRepeatPenaltyText: string;
+  resurfaceSeenJobs: boolean;
 };
 
 const DEFAULT_JOBS_WATCHER_FORM_STATE: JobsWatcherFormState = {
@@ -137,8 +141,12 @@ const DEFAULT_JOBS_WATCHER_FORM_STATE: JobsWatcherFormState = {
   experienceLevel: "",
   enabledSources: { linkedin: true, indeed: true, glassdoor: true, handshake: true },
   resultLimitPerSourceText: "25",
+  maxQueriesPerRunText: "12",
   shortlistCountText: "5",
-  freshnessPreference: "off"
+  freshnessPreference: "off",
+  notificationCooldownDaysText: "3",
+  shortlistRepeatPenaltyText: "4",
+  resurfaceSeenJobs: true
 };
 
 const PRIMARY_WATCHERS: Array<{
@@ -219,6 +227,80 @@ type WorkflowInsight = {
   notificationBehaviorLabel: string | null;
   watcherId: string | null;
 };
+
+type JobsWorkflowSummary = {
+  enabledSources: string[];
+  queryCountUsed: number | null;
+  rawJobsFound: number | null;
+  jobsAfterFiltering: number | null;
+  jobsAfterDedupe: number | null;
+  shortlistedCount: number | null;
+  notifyStatus: string | null;
+  notifyReason: string | null;
+  executiveSummary: string | null;
+  headline: string | null;
+  topJobs: Array<{
+    title: string;
+    company: string | null;
+    source: string | null;
+    sourceUrl: string | null;
+    posted: string | null;
+    reason: string | null;
+  }>;
+  sourceDiversity: string[];
+  whyTopJobsWon: string[];
+  collectionBySource: Array<{
+    source: string;
+    rawJobsFound: number;
+    keptAfterBasicFilter: number;
+    jobsDropped: number;
+    missingCompanyRate: number;
+    missingPostedAtRate: number;
+    missingSourceUrlRate: number;
+    missingLocationRate: number;
+    weaknessSummary: string | null;
+  }>;
+  operatorSummary: {
+    searchedEnough: string | null;
+    whichSourceIsWeak: string | null;
+    whyDidRawCountCollapse: string | null;
+    areWeMissingMetadata: string | null;
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asText(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+}
 
 function summarizeText(value: string | null | undefined, max = 170): string {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -364,9 +446,16 @@ function parseJobsWatcherFormFromPayload(rawPayloadJson: string | null | undefin
 
   const resultLimitRaw = request.result_limit_per_source ?? request.max_jobs_per_source;
   const resultLimitPerSourceText = resultLimitRaw == null ? "25" : String(resultLimitRaw);
+  const maxQueriesRaw = request.max_queries_per_run;
+  const maxQueriesPerRunText = maxQueriesRaw == null ? "12" : String(maxQueriesRaw);
 
   const shortlistCountRaw = request.shortlist_max_items ?? request.shortlist_count;
   const shortlistCountText = shortlistCountRaw == null ? "5" : String(shortlistCountRaw);
+  const notificationCooldownRaw = request.jobs_notification_cooldown_days;
+  const notificationCooldownDaysText = notificationCooldownRaw == null ? "3" : String(notificationCooldownRaw);
+  const shortlistRepeatPenaltyRaw = request.jobs_shortlist_repeat_penalty;
+  const shortlistRepeatPenaltyText = shortlistRepeatPenaltyRaw == null ? "4" : String(shortlistRepeatPenaltyRaw);
+  const resurfaceSeenJobs = asBoolean(request.resurface_seen_jobs) ?? true;
 
   return {
     desiredTitlesText: serializeDelimitedText(titles),
@@ -378,10 +467,77 @@ function parseJobsWatcherFormFromPayload(rawPayloadJson: string | null | undefin
     experienceLevel,
     enabledSources,
     resultLimitPerSourceText,
+    maxQueriesPerRunText,
     shortlistCountText,
     freshnessPreference: normalizeFreshnessPreference(
       request.shortlist_freshness_preference ?? request.freshness_preference
-    )
+    ),
+    notificationCooldownDaysText,
+    shortlistRepeatPenaltyText,
+    resurfaceSeenJobs
+  };
+}
+
+function parseJobsWorkflowSummary(watcher: Watcher | null): JobsWorkflowSummary | null {
+  const summary = watcher?.workflow_summary;
+  if (!isRecord(summary) || asText(summary.kind) !== "jobs_watcher") return null;
+
+  const counts = isRecord(summary.counts) ? summary.counts : {};
+  const notify = isRecord(summary.notify) ? summary.notify : {};
+  const digestPreview = isRecord(summary.digest_preview) ? summary.digest_preview : {};
+  const collectionQuality = isRecord(summary.collection_quality) ? summary.collection_quality : {};
+  const operatorSummary = isRecord(collectionQuality.operator_summary) ? collectionQuality.operator_summary : {};
+
+  const topJobs = Array.isArray(digestPreview.top_jobs)
+    ? digestPreview.top_jobs
+        .filter((row): row is Record<string, unknown> => isRecord(row))
+        .map((row) => ({
+          title: asText(row.title) || "Untitled role",
+          company: asText(row.company),
+          source: asText(row.source),
+          sourceUrl: asText(row.source_url),
+          posted: asText(row.posted),
+          reason: asText(row.reason)
+        }))
+    : [];
+
+  const collectionBySource = Array.isArray(collectionQuality.by_source)
+    ? collectionQuality.by_source
+        .filter((row): row is Record<string, unknown> => isRecord(row))
+        .map((row) => ({
+          source: asText(row.source) || "unknown",
+          rawJobsFound: asNumber(row.raw_jobs_found) || 0,
+          keptAfterBasicFilter: asNumber(row.kept_after_basic_filter) || 0,
+          jobsDropped: asNumber(row.jobs_dropped) || 0,
+          missingCompanyRate: asNumber(row.missing_company_rate) || 0,
+          missingPostedAtRate: asNumber(row.missing_posted_at_rate) || 0,
+          missingSourceUrlRate: asNumber(row.missing_source_url_rate) || 0,
+          missingLocationRate: asNumber(row.missing_location_rate) || 0,
+          weaknessSummary: asText(row.weakness_summary)
+        }))
+    : [];
+
+  return {
+    enabledSources: asStringArray(summary.enabled_sources),
+    queryCountUsed: asNumber(summary.query_count_used),
+    rawJobsFound: asNumber(counts.raw_jobs_found),
+    jobsAfterFiltering: asNumber(counts.jobs_after_filtering),
+    jobsAfterDedupe: asNumber(counts.jobs_after_dedupe),
+    shortlistedCount: asNumber(counts.shortlisted_count),
+    notifyStatus: asText(notify.status),
+    notifyReason: asText(notify.reason),
+    executiveSummary: asText(digestPreview.executive_summary),
+    headline: asText(digestPreview.headline),
+    topJobs,
+    sourceDiversity: asStringArray(digestPreview.source_diversity),
+    whyTopJobsWon: asStringArray(digestPreview.why_top_jobs_won),
+    collectionBySource,
+    operatorSummary: {
+      searchedEnough: asText(operatorSummary.did_we_search_enough),
+      whichSourceIsWeak: asText(operatorSummary.which_source_is_weak),
+      whyDidRawCountCollapse: asText(operatorSummary.why_did_raw_count_collapse),
+      areWeMissingMetadata: asText(operatorSummary.are_we_missing_metadata)
+    }
   };
 }
 
@@ -736,8 +892,12 @@ export function WorkflowsPage(): JSX.Element {
       enabled_sources?: string[] | null;
       boards?: string[] | null;
       result_limit_per_source?: number | null;
+      max_queries_per_run?: number | null;
       shortlist_count?: number | null;
       freshness_preference?: string | null;
+      jobs_notification_cooldown_days?: number | null;
+      jobs_shortlist_repeat_penalty?: number | null;
+      resurface_seen_jobs?: boolean | null;
       location?: string | null;
       enabled?: boolean;
     };
@@ -765,14 +925,32 @@ export function WorkflowsPage(): JSX.Element {
 
     const resultLimitRaw = jobsForm.resultLimitPerSourceText.trim();
     const resultLimitPerSource = Number(resultLimitRaw || "25");
-    if (!Number.isFinite(resultLimitPerSource) || !Number.isInteger(resultLimitPerSource) || resultLimitPerSource < 1 || resultLimitPerSource > 100) {
-      return { error: "Result limit per source must be an integer between 1 and 100." };
+    if (!Number.isFinite(resultLimitPerSource) || !Number.isInteger(resultLimitPerSource) || resultLimitPerSource < 1 || resultLimitPerSource > 1000) {
+      return { error: "Result limit per source must be an integer between 1 and 1000." };
+    }
+
+    const maxQueriesRaw = jobsForm.maxQueriesPerRunText.trim();
+    const maxQueriesPerRun = Number(maxQueriesRaw || "12");
+    if (!Number.isFinite(maxQueriesPerRun) || !Number.isInteger(maxQueriesPerRun) || maxQueriesPerRun < 1 || maxQueriesPerRun > 20) {
+      return { error: "Max queries per run must be an integer between 1 and 20." };
     }
 
     const shortlistCountRaw = jobsForm.shortlistCountText.trim();
     const shortlistCount = Number(shortlistCountRaw || "5");
     if (!Number.isFinite(shortlistCount) || !Number.isInteger(shortlistCount) || shortlistCount < 1 || shortlistCount > 10) {
       return { error: "Top-N shortlist count must be an integer between 1 and 10." };
+    }
+
+    const notificationCooldownRaw = jobsForm.notificationCooldownDaysText.trim();
+    const notificationCooldownDays = Number(notificationCooldownRaw || "3");
+    if (!Number.isFinite(notificationCooldownDays) || !Number.isInteger(notificationCooldownDays) || notificationCooldownDays < 0 || notificationCooldownDays > 30) {
+      return { error: "Notification cooldown days must be an integer between 0 and 30." };
+    }
+
+    const shortlistRepeatPenaltyRaw = jobsForm.shortlistRepeatPenaltyText.trim();
+    const shortlistRepeatPenalty = Number(shortlistRepeatPenaltyRaw || "4");
+    if (!Number.isFinite(shortlistRepeatPenalty) || shortlistRepeatPenalty < 0 || shortlistRepeatPenalty > 20) {
+      return { error: "Shortlist repeat penalty must be between 0 and 20." };
     }
 
     const experienceLevel = JOB_EXPERIENCE_LEVEL_OPTIONS.includes(
@@ -796,8 +974,12 @@ export function WorkflowsPage(): JSX.Element {
       enabled_sources: enabledSources,
       boards: enabledSources,
       result_limit_per_source: Math.trunc(resultLimitPerSource),
+      max_queries_per_run: Math.trunc(maxQueriesPerRun),
       shortlist_count: Math.trunc(shortlistCount),
       freshness_preference: freshnessPreference,
+      jobs_notification_cooldown_days: Math.trunc(notificationCooldownDays),
+      jobs_shortlist_repeat_penalty: shortlistRepeatPenalty,
+      resurface_seen_jobs: jobsForm.resurfaceSeenJobs,
       location: preferredLocations[0] || null,
       enabled
     };
@@ -835,8 +1017,12 @@ export function WorkflowsPage(): JSX.Element {
         enabled_sources: ["linkedin", "indeed", "glassdoor", "handshake"],
         boards: ["linkedin", "indeed", "glassdoor", "handshake"],
         result_limit_per_source: 25,
+        max_queries_per_run: 12,
         shortlist_count: 5,
         freshness_preference: "off",
+        jobs_notification_cooldown_days: 3,
+        jobs_shortlist_repeat_penalty: 4,
+        resurface_seen_jobs: true,
         enabled: true
       });
       return;
@@ -1012,6 +1198,10 @@ export function WorkflowsPage(): JSX.Element {
     if (!selectedPrimaryWorkflow) return null;
     return JSON.stringify(selectedPrimaryWorkflow.payload);
   }, [selectedPrimaryWatcher?.payload_json, selectedPrimaryWorkflow]);
+  const selectedJobsWorkflowSummary = useMemo(
+    () => parseJobsWorkflowSummary(selectedPrimaryWatcher),
+    [selectedPrimaryWatcher]
+  );
   const selectedEditWatcher = editWatcherId ? (watchers.find((row) => row.id === editWatcherId) || null) : null;
   const editIsJobsWatcher = selectedEditWatcher?.task_type === "jobs_collect_v1";
 
@@ -1291,186 +1481,439 @@ export function WorkflowsPage(): JSX.Element {
                     <div>
                       <div className="text-sm font-semibold">Jobs Watcher Configuration</div>
                       <div className="text-xs text-muted-foreground">
-                        Structured fields are grouped by pipeline stage: collection filters, ranking hints, and digest shortlist size.
+                        Tune search breadth, candidate preferences, shortlist behavior, and repeat handling without editing raw JSON.
                       </div>
                     </div>
 
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-desired-titles">Desired Titles (Collection + Ranking)</Label>
-                        <Textarea
-                          id="jobs-desired-titles"
-                          className="min-h-[70px]"
-                          value={jobsForm.desiredTitlesText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, desiredTitlesText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                          placeholder="Machine Learning Engineer, AI Engineer"
-                        />
-                        <div className="text-[11px] text-muted-foreground">Comma or newline separated.</div>
+                    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+                      <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
+                        <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Watcher</div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <StatusBadge status={selectedWorkflowInsight.stateLabel} />
+                          <span>{selectedWorkflowInsight.effectiveIntervalLabel}</span>
+                        </div>
                       </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-locations">Preferred Locations (Collection + Ranking)</Label>
-                        <Textarea
-                          id="jobs-locations"
-                          className="min-h-[70px]"
-                          value={jobsForm.preferredLocationsText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, preferredLocationsText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                          placeholder={"Remote\nNew York, NY"}
-                        />
-                        <div className="text-[11px] text-muted-foreground">One location per line.</div>
+                      <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
+                        <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Sources</div>
+                        <div className="mt-1 text-foreground">
+                          {selectedJobsWorkflowSummary?.enabledSources.length
+                            ? selectedJobsWorkflowSummary.enabledSources.join(", ")
+                            : JOB_SOURCE_OPTIONS.filter((source) => jobsForm.enabledSources[source]).join(", ")}
+                        </div>
                       </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-keywords">Keywords (Collection + Ranking)</Label>
-                        <Textarea
-                          id="jobs-keywords"
-                          className="min-h-[70px]"
-                          value={jobsForm.keywordsText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, keywordsText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                          placeholder="python, llm, distributed systems"
-                        />
+                      <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
+                        <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Counts</div>
+                        <div className="mt-1 text-foreground">
+                          raw {selectedJobsWorkflowSummary?.rawJobsFound ?? "-"} · filtered {selectedJobsWorkflowSummary?.jobsAfterFiltering ?? "-"}
+                        </div>
+                        <div className="text-muted-foreground">
+                          deduped {selectedJobsWorkflowSummary?.jobsAfterDedupe ?? "-"} · shortlisted {selectedJobsWorkflowSummary?.shortlistedCount ?? "-"}
+                        </div>
                       </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-excluded-keywords">Excluded Keywords (Collection + Ranking)</Label>
-                        <Textarea
-                          id="jobs-excluded-keywords"
-                          className="min-h-[70px]"
-                          value={jobsForm.excludedKeywordsText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, excludedKeywordsText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                          placeholder="intern, unpaid"
-                        />
+                      <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
+                        <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Notify</div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <StatusBadge status={selectedJobsWorkflowSummary?.notifyStatus || "unknown"} />
+                        </div>
+                        <div className="text-muted-foreground">{selectedJobsWorkflowSummary?.notifyReason || "Await latest digest outcome."}</div>
+                      </div>
+                      <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
+                        <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Latest Run</div>
+                        <div className="mt-1 text-foreground">{selectedWorkflowInsight.lastRunTimeLabel}</div>
+                        <div className="text-muted-foreground">{selectedWorkflowInsight.lastRunOutcomeLabel}</div>
                       </div>
                     </div>
 
-                    <div className="grid gap-3 lg:grid-cols-3">
-                      <div className="space-y-1">
-                        <Label>Work Mode Preference (Collection + Ranking)</Label>
-                        <div className="space-y-1 text-sm">
-                          {JOB_WORK_MODE_OPTIONS.map((mode) => (
-                            <label key={mode} className="flex items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={jobsForm.remotePreference[mode]}
-                                onChange={(event) => setJobsWorkModeEnabled(mode, event.target.checked)}
-                              />
-                              <span className="capitalize">{mode}</span>
-                            </label>
-                          ))}
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                        <div>
+                          <div className="text-sm font-semibold">Latest Digest Preview</div>
+                          <div className="text-xs text-muted-foreground">
+                            Executive summary, top jobs, direct links, and source diversity from the latest pipeline run.
+                          </div>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-relaxed">
+                          {selectedJobsWorkflowSummary?.headline || selectedJobsWorkflowSummary?.executiveSummary || "No digest preview available yet."}
+                        </div>
+                        {selectedJobsWorkflowSummary?.whyTopJobsWon.length ? (
+                          <div className="space-y-1">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Why Top Jobs Won</div>
+                            {selectedJobsWorkflowSummary.whyTopJobsWon.map((reason) => (
+                              <div key={reason} className="rounded-md border border-border/60 bg-muted/15 px-2 py-1 text-xs">
+                                {reason}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="space-y-2">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Top Jobs</div>
+                          {selectedJobsWorkflowSummary?.topJobs.length ? (
+                            selectedJobsWorkflowSummary.topJobs.map((job, index) => (
+                              <div key={`${job.title}-${index}`} className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
+                                <div className="font-medium text-foreground">
+                                  {index + 1}. {job.title}
+                                  {job.company ? ` @ ${job.company}` : ""}
+                                </div>
+                                <div className="mt-1 text-muted-foreground">
+                                  {job.source ? `via ${job.source}` : "source pending"}
+                                  {job.posted ? ` · ${job.posted}` : ""}
+                                </div>
+                                {job.reason ? <div className="mt-1 text-foreground">{job.reason}</div> : null}
+                                {job.sourceUrl ? (
+                                  <a
+                                    href={job.sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-1 inline-block break-all text-[11px] text-primary underline-offset-2 hover:underline"
+                                  >
+                                    {job.sourceUrl}
+                                  </a>
+                                ) : null}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">
+                              The latest watcher run has not produced a digest preview yet.
+                            </div>
+                          )}
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
+                          <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Source Diversity</div>
+                          <div className="mt-1 text-foreground">
+                            {selectedJobsWorkflowSummary?.sourceDiversity.length
+                              ? selectedJobsWorkflowSummary.sourceDiversity.join(", ")
+                              : "No source diversity signal yet."}
+                          </div>
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-min-salary">Minimum Salary (Collection + Ranking)</Label>
-                        <Input
-                          id="jobs-min-salary"
-                          value={jobsForm.minimumSalaryText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, minimumSalaryText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                          placeholder="140000"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-experience">Experience Level (Collection + Ranking)</Label>
-                        <select
-                          id="jobs-experience"
-                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                          value={jobsForm.experienceLevel}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, experienceLevel: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                        >
-                          {JOB_EXPERIENCE_LEVEL_OPTIONS.map((value) => (
-                            <option key={value || "any"} value={value}>
-                              {value ? value : "Any"}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 lg:grid-cols-3">
-                      <div className="space-y-1">
-                        <Label>Enabled Sources (Collection)</Label>
-                        <div className="space-y-1 text-sm">
-                          {JOB_SOURCE_OPTIONS.map((source) => (
-                            <label key={source} className="flex items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={jobsForm.enabledSources[source]}
-                                onChange={(event) => setJobsSourceEnabled(source, event.target.checked)}
-                              />
-                              <span className="capitalize">{source}</span>
-                            </label>
-                          ))}
+                      <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                        <div>
+                          <div className="text-sm font-semibold">Collection Quality</div>
+                          <div className="text-xs text-muted-foreground">
+                            Search breadth and metadata completeness so you can see whether the watcher is searching widely enough.
+                          </div>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
+                            <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Query Count</div>
+                            <div className="mt-1 text-foreground">{selectedJobsWorkflowSummary?.queryCountUsed ?? "-"}</div>
+                          </div>
+                          <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
+                            <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Weak Source</div>
+                            <div className="mt-1 text-foreground">{selectedJobsWorkflowSummary?.operatorSummary.whichSourceIsWeak || "No weak-source warning."}</div>
+                          </div>
+                        </div>
+                        <div className="grid gap-2">
+                          {[
+                            selectedJobsWorkflowSummary?.operatorSummary.searchedEnough,
+                            selectedJobsWorkflowSummary?.operatorSummary.whyDidRawCountCollapse,
+                            selectedJobsWorkflowSummary?.operatorSummary.areWeMissingMetadata
+                          ]
+                            .filter(Boolean)
+                            .map((text) => (
+                              <div key={text} className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs text-foreground">
+                                {text}
+                              </div>
+                            ))}
+                        </div>
+                        <div className="overflow-x-auto rounded-md border border-border/60">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Source</TableHead>
+                                <TableHead>Raw</TableHead>
+                                <TableHead>Kept</TableHead>
+                                <TableHead>Dropped</TableHead>
+                                <TableHead>Metadata Gaps</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedJobsWorkflowSummary?.collectionBySource.length ? (
+                                selectedJobsWorkflowSummary.collectionBySource.map((row) => (
+                                  <TableRow key={row.source}>
+                                    <TableCell className="capitalize">{row.source}</TableCell>
+                                    <TableCell>{row.rawJobsFound}</TableCell>
+                                    <TableCell>{row.keptAfterBasicFilter}</TableCell>
+                                    <TableCell>{row.jobsDropped}</TableCell>
+                                    <TableCell className="text-xs text-muted-foreground">
+                                      {row.weaknessSummary || `company ${row.missingCompanyRate}% · links ${row.missingSourceUrlRate}%`}
+                                    </TableCell>
+                                  </TableRow>
+                                ))
+                              ) : (
+                                <TableRow>
+                                  <TableCell colSpan={5} className="text-xs text-muted-foreground">
+                                    Collection-quality details will appear after the next jobs pipeline run.
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </TableBody>
+                          </Table>
                         </div>
                       </div>
+                    </div>
 
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-limit-per-source">Result Limit Per Source (Collection)</Label>
-                        <Input
-                          id="jobs-limit-per-source"
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={jobsForm.resultLimitPerSourceText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, resultLimitPerSourceText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                        />
-                      </div>
+                    <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                      <div className="text-sm font-semibold">Search Scope</div>
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-desired-titles">Desired titles</Label>
+                          <Textarea
+                            id="jobs-desired-titles"
+                            className="min-h-[70px]"
+                            value={jobsForm.desiredTitlesText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, desiredTitlesText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                            placeholder="Machine Learning Engineer, AI Engineer"
+                          />
+                          <div className="text-[11px] text-muted-foreground">Comma or newline separated.</div>
+                        </div>
 
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-shortlist-count">Top-N Shortlist Count (Digest Size)</Label>
-                        <Input
-                          id="jobs-shortlist-count"
-                          type="number"
-                          min={1}
-                          max={10}
-                          value={jobsForm.shortlistCountText}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, shortlistCountText: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                        />
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-locations">Preferred locations</Label>
+                          <Textarea
+                            id="jobs-locations"
+                            className="min-h-[70px]"
+                            value={jobsForm.preferredLocationsText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, preferredLocationsText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                            placeholder={"Remote\nNew York, NY"}
+                          />
+                          <div className="text-[11px] text-muted-foreground">One location per line.</div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-keywords">Keywords</Label>
+                          <Textarea
+                            id="jobs-keywords"
+                            className="min-h-[70px]"
+                            value={jobsForm.keywordsText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, keywordsText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                            placeholder="python, llm, distributed systems"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-excluded-keywords">Excluded keywords</Label>
+                          <Textarea
+                            id="jobs-excluded-keywords"
+                            className="min-h-[70px]"
+                            value={jobsForm.excludedKeywordsText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, excludedKeywordsText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                            placeholder="intern, unpaid"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-limit-per-source">Result limit per source</Label>
+                          <Input
+                            id="jobs-limit-per-source"
+                            type="number"
+                            min={1}
+                            max={1000}
+                            value={jobsForm.resultLimitPerSourceText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, resultLimitPerSourceText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-max-queries">Max queries per run</Label>
+                          <Input
+                            id="jobs-max-queries"
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={jobsForm.maxQueriesPerRunText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, maxQueriesPerRunText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          />
+                        </div>
                       </div>
                     </div>
 
-                    <div className="grid gap-3 lg:grid-cols-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="jobs-freshness-pref">Freshness Preference (Shortlist)</Label>
-                        <select
-                          id="jobs-freshness-pref"
-                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                          value={jobsForm.freshnessPreference}
-                          onChange={(event) => {
-                            setJobsForm((prev) => ({ ...prev, freshnessPreference: event.target.value }));
-                            setJobsFormError(null);
-                          }}
-                        >
-                          {JOB_FRESHNESS_PREFERENCE_OPTIONS.map((value) => (
-                            <option key={value} value={value}>
-                              {value.replace(/_/g, " ")}
-                            </option>
-                          ))}
-                        </select>
+                    <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                      <div className="text-sm font-semibold">Candidate Preferences</div>
+                      <div className="grid gap-3 lg:grid-cols-3">
+                        <div className="space-y-1">
+                          <Label>Remote / hybrid / onsite</Label>
+                          <div className="space-y-1 text-sm">
+                            {JOB_WORK_MODE_OPTIONS.map((mode) => (
+                              <label key={mode} className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={jobsForm.remotePreference[mode]}
+                                  onChange={(event) => setJobsWorkModeEnabled(mode, event.target.checked)}
+                                />
+                                <span className="capitalize">{mode}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-min-salary">Minimum salary</Label>
+                          <Input
+                            id="jobs-min-salary"
+                            value={jobsForm.minimumSalaryText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, minimumSalaryText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                            placeholder="140000"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-experience">Experience level</Label>
+                          <select
+                            id="jobs-experience"
+                            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            value={jobsForm.experienceLevel}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, experienceLevel: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          >
+                            {JOB_EXPERIENCE_LEVEL_OPTIONS.map((value) => (
+                              <option key={value || "any"} value={value}>
+                                {value ? value : "Any"}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                      <div className="text-sm font-semibold">Ranking & Shortlist</div>
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-shortlist-count">Shortlist size</Label>
+                          <Input
+                            id="jobs-shortlist-count"
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={jobsForm.shortlistCountText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, shortlistCountText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-freshness-pref">Freshness preference</Label>
+                          <select
+                            id="jobs-freshness-pref"
+                            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                            value={jobsForm.freshnessPreference}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, freshnessPreference: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          >
+                            {JOB_FRESHNESS_PREFERENCE_OPTIONS.map((value) => (
+                              <option key={value} value={value}>
+                                {value.replace(/_/g, " ")}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                      <div className="text-sm font-semibold">Source Coverage</div>
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label>Enabled sources</Label>
+                          <div className="grid gap-1 text-sm sm:grid-cols-2">
+                            {JOB_SOURCE_OPTIONS.map((source) => (
+                              <label key={source} className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={jobsForm.enabledSources[source]}
+                                  onChange={(event) => setJobsSourceEnabled(source, event.target.checked)}
+                                />
+                                <span className="capitalize">{source}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
+                          <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Coverage Notes</div>
+                          <div className="mt-1 text-foreground">
+                            Wider search comes from source count, result limit, and query expansion together. Use the collection-quality panel above to see which source is actually weak.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
+                      <div className="text-sm font-semibold">Repeat / Cooldown Behavior</div>
+                      <div className="grid gap-3 lg:grid-cols-3">
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-notification-cooldown">Notification cooldown days</Label>
+                          <Input
+                            id="jobs-notification-cooldown"
+                            type="number"
+                            min={0}
+                            max={30}
+                            value={jobsForm.notificationCooldownDaysText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, notificationCooldownDaysText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="jobs-repeat-penalty">Shortlist repeat penalty</Label>
+                          <Input
+                            id="jobs-repeat-penalty"
+                            type="number"
+                            min={0}
+                            max={20}
+                            step="0.5"
+                            value={jobsForm.shortlistRepeatPenaltyText}
+                            onChange={(event) => {
+                              setJobsForm((prev) => ({ ...prev, shortlistRepeatPenaltyText: event.target.value }));
+                              setJobsFormError(null);
+                            }}
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <Label>Resurfacing</Label>
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={jobsForm.resurfaceSeenJobs}
+                              onChange={(event) => {
+                                setJobsForm((prev) => ({ ...prev, resurfaceSeenJobs: event.target.checked }));
+                                setJobsFormError(null);
+                              }}
+                            />
+                            <span>Allow previously seen jobs to resurface</span>
+                          </label>
+                        </div>
                       </div>
                     </div>
 

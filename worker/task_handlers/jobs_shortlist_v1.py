@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
+from datetime import datetime, timezone
 from typing import Any
 
+from jobs_history_state import load_jobs_history, record_jobs_seen, record_jobs_shortlisted
 from task_handlers.errors import NonRetryableTaskError
 from task_handlers.jobs_pipeline_common import (
     build_upstream_ref,
@@ -48,6 +51,134 @@ def _extract_scored_jobs(upstream_result: dict[str, Any]) -> tuple[str, list[dic
     )
 
 
+def _db_supports_history(db: Any) -> bool:
+    return hasattr(db, "execute") and hasattr(db, "connection")
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _resolve_history_policy(shortlist_policy: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    try:
+        notification_cooldown_days = int(
+            shortlist_policy.get("jobs_notification_cooldown_days")
+            or request.get("jobs_notification_cooldown_days")
+            or 3
+        )
+    except (TypeError, ValueError):
+        notification_cooldown_days = 3
+    notification_cooldown_days = max(0, min(notification_cooldown_days, 30))
+
+    try:
+        repeat_penalty = float(
+            shortlist_policy.get("jobs_shortlist_repeat_penalty")
+            if shortlist_policy.get("jobs_shortlist_repeat_penalty") is not None
+            else request.get("jobs_shortlist_repeat_penalty", 4.0)
+        )
+    except (TypeError, ValueError):
+        repeat_penalty = 4.0
+    repeat_penalty = max(0.0, min(repeat_penalty, 20.0))
+
+    resurface_seen_jobs = shortlist_policy.get("resurface_seen_jobs")
+    if resurface_seen_jobs is None:
+        resurface_seen_jobs = request.get("resurface_seen_jobs", True)
+
+    return {
+        "jobs_notification_cooldown_days": notification_cooldown_days,
+        "jobs_shortlist_repeat_penalty": repeat_penalty,
+        "resurface_seen_jobs": bool(resurface_seen_jobs),
+    }
+
+
+def _annotate_jobs_with_history(
+    scored_jobs: list[dict[str, Any]],
+    history_by_key: dict[str, dict[str, Any]],
+    *,
+    now_utc: datetime,
+    notification_cooldown_days: int,
+) -> dict[str, Any]:
+    observability = {
+        "history_rows_loaded": len(history_by_key),
+        "seen_before_count": 0,
+        "previously_shortlisted_count": 0,
+        "previously_notified_count": 0,
+        "cooldown_suppressed_count": 0,
+    }
+
+    for row in scored_jobs:
+        canonical_job_key = str(row.get("canonical_job_key") or "").strip()
+        history = history_by_key.get(canonical_job_key) or {}
+        times_seen = int(history.get("times_seen") or 0)
+        times_shortlisted = int(history.get("times_shortlisted") or 0)
+        times_notified = int(history.get("times_notified") or 0)
+        previously_seen = times_seen > 0
+        previously_shortlisted = times_shortlisted > 0
+        previously_notified = times_notified > 0
+        last_notified_at = history.get("last_notified_at")
+        last_notified_dt = _parse_datetime(last_notified_at)
+        cooldown_active = False
+        cooldown_remaining_days = 0
+        if previously_notified and notification_cooldown_days > 0 and last_notified_dt is not None:
+            elapsed_days = max((now_utc - last_notified_dt).total_seconds() / 86400.0, 0.0)
+            if elapsed_days < float(notification_cooldown_days):
+                cooldown_active = True
+                cooldown_remaining_days = int(max(math.ceil(notification_cooldown_days - elapsed_days), 0))
+
+        if previously_seen:
+            observability["seen_before_count"] += 1
+        if previously_shortlisted:
+            observability["previously_shortlisted_count"] += 1
+        if previously_notified:
+            observability["previously_notified_count"] += 1
+        if cooldown_active:
+            observability["cooldown_suppressed_count"] += 1
+
+        row["newly_discovered"] = not previously_seen
+        row["resurfaced_from_prior_runs"] = previously_seen
+        row["previously_shortlisted"] = previously_shortlisted
+        row["previously_notified"] = previously_notified
+        row["suppressed_due_to_cooldown"] = cooldown_active
+        row["history_first_seen_at"] = history.get("first_seen_at")
+        row["history_last_seen_at"] = history.get("last_seen_at")
+        row["history_last_shortlisted_at"] = history.get("last_shortlisted_at")
+        row["history_last_notified_at"] = last_notified_at
+        row["history_times_seen"] = times_seen
+        row["history_times_shortlisted"] = times_shortlisted
+        row["history_times_notified"] = times_notified
+        row["history_cooldown_remaining_days"] = cooldown_remaining_days
+        row["historical_state"] = {
+            "canonical_job_key": canonical_job_key,
+            "first_seen_at": history.get("first_seen_at"),
+            "last_seen_at": history.get("last_seen_at"),
+            "times_seen": times_seen,
+            "times_shortlisted": times_shortlisted,
+            "times_notified": times_notified,
+            "last_shortlisted_at": history.get("last_shortlisted_at"),
+            "last_notified_at": last_notified_at,
+            "newly_discovered": not previously_seen,
+            "resurfaced_from_prior_runs": previously_seen,
+            "previously_shortlisted": previously_shortlisted,
+            "previously_notified": previously_notified,
+            "suppressed_due_to_cooldown": cooldown_active,
+            "cooldown_remaining_days": cooldown_remaining_days,
+        }
+    return observability
+
+
 def execute(task: Any, db: Any) -> dict[str, Any]:
     payload = payload_object(task.payload_json)
     upstream = payload.get("upstream") if isinstance(payload.get("upstream"), dict) else {}
@@ -57,6 +188,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     upstream_result = fetch_upstream_result_content_json(db, upstream)
     upstream_type, scored_rows, pipeline_counts = _extract_scored_jobs(upstream_result)
     scored_jobs = normalize_scored_jobs(scored_rows)
+    now_utc = datetime.now(timezone.utc)
 
     shortlist_policy = payload.get("shortlist_policy") if isinstance(payload.get("shortlist_policy"), dict) else {}
     try:
@@ -109,6 +241,30 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         freshness_max_bonus = 8.0
     freshness_max_bonus = max(0.0, min(freshness_max_bonus, 20.0))
 
+    history_policy = _resolve_history_policy(shortlist_policy, request)
+    history_observability = {
+        "enabled": _db_supports_history(db),
+        "history_rows_loaded": 0,
+        "seen_before_count": 0,
+        "previously_shortlisted_count": 0,
+        "previously_notified_count": 0,
+        "cooldown_suppressed_count": 0,
+    }
+    if _db_supports_history(db) and scored_jobs:
+        history_by_key = load_jobs_history(
+            db,
+            [str(row.get("canonical_job_key") or "").strip() for row in scored_jobs],
+        )
+        history_observability = {
+            "enabled": True,
+            **_annotate_jobs_with_history(
+                scored_jobs,
+                history_by_key,
+                now_utc=now_utc,
+                notification_cooldown_days=int(history_policy["jobs_notification_cooldown_days"]),
+            ),
+        }
+
     shortlist_raw, rejected_summary, diagnostics = shortlist_jobs(
         scored_jobs,
         max_items=max_items,
@@ -120,6 +276,10 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         near_duplicate_title_similarity_threshold=near_duplicate_title_similarity_threshold,
         freshness_weight_enabled=freshness_weight_enabled,
         freshness_max_bonus=freshness_max_bonus,
+        jobs_shortlist_repeat_penalty=float(history_policy["jobs_shortlist_repeat_penalty"]),
+        jobs_notification_cooldown_days=int(history_policy["jobs_notification_cooldown_days"]),
+        resurface_seen_jobs=bool(history_policy["resurface_seen_jobs"]),
+        now_utc=now_utc,
     )
 
     shortlist: list[dict[str, Any]] = []
@@ -130,6 +290,26 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             if not key.startswith("_")
         }
         shortlist.append(item)
+
+    if _db_supports_history(db):
+        if scored_jobs:
+            record_jobs_seen(db, scored_jobs, seen_at=now_utc)
+        if shortlist:
+            record_jobs_shortlisted(db, shortlist, shortlisted_at=now_utc)
+        db.commit()
+
+    history_observability.update(
+        {
+            "selected_newly_discovered_count": sum(1 for row in shortlist if row.get("newly_discovered") is True),
+            "selected_resurfaced_count": sum(1 for row in shortlist if row.get("resurfaced_from_prior_runs") is True),
+            "selected_previously_shortlisted_count": sum(
+                1 for row in shortlist if row.get("previously_shortlisted") is True
+            ),
+            "selected_previously_notified_count": sum(
+                1 for row in shortlist if row.get("previously_notified") is True
+            ),
+        }
+    )
 
     shortlist_summary_metadata = {
         "requested_size": max_items,
@@ -157,6 +337,9 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "company_repetition_penalty": company_repetition_penalty,
             "freshness_weight_enabled": freshness_weight_enabled,
             "freshness_max_bonus": freshness_max_bonus,
+            "jobs_notification_cooldown_days": int(history_policy["jobs_notification_cooldown_days"]),
+            "jobs_shortlist_repeat_penalty": float(history_policy["jobs_shortlist_repeat_penalty"]),
+            "resurface_seen_jobs": bool(history_policy["resurface_seen_jobs"]),
         },
         "rejected_summary": rejected_summary,
     }
@@ -177,6 +360,9 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "near_duplicate_title_similarity_threshold": near_duplicate_title_similarity_threshold,
             "freshness_weight_enabled": freshness_weight_enabled,
             "freshness_max_bonus": freshness_max_bonus,
+            "jobs_notification_cooldown_days": int(history_policy["jobs_notification_cooldown_days"]),
+            "jobs_shortlist_repeat_penalty": float(history_policy["jobs_shortlist_repeat_penalty"]),
+            "resurface_seen_jobs": bool(history_policy["resurface_seen_jobs"]),
         },
         "top_jobs": shortlist,
         "summary": {
@@ -185,6 +371,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         },
         "pipeline_counts": shortlist_summary_metadata["pipeline_counts"],
         "anti_repetition_summary": anti_repetition_summary,
+        "history_observability": history_observability,
         "upstream": upstream,
     }
 
@@ -269,11 +456,14 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "pipeline_counts": shortlist_summary_metadata["pipeline_counts"],
         "shortlist_summary_metadata": shortlist_summary_metadata,
         "anti_repetition_summary": anti_repetition_summary,
+        "history_policy": history_policy,
+        "history_observability": history_observability,
         "rejected_summary": rejected_summary,
         "selection_diagnostics": diagnostics,
         "selection_reasons": [
             {
                 "job_id": row.get("job_id"),
+                "canonical_job_key": row.get("canonical_job_key"),
                 "title": row.get("title"),
                 "company": row.get("company"),
                 "source": row.get("source"),
@@ -281,6 +471,11 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
                 "overall_score": row.get("overall_score"),
                 "fit_tier": row.get("fit_tier"),
                 "explanation_summary": row.get("explanation_summary"),
+                "newly_discovered": row.get("newly_discovered"),
+                "resurfaced_from_prior_runs": row.get("resurfaced_from_prior_runs"),
+                "previously_shortlisted": row.get("previously_shortlisted"),
+                "previously_notified": row.get("previously_notified"),
+                "suppressed_due_to_cooldown": row.get("suppressed_due_to_cooldown"),
             }
             for row in shortlist
         ],

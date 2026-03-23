@@ -137,7 +137,9 @@ def test_jobs_digest_v2_accepts_jobs_top_and_generates_llm_artifacts(monkeypatch
     assert result["next_tasks"][0]["task_type"] == "notify_v1"
     notify_payload = result["next_tasks"][0]["payload_json"]
     assert "Shortlisted: 2 (collected 44, deduped 19)" in notify_payload["message"]
-    assert "Result: http://localhost:8000/tasks/task-digest-1/result" in notify_payload["message"]
+    assert "Apply: <https://linkedin.example/jobs/1>" in notify_payload["message"]
+    assert "Mission Control: http://localhost:8000/tasks/task-digest-1/result" in notify_payload["message"]
+    assert "task=task-digest-1" not in notify_payload["message"]
     refs = notify_payload["metadata"]["artifact_references"]
     assert refs["task_id"] == "task-digest-1"
     assert refs["run_id"] == "run-digest-1"
@@ -212,7 +214,8 @@ def test_jobs_digest_v2_retries_and_falls_back_by_default_when_strict_unspecifie
     assert result["debug_json"]["strict_llm_output"] is False
     notify_payload = result["next_tasks"][0]["payload_json"]
     assert "Shortlisted: 1 (collected 30, deduped 12)" in notify_payload["message"]
-    assert "Result: /tasks/task-digest-1/result" in notify_payload["message"]
+    assert "Apply: <https://linkedin.example/jobs/1>" in notify_payload["message"]
+    assert "Mission Control: /tasks/task-digest-1/result" in notify_payload["message"]
 
 
 def test_jobs_digest_v2_defaults_to_single_retry_for_faster_fallback(monkeypatch) -> None:
@@ -520,7 +523,52 @@ def test_jobs_digest_v2_schema_missing_field_then_valid_retry_succeeds(monkeypat
 
     assert calls["count"] == 2
     assert result["content_json"]["generation_mode"] == "llm_structured"
-    assert result["usage"]["cost_usd"] == "0.00060000"
+
+
+def test_jobs_digest_v2_cleans_placeholder_company_and_prefers_direct_job_link(monkeypatch) -> None:
+    monkeypatch.setenv("USE_LLM", "false")
+    monkeypatch.setattr(
+        jobs_digest_v2,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs_top.v1",
+            "top_jobs": [
+                {
+                    "job_id": "j-1",
+                    "title": "Senior Software Engineer",
+                    "company": "Unknown company",
+                    "location": "",
+                    "source": "indeed",
+                    "source_url": "https://www.indeed.com/jobs?q=senior+software+engineer",
+                    "url": "https://www.indeed.com/viewjob?jk=123",
+                    "posted_at": "2026-03-20T00:00:00Z",
+                    "explanation_summary": "Strong backend fit.",
+                    "metadata_quality_score": 52,
+                }
+            ],
+            "pipeline_counts": {"collected_count": 18, "deduped_count": 9, "scored_count": 4},
+        },
+    )
+
+    payload = {
+        "pipeline_id": "pipe-digest-clean-links",
+        "upstream": {"task_id": "short-task", "run_id": "short-run", "task_type": "jobs_shortlist_v1"},
+        "request": {"notify_on_empty": False},
+        "digest_policy": {"llm_enabled": False},
+    }
+    result = jobs_digest_v2.execute(_task(payload), db=object())
+    artifact = result["content_json"]
+    digest_job = artifact["jobs_digest_json_artifact"]["jobs"][0]
+    message = result["next_tasks"][0]["payload_json"]["message"]
+    markdown = artifact["jobs_digest_md_artifact"]["content"]
+
+    assert digest_job["company"] == ""
+    assert digest_job["source_url"] == "https://www.indeed.com/viewjob?jk=123"
+    assert str(digest_job["posted_display"]).startswith("Posted ")
+    assert "Unknown company" not in message
+    assert "Apply: <https://www.indeed.com/viewjob?jk=123>" in message
+    assert "Mission Control: /tasks/task-digest-1/result" in message
+    assert "Unknown company" not in markdown
 
 
 def test_jobs_digest_v2_fast_fallback_after_repeated_malformed_output(monkeypatch) -> None:

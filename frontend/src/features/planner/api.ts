@@ -88,8 +88,12 @@ export function saveJobsPreset(input: {
   experience_level?: string | null;
   enabled_sources?: string[] | null;
   result_limit_per_source?: number | null;
+  max_queries_per_run?: number | null;
   shortlist_count?: number | null;
   freshness_preference?: string | null;
+  jobs_notification_cooldown_days?: number | null;
+  jobs_shortlist_repeat_penalty?: number | null;
+  resurface_seen_jobs?: boolean | null;
   desired_salary_min?: number | null;
   desired_salary_max?: number | null;
   experience_levels?: string[] | null;

@@ -431,6 +431,9 @@ def test_jobs_rank_v1_forwards_shortlist_freshness_controls(monkeypatch) -> None
             "shortlist_freshness_preference": "prefer_recent",
             "shortlist_freshness_weight_enabled": True,
             "shortlist_freshness_max_bonus": 6.0,
+            "jobs_notification_cooldown_days": 7,
+            "jobs_shortlist_repeat_penalty": 5.5,
+            "resurface_seen_jobs": True,
         },
     }
     result = jobs_rank_v1.execute(_task(payload), db=object())
@@ -440,6 +443,9 @@ def test_jobs_rank_v1_forwards_shortlist_freshness_controls(monkeypatch) -> None
     assert shortlist_policy["freshness_preference"] == "prefer_recent"
     assert shortlist_policy["freshness_weight_enabled"] is True
     assert shortlist_policy["freshness_max_bonus"] == 6.0
+    assert shortlist_policy["jobs_notification_cooldown_days"] == 7
+    assert shortlist_policy["jobs_shortlist_repeat_penalty"] == 5.5
+    assert shortlist_policy["resurface_seen_jobs"] is True
 
 
 def test_jobs_rank_v1_empty_input_produces_empty_ranked_jobs(monkeypatch) -> None:
@@ -482,6 +488,80 @@ def test_jobs_rank_v1_empty_input_produces_empty_ranked_jobs(monkeypatch) -> Non
     assert artifact["jobs_scored_artifact"]["jobs_scored"] == []
     assert artifact["pipeline_counts"]["scored_count"] == 0
     assert result["next_tasks"][0]["task_type"] == "jobs_shortlist_v1"
+
+
+def test_jobs_rank_v1_penalizes_low_quality_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("USE_LLM", "false")
+    monkeypatch.setattr(
+        jobs_rank_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "jobs.normalize.v1",
+            "normalized_jobs": [
+                {
+                    "normalized_job_id": "complete",
+                    "title": "Machine Learning Engineer",
+                    "company": "Acme",
+                    "location": "Remote",
+                    "work_mode": "remote",
+                    "source": "linkedin",
+                    "source_url": "https://www.linkedin.com/jobs/view/1",
+                    "source_url_kind": "direct",
+                    "posted_at": "2026-03-20T00:00:00Z",
+                    "description_snippet": "Remote ML systems role.",
+                    "salary_min": 180000,
+                    "salary_max": 200000,
+                    "metadata_quality_score": 96,
+                },
+                {
+                    "normalized_job_id": "weak",
+                    "title": "Machine Learning Engineer",
+                    "company": None,
+                    "location": "Remote",
+                    "work_mode": "remote",
+                    "source": "indeed",
+                    "source_url": None,
+                    "posted_at": None,
+                    "description_snippet": "Remote ML systems role.",
+                    "salary_min": 180000,
+                    "salary_max": 200000,
+                    "metadata_quality_score": 35,
+                    "missing_company": True,
+                    "missing_source_url": True,
+                    "missing_posted_at": True,
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        jobs_rank_v1,
+        "resolve_profile_context",
+        lambda request: {
+            "enabled": False,
+            "applied": False,
+            "source": "none",
+            "resume_name": None,
+            "updated_at": None,
+            "resume_char_count": 0,
+            "resume_sent_char_count": 0,
+            "resume_truncated": False,
+            "resume_text": "",
+        },
+    )
+
+    payload = {
+        "pipeline_id": "pipe-rank-quality",
+        "upstream": {"task_id": "norm-task", "run_id": "norm-run", "task_type": "jobs_normalize_v1"},
+        "request": {"titles": ["machine learning engineer"]},
+        "rank_policy": {"llm_enabled": False},
+    }
+    result = jobs_rank_v1.execute(_task(payload), db=object())
+    ranked = result["content_json"]["ranked_jobs"]
+
+    assert ranked[0]["job_id"] == "complete"
+    assert ranked[0]["metadata_quality_score"] > ranked[1]["metadata_quality_score"]
+    assert ranked[1]["metadata_quality_penalty"] > ranked[0]["metadata_quality_penalty"]
+    assert ranked[0]["overall_score_adjusted"] > ranked[1]["overall_score_adjusted"]
 
 
 def test_jobs_rank_v1_strict_mode_raises_when_llm_malformed_all_retries(monkeypatch) -> None:

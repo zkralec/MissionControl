@@ -19,6 +19,16 @@ DEFAULT_MAX_PAGES_PER_SOURCE = 5
 MAX_MAX_PAGES_PER_SOURCE = 20
 DEFAULT_MAX_QUERIES_PER_TITLE_LOCATION_PAIR = 4
 MAX_MAX_QUERIES_PER_TITLE_LOCATION_PAIR = 10
+DEFAULT_MAX_QUERIES_PER_RUN = 12
+MAX_MAX_QUERIES_PER_RUN = 20
+DEFAULT_ENABLE_QUERY_EXPANSION = True
+DEFAULT_MAX_TOTAL_JOBS = 2000
+MAX_MAX_TOTAL_JOBS = 5000
+DEFAULT_JOBS_NOTIFICATION_COOLDOWN_DAYS = 3
+MAX_JOBS_NOTIFICATION_COOLDOWN_DAYS = 30
+DEFAULT_JOBS_SHORTLIST_REPEAT_PENALTY = 4.0
+MAX_JOBS_SHORTLIST_REPEAT_PENALTY = 20.0
+DEFAULT_RESURFACE_SEEN_JOBS = True
 
 
 def utc_iso() -> str:
@@ -221,6 +231,17 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
         maximum=MAX_MAX_QUERIES_PER_TITLE_LOCATION_PAIR,
     )
 
+    max_queries_per_run = _as_bounded_int(
+        request.get("max_queries_per_run") or DEFAULT_MAX_QUERIES_PER_RUN,
+        default=DEFAULT_MAX_QUERIES_PER_RUN,
+        minimum=1,
+        maximum=MAX_MAX_QUERIES_PER_RUN,
+    )
+
+    enable_query_expansion = _as_bool(request.get("enable_query_expansion"))
+    if enable_query_expansion is None:
+        enable_query_expansion = DEFAULT_ENABLE_QUERY_EXPANSION
+
     early_stop_when_no_new_results = _as_bool(request.get("early_stop_when_no_new_results"))
     if early_stop_when_no_new_results is None:
         early_stop_when_no_new_results = True
@@ -238,6 +259,14 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
             sources.append(source)
     if not sources:
         sources = list(DEFAULT_JOB_BOARDS)
+
+    max_total_jobs = _as_bounded_int(
+        request.get("max_total_jobs")
+        or min(max_jobs * max(len(sources), 1), DEFAULT_MAX_TOTAL_JOBS),
+        default=min(max_jobs * max(len(sources), 1), DEFAULT_MAX_TOTAL_JOBS),
+        minimum=1,
+        maximum=MAX_MAX_TOTAL_JOBS,
+    )
 
     profile_mode = str(request.get("profile_mode") or "resume_profile").strip().lower()
     if profile_mode not in {"resume_profile", "inline_resume", "none"}:
@@ -278,6 +307,24 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
 
     digest_format = str(request.get("digest_format") or "compact").strip().lower() or "compact"
 
+    jobs_notification_cooldown_days = _as_bounded_int(
+        request.get("jobs_notification_cooldown_days") or DEFAULT_JOBS_NOTIFICATION_COOLDOWN_DAYS,
+        default=DEFAULT_JOBS_NOTIFICATION_COOLDOWN_DAYS,
+        minimum=0,
+        maximum=MAX_JOBS_NOTIFICATION_COOLDOWN_DAYS,
+    )
+    repeat_penalty_raw = request.get("jobs_shortlist_repeat_penalty")
+    try:
+        jobs_shortlist_repeat_penalty = float(
+            repeat_penalty_raw if repeat_penalty_raw is not None else DEFAULT_JOBS_SHORTLIST_REPEAT_PENALTY
+        )
+    except (TypeError, ValueError):
+        jobs_shortlist_repeat_penalty = DEFAULT_JOBS_SHORTLIST_REPEAT_PENALTY
+    jobs_shortlist_repeat_penalty = max(0.0, min(jobs_shortlist_repeat_penalty, MAX_JOBS_SHORTLIST_REPEAT_PENALTY))
+    resurface_seen_jobs = _as_bool(request.get("resurface_seen_jobs"))
+    if resurface_seen_jobs is None:
+        resurface_seen_jobs = DEFAULT_RESURFACE_SEEN_JOBS
+
     notify_channels = [row.strip().lower() for row in _as_text_list(request.get("notify_channels"))]
     if not notify_channels:
         notify_channels = ["discord"]
@@ -298,12 +345,15 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
         "result_limit_per_source": max_jobs,
         "max_pages_per_source": max_pages_per_source,
         "max_queries_per_title_location_pair": max_queries_per_title_location_pair,
+        "max_queries_per_run": max_queries_per_run,
+        "enable_query_expansion": bool(enable_query_expansion),
         "early_stop_when_no_new_results": bool(early_stop_when_no_new_results),
         "enabled_sources": list(sources),
         "collectors_enabled": collectors_enabled,
         "sources": sources,
         "max_jobs_per_source": max_jobs,
         "max_jobs_per_board": max_jobs,
+        "max_total_jobs": max_total_jobs,
         "manual_jobs": request.get("manual_jobs") if isinstance(request.get("manual_jobs"), list) else [],
         "board_url_overrides": request.get("board_url_overrides") if isinstance(request.get("board_url_overrides"), dict) else {},
         "profile_mode": profile_mode,
@@ -332,6 +382,9 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
         "shortlist_freshness_weight_enabled": bool(freshness_weight_enabled),
         "shortlist_freshness_max_bonus": float(freshness_max_bonus),
         "digest_format": digest_format,
+        "jobs_notification_cooldown_days": jobs_notification_cooldown_days,
+        "jobs_shortlist_repeat_penalty": float(jobs_shortlist_repeat_penalty),
+        "resurface_seen_jobs": bool(resurface_seen_jobs),
         "notify_channels": notify_channels,
         "rank_llm_enabled": rank_llm_enabled,
         "digest_llm_enabled": digest_llm_enabled,

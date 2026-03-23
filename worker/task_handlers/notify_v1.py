@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from core.schema_validate import validate_payload
 from event_log import log_event as persist_event_log
+from jobs_history_state import record_jobs_notified
 from notifications.discord import NotificationConfigError
 from notifications.router import send_notification
 from task_handlers.errors import NonRetryableTaskError
@@ -239,6 +240,11 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             db.commit()
 
     preview = final_content[:240]
+    if sent and source_task_type == "jobs_digest_v2" and isinstance(metadata, dict):
+        history_updates = metadata.get("jobs_history_updates") if isinstance(metadata.get("jobs_history_updates"), list) else []
+        if history_updates:
+            record_jobs_notified(db, [row for row in history_updates if isinstance(row, dict)], notified_at=now_dt)
+            db.commit()
     result_json = {
         "sent": sent,
         "deduped": deduped,

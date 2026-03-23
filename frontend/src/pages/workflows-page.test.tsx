@@ -172,6 +172,68 @@ describe("WorkflowsPage", () => {
         priority: 20,
         notification_behavior: null,
         metadata: {},
+        workflow_summary: {
+          kind: "jobs_watcher",
+          enabled_sources: ["linkedin", "indeed"],
+          query_count_used: 12,
+          counts: {
+            raw_jobs_found: 420,
+            jobs_after_filtering: 310,
+            jobs_after_dedupe: 180,
+            shortlisted_count: 6
+          },
+          notify: {
+            status: "sent",
+            reason: "shortlist_non_empty"
+          },
+          digest_preview: {
+            headline: "Solid senior backend batch with good source diversity.",
+            top_jobs: [
+              {
+                title: "Senior Software Engineer",
+                company: "Acme",
+                source: "indeed",
+                source_url: "https://example.com/jobs/123",
+                posted: "Posted 2d ago",
+                reason: "Strong backend alignment."
+              }
+            ],
+            source_diversity: ["indeed", "linkedin"],
+            why_top_jobs_won: ["Strong metadata completeness"]
+          },
+          collection_quality: {
+            operator_summary: {
+              did_we_search_enough: "420 raw discovered across 2 live sources.",
+              which_source_is_weak: "Weakest metadata source: indeed.",
+              why_did_raw_count_collapse: "Basic filtering removed 110 jobs.",
+              are_we_missing_metadata: "Indeed still misses post dates and links."
+            },
+            by_source: [
+              {
+                source: "linkedin",
+                raw_jobs_found: 220,
+                kept_after_basic_filter: 180,
+                jobs_dropped: 40,
+                missing_company_rate: 2,
+                missing_posted_at_rate: 6,
+                missing_source_url_rate: 1,
+                missing_location_rate: 4,
+                weakness_summary: "post date 6%, location 4%"
+              },
+              {
+                source: "indeed",
+                raw_jobs_found: 200,
+                kept_after_basic_filter: 130,
+                jobs_dropped: 70,
+                missing_company_rate: 4,
+                missing_posted_at_rate: 18,
+                missing_source_url_rate: 12,
+                missing_location_rate: 7,
+                weakness_summary: "post date 18%, link 12%"
+              }
+            ]
+          }
+        },
         created_at: "2026-03-11T10:00:00Z",
         updated_at: "2026-03-11T10:10:00Z",
         last_run_summary: null,
@@ -188,10 +250,17 @@ describe("WorkflowsPage", () => {
     const detailButtons = screen.getAllByRole("button", { name: /^Details$/i });
     fireEvent.click(detailButtons[1]);
 
-    fireEvent.change(screen.getByLabelText("Desired Titles (Collection + Ranking)"), { target: { value: "ML Engineer, Data Engineer" } });
-    fireEvent.change(screen.getByLabelText("Preferred Locations (Collection + Ranking)"), { target: { value: "Remote\nAustin, TX" } });
-    fireEvent.change(screen.getByLabelText("Result Limit Per Source (Collection)"), { target: { value: "30" } });
-    fireEvent.change(screen.getByLabelText("Top-N Shortlist Count (Digest Size)"), { target: { value: "7" } });
+    expect(screen.getByText("Latest Digest Preview")).toBeInTheDocument();
+    expect(screen.getByText(/Solid senior backend batch with good source diversity/i)).toBeInTheDocument();
+    expect(screen.getByText(/420 raw discovered across 2 live sources/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Desired titles"), { target: { value: "ML Engineer, Data Engineer" } });
+    fireEvent.change(screen.getByLabelText("Preferred locations"), { target: { value: "Remote\nAustin, TX" } });
+    fireEvent.change(screen.getByLabelText("Result limit per source"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("Max queries per run"), { target: { value: "14" } });
+    fireEvent.change(screen.getByLabelText("Shortlist size"), { target: { value: "7" } });
+    fireEvent.change(screen.getByLabelText("Notification cooldown days"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Shortlist repeat penalty"), { target: { value: "6.5" } });
     fireEvent.click(screen.getByRole("button", { name: /Save Jobs Configuration/i }));
 
     expect(mutateSaveJobs).toHaveBeenCalled();
@@ -200,7 +269,11 @@ describe("WorkflowsPage", () => {
     expect(payload.desired_titles).toEqual(["ML Engineer", "Data Engineer"]);
     expect(payload.preferred_locations).toEqual(["Remote", "Austin, TX"]);
     expect(payload.result_limit_per_source).toBe(30);
+    expect(payload.max_queries_per_run).toBe(14);
     expect(payload.shortlist_count).toBe(7);
+    expect(payload.jobs_notification_cooldown_days).toBe(5);
+    expect(payload.jobs_shortlist_repeat_penalty).toBe(6.5);
+    expect(payload.resurface_seen_jobs).toBe(true);
     expect(payload.freshness_preference).toBe("off");
   });
 });

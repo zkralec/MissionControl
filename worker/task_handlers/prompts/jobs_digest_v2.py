@@ -91,6 +91,10 @@ def build_digest_messages(
                 "salary_max": row.get("salary_max"),
                 "source": row.get("source"),
                 "source_url": row.get("source_url") or row.get("url"),
+                "source_url_kind": row.get("source_url_kind"),
+                "posted_at": row.get("posted_at"),
+                "posted_at_raw": row.get("posted_at_raw"),
+                "metadata_quality_score": row.get("metadata_quality_score"),
                 "score": row.get("score"),
                 "overall_score": row.get("overall_score"),
                 "fit_tier": row.get("fit_tier"),
@@ -144,6 +148,9 @@ def build_digest_messages(
             "Keep why_it_fits and tradeoffs specific and under 180 characters each.",
             "Keep notification_excerpt under 500 characters.",
             "Do not fabricate salary values; use 'Not listed' when absent.",
+            "Prefer direct job links from input source_url when available.",
+            "If company is missing, return an empty string instead of placeholders like 'Unknown company'.",
+            "Do not mention internal task IDs, run IDs, or Mission Control artifact references in notification_excerpt.",
         ],
     }
 
