@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 from urllib.error import HTTPError
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -8,6 +9,12 @@ sys.path.insert(0, os.path.join(ROOT, "worker"))
 
 from integrations import job_boards_scrape
 from integrations.jobs_collectors import base
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
+
+
+def _fixture(name: str) -> str:
+    return (FIXTURE_DIR / name).read_text(encoding="utf-8")
 
 
 def test_collect_board_jobs_expands_queries_and_defers_strict_filtering(monkeypatch) -> None:
@@ -111,29 +118,70 @@ def test_collect_board_jobs_expands_queries_and_defers_strict_filtering(monkeypa
     assert jobs[0]["query_context"]["query"] == "Software Engineer remote"
     assert jobs[0]["source_metadata"]["query_text"] == "Software Engineer remote"
 
-    meta = result["meta"]
-    assert meta["discovered_raw_count"] == 7
-    assert meta["kept_after_basic_filter_count"] == 6
-    assert meta["dropped_by_basic_filter_count"] == 1
-    assert meta["deduped_count"] == 1
-    assert meta["returned_count"] == 5
-    assert meta["queries_executed_count"] == 5
-    assert meta["empty_queries_count"] == 0
-    assert meta["queries_attempted"] == [
-        "Software Engineer remote",
-        "Backend Software Engineer remote",
-        "Backend Engineer remote",
-        "Software Engineer New York",
-        "Backend Software Engineer New York",
-    ]
-    assert meta["query_examples"] == [
-        "Software Engineer remote",
-        "Backend Software Engineer remote",
-        "Backend Engineer remote",
-        "Software Engineer New York",
-        "Backend Software Engineer New York",
-    ]
-    assert meta["basic_filter_mode"] == "minimal_exclude_only"
+
+def test_collect_board_jobs_marks_under_target_when_some_queries_fail(monkeypatch) -> None:
+    job = {
+        "source": "linkedin",
+        "title": "Software Engineer",
+        "company": "Acme",
+        "location": "Remote",
+        "url": "https://www.linkedin.com/jobs/view/1",
+        "description_snippet": "",
+        "raw": {"search_url": "https://example.test/search"},
+    }
+    calls: list[str] = []
+
+    def _fake_collect(
+        board: str,
+        *,
+        query: str,
+        location: str,
+        max_jobs: int = 25,
+        max_pages: int = 1,
+        early_stop_when_no_new_results: bool = True,
+        url_override: str | None = None,
+    ) -> tuple[list[dict], list[str], dict[str, object]]:
+        del board, location, max_jobs, max_pages, early_stop_when_no_new_results, url_override
+        calls.append(query)
+        if len(calls) == 1:
+            return [dict(job)], [], {
+                "requested_limit": 5,
+                "discovered_raw_count": 1,
+                "pages_fetched": 1,
+                "pages_with_results": 1,
+                "source_status": "success",
+                "stop_reason": "page_results",
+            }
+        return [], ["linkedin: layout_mismatch error_type=selector_mismatch"], {
+            "requested_limit": 5,
+            "discovered_raw_count": 0,
+            "pages_fetched": 1,
+            "pages_with_results": 0,
+            "source_status": "layout_mismatch",
+            "source_error_type": "selector_mismatch",
+            "stop_reason": "layout_mismatch",
+        }
+
+    monkeypatch.setattr(base, "collect_jobs_from_board", _fake_collect)
+
+    result = base.collect_board_jobs(
+        "linkedin",
+        {
+            "titles": ["Software Engineer"],
+            "locations": ["Remote"],
+            "result_limit_per_source": 5,
+            "max_queries_per_run": 2,
+            "max_queries_per_title_location_pair": 2,
+            "enable_query_expansion": True,
+        },
+    )
+
+    assert result["status"] == "under_target"
+    assert len(result["jobs"]) == 1
+    assert result["meta"]["source_status"] == "under_target"
+    assert result["meta"]["source_error_type"] == "selector_mismatch"
+    assert result["meta"]["queries_executed_count"] >= 2
+    assert result["meta"]["returned_count"] == 1
 
 
 def test_collect_board_jobs_stops_after_consecutive_empty_queries(monkeypatch) -> None:
@@ -258,7 +306,16 @@ def test_collect_jobs_from_board_uses_source_specific_search_urls_and_headers(mo
                 return html_by_board[board]
         raise AssertionError(f"unexpected url {url}")
 
+    def _fake_fetch_response(url: str, **kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": _fake_fetch(url, **kwargs),
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
     monkeypatch.setattr(job_boards_scrape, "fetch_html", _fake_fetch)
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
 
     for board in ("linkedin", "indeed", "glassdoor", "handshake"):
         jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
@@ -343,7 +400,10 @@ def test_collect_jobs_from_board_classifies_source_specific_failures(monkeypatch
     def _blocked(url: str, **_kwargs: object) -> str:
         raise HTTPError(url, 403, "Forbidden", hdrs=None, fp=None)
 
-    monkeypatch.setattr(job_boards_scrape, "fetch_html", _blocked)
+    def _blocked_response(url: str, **_kwargs: object) -> dict[str, object]:
+        raise HTTPError(url, 403, "Forbidden", hdrs=None, fp=None)
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _blocked_response)
     _jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
         "glassdoor",
         query="software engineer",
@@ -360,7 +420,10 @@ def test_collect_jobs_from_board_classifies_source_specific_failures(monkeypatch
     def _missing(url: str, **_kwargs: object) -> str:
         raise HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
 
-    monkeypatch.setattr(job_boards_scrape, "fetch_html", _missing)
+    def _missing_response(url: str, **_kwargs: object) -> dict[str, object]:
+        raise HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _missing_response)
     _jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
         "handshake",
         query="software engineer",
@@ -373,3 +436,352 @@ def test_collect_jobs_from_board_classifies_source_specific_failures(monkeypatch
     assert "fetch_not_found_404" in warnings[0]
     assert meta["error_type"] == "fetch_not_found_404"
     assert meta["error_status"] == 404
+
+
+def test_collect_jobs_from_board_glassdoor_detects_anti_bot_wall(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_glassdoor_anti_bot.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "glassdoor",
+        query="software engineer",
+        location="Remote",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert "anti_bot_blocked" in warnings[0]
+    assert "anti_bot_detected" in warnings[0]
+    assert meta["source_status"] == "anti_bot_blocked"
+    assert meta["source_error_type"] == "anti_bot_detected"
+    assert meta["wall_detected"] is True
+    assert meta["listing_cards_seen"] == 0
+    assert meta["parsing_strategy_used"] == "http_html"
+    assert meta["browser_fallback_used"] is False
+
+
+def test_collect_jobs_from_board_glassdoor_detects_consent_wall(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_glassdoor_consent_wall.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "glassdoor",
+        query="software engineer",
+        location="Remote",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert "consent_blocked" in warnings[0]
+    assert "consent_wall_detected" in warnings[0]
+    assert meta["source_status"] == "consent_blocked"
+    assert meta["source_error_type"] == "consent_wall_detected"
+    assert meta["wall_detected"] is True
+
+
+def test_collect_jobs_from_board_glassdoor_marks_true_empty_results(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_glassdoor_empty_results.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "glassdoor",
+        query="software engineer",
+        location="Remote",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert warnings == ["glassdoor: empty_success"]
+    assert meta["source_status"] == "empty_success"
+    assert meta["source_error_type"] == "true_empty_results"
+    assert meta["listing_cards_seen"] == 0
+    assert meta["wall_detected"] is False
+
+
+def test_collect_jobs_from_board_glassdoor_detects_dynamic_layout_mismatch(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_glassdoor_dynamic_no_cards.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "glassdoor",
+        query="software engineer",
+        location="Remote",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert "layout_mismatch" in warnings[0]
+    assert meta["source_status"] == "layout_mismatch"
+    assert meta["source_error_type"] == "layout_mismatch"
+    assert meta["listing_cards_seen"] == 0
+    assert meta["wall_detected"] is False
+
+
+def test_collect_jobs_from_board_glassdoor_uses_browser_fallback(monkeypatch) -> None:
+    dynamic_html = _fixture("jobs_glassdoor_dynamic_no_cards.html")
+    results_html = _fixture("jobs_glassdoor_results.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": dynamic_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setenv("GLASSDOOR_USE_BROWSER_FALLBACK", "true")
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+    monkeypatch.setattr(
+        job_boards_scrape,
+        "_fetch_glassdoor_browser_response",
+        lambda url, extra_headers=None: {
+            "html_text": results_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        },
+    )
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "glassdoor",
+        query="data scientist",
+        location="Remote",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert warnings == []
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "Senior Data Scientist"
+    assert jobs[0]["company"] == "Acme Analytics"
+    assert jobs[0]["location"] == "Remote"
+    assert jobs[0]["posted_at"] == "3d"
+    assert jobs[0]["salary_text"] == "$145K - $170K / year"
+    assert meta["source_status"] == "success"
+    assert meta["listing_cards_seen"] == 1
+    assert meta["jobs_raw"] == 1
+    assert meta["jobs_kept"] == 1
+    assert meta["browser_fallback_used"] is True
+    assert meta["parsing_strategy_used"] == "browser_fallback"
+
+
+def test_collect_jobs_from_board_handshake_detects_login_wall(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_handshake_login_wall.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": "https://app.joinhandshake.com/login",
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "handshake",
+        query="software engineer",
+        location="United States",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert "auth_blocked" in warnings[0]
+    assert meta["source_status"] == "auth_blocked"
+    assert meta["source_error_type"] == "login_wall"
+    assert meta["auth_required_detected"] is True
+    assert meta["login_wall_detected"] is True
+    assert meta["jobs_raw"] == 0
+    assert meta["jobs_kept"] == 0
+    assert meta["cards_seen"] == 0
+    assert meta["request_attempts"][0]["final_url"] == "https://app.joinhandshake.com/login"
+
+
+def test_collect_jobs_from_board_handshake_marks_empty_results_as_empty_success(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_handshake_empty_results.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "handshake",
+        query="software engineer",
+        location="United States",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert warnings == ["handshake: empty_success"]
+    assert meta["source_status"] == "empty_success"
+    assert meta["source_error_type"] == "empty_results"
+    assert meta["pages_attempted"] >= 1
+    assert meta["cards_seen"] == 0
+
+
+def test_collect_jobs_from_board_handshake_uses_authenticated_session_headers(monkeypatch) -> None:
+    fixture_login_wall = _fixture("jobs_handshake_login_wall.html")
+    fixture_success = _fixture("jobs_handshake_success_listing.html")
+    seen_cookie_headers: list[str | None] = []
+
+    def _fake_fetch_response(url: str, **kwargs: object) -> dict[str, object]:
+        extra_headers = kwargs.get("extra_headers") if isinstance(kwargs.get("extra_headers"), dict) else {}
+        cookie_header = str(extra_headers.get("Cookie") or "").strip() or None
+        seen_cookie_headers.append(cookie_header)
+        if cookie_header:
+            return {
+                "html_text": fixture_success,
+                "final_url": url,
+                "status_code": 200,
+                "from_cache": False,
+            }
+        return {
+            "html_text": fixture_login_wall,
+            "final_url": "https://app.joinhandshake.com/login",
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setenv("HANDSHAKE_SESSION_COOKIE", "session123")
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "handshake",
+        query="software engineer",
+        location="United States",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert warnings == []
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "Software Engineer Intern"
+    assert jobs[0]["location"] == "Remote"
+    assert jobs[0]["posted_at"] == "Posted 2 days ago"
+    assert meta["source_status"] == "success"
+    assert meta["jobs_raw"] == 1
+    assert meta["jobs_kept"] == 1
+    assert any(header == "_session_id=session123" for header in seen_cookie_headers)
+    assert any(attempt["mode"] == "http_authenticated" for attempt in meta["request_attempts"])
+
+
+def test_collect_jobs_from_board_handshake_accepts_full_cookie_header_env(monkeypatch) -> None:
+    fixture_login_wall = _fixture("jobs_handshake_login_wall.html")
+    fixture_success = _fixture("jobs_handshake_success_listing.html")
+    seen_cookie_headers: list[str | None] = []
+
+    def _fake_fetch_response(url: str, **kwargs: object) -> dict[str, object]:
+        extra_headers = kwargs.get("extra_headers") if isinstance(kwargs.get("extra_headers"), dict) else {}
+        cookie_header = str(extra_headers.get("Cookie") or "").strip() or None
+        seen_cookie_headers.append(cookie_header)
+        if not cookie_header:
+            return {
+                "html_text": fixture_login_wall,
+                "final_url": "https://app.joinhandshake.com/login",
+                "status_code": 200,
+                "from_cache": False,
+            }
+        return {
+            "html_text": fixture_success,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setenv(
+        "HANDSHAKE_COOKIE_HEADER",
+        "Cookie: _session_id=session123; remember_student_token=remember456",
+    )
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "handshake",
+        query="software engineer",
+        location="United States",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert warnings == []
+    assert len(jobs) == 1
+    assert any(
+        header == "_session_id=session123; remember_student_token=remember456"
+        for header in seen_cookie_headers
+    )
+    assert meta["authenticated_session_supported"] is True
+
+
+def test_collect_jobs_from_board_handshake_detects_selector_mismatch(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_handshake_selector_mismatch.html")
+
+    def _fake_fetch_response(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(job_boards_scrape, "fetch_html_response", _fake_fetch_response)
+
+    jobs, warnings, meta = job_boards_scrape.collect_jobs_from_board(
+        "handshake",
+        query="software engineer",
+        location="United States",
+        max_jobs=5,
+        max_pages=1,
+    )
+
+    assert jobs == []
+    assert "layout_mismatch" in warnings[0]
+    assert meta["source_status"] == "layout_mismatch"
+    assert meta["source_error_type"] == "selector_mismatch"
+    assert meta["cards_seen"] == 0

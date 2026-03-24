@@ -18,9 +18,25 @@ from task_handlers.jobs_pipeline_common import (
 logger = logging.getLogger(__name__)
 
 SUPPORTED_COLLECTOR_SOURCES = ("linkedin", "indeed", "glassdoor", "handshake")
-SUCCESSFUL_SOURCE_STATUSES = {"success", "partial_success"}
-EMPTY_SOURCE_STATUSES = {"empty", "empty_success"}
-FAILED_SOURCE_STATUSES = {"failed", "auth_blocked", "layout_mismatch", "upstream_failure"}
+SUCCESSFUL_SOURCE_STATUSES = {"success", "under_target"}
+HEALTHY_SOURCE_STATUSES = {"success", "empty_success"}
+EMPTY_SOURCE_STATUSES = {"empty_success"}
+DEGRADED_SOURCE_STATUSES = {"under_target"}
+FAILED_SOURCE_STATUSES = {"auth_blocked", "consent_blocked", "anti_bot_blocked", "layout_mismatch", "upstream_failure"}
+KNOWN_SOURCE_STATUSES = (
+    SUCCESSFUL_SOURCE_STATUSES
+    | HEALTHY_SOURCE_STATUSES
+    | DEGRADED_SOURCE_STATUSES
+    | FAILED_SOURCE_STATUSES
+    | {"skipped"}
+)
+DISPLAY_SOURCE_NAMES = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "glassdoor": "Glassdoor",
+    "handshake": "Handshake",
+    "manual": "Manual",
+}
 MANUAL_SUPPORTED_FIELDS = {
     "source": "manual",
     "titles": True,
@@ -112,6 +128,60 @@ def _normalize_manual_jobs(request: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _display_source_name(source: str) -> str:
+    key = str(source).strip().lower()
+    return DISPLAY_SOURCE_NAMES.get(key, key.title() or source)
+
+
+def _source_error_type(meta: dict[str, Any]) -> str | None:
+    value = str(meta.get("source_error_type") or meta.get("error_type") or "").strip()
+    return value or None
+
+
+def _promote_source_status(status: str, source_error_type: str | None, *, collected_count: int) -> str:
+    if collected_count > 0:
+        return status
+    if source_error_type in {"login_wall", "login_wall_detected", "auth_required"}:
+        return "auth_blocked"
+    if source_error_type == "anti_bot_detected":
+        return "anti_bot_blocked"
+    if source_error_type == "consent_wall_detected":
+        return "consent_blocked"
+    if source_error_type in {"layout_mismatch", "selector_mismatch"}:
+        return "layout_mismatch"
+    return status
+
+
+def _normalize_source_status(
+    *,
+    status_raw: str,
+    collected_count: int,
+    source_errors: list[str],
+    source_meta: dict[str, Any],
+) -> str:
+    normalized = status_raw.strip().lower()
+    error_type = _source_error_type(source_meta)
+
+    if normalized == "partial_success":
+        normalized = "under_target" if collected_count > 0 else "upstream_failure"
+    elif normalized == "failed":
+        normalized = "upstream_failure"
+    elif normalized == "empty":
+        normalized = "empty_success"
+    elif normalized == "success" and collected_count <= 0:
+        normalized = "upstream_failure" if source_errors else "empty_success"
+    elif normalized not in KNOWN_SOURCE_STATUSES:
+        if collected_count > 0:
+            normalized = "under_target" if source_errors else "success"
+        elif source_errors:
+            normalized = "upstream_failure"
+        else:
+            normalized = "empty_success"
+
+    normalized = _promote_source_status(normalized, error_type, collected_count=collected_count)
+    return normalized
+
+
 def _meta_count(meta: dict[str, Any], key: str, fallback: int = 0) -> int:
     try:
         return int(meta.get(key, fallback))
@@ -153,6 +223,43 @@ def _compact_missing_summary(missing_rates: dict[str, float]) -> str:
     return ", ".join(f"{label} {rate:.0f}%" for label, rate in gaps[:2])
 
 
+def _build_run_preview_messages(
+    *,
+    source_results: dict[str, dict[str, Any]],
+    successful_sources: list[str],
+) -> list[str]:
+    messages: list[str] = []
+
+    if len(successful_sources) == 1 and len(source_results) > 1:
+        messages.append(f"Only {_display_source_name(successful_sources[0])} contributed usable jobs")
+
+    glassdoor = source_results.get("glassdoor") if isinstance(source_results.get("glassdoor"), dict) else None
+    if glassdoor:
+        glassdoor_meta = glassdoor.get("meta") if isinstance(glassdoor.get("meta"), dict) else {}
+        glassdoor_status = str(glassdoor.get("status") or "").strip().lower()
+        listing_cards_seen = _meta_count(
+            glassdoor_meta,
+            "listing_cards_seen",
+            _meta_count(glassdoor_meta, "cards_seen", 0),
+        )
+        if listing_cards_seen <= 0 and glassdoor_status in {
+            "layout_mismatch",
+            "anti_bot_blocked",
+            "consent_blocked",
+            "upstream_failure",
+        }:
+            messages.append("Glassdoor returned zero cards; likely blocked or selector mismatch")
+
+    handshake = source_results.get("handshake") if isinstance(source_results.get("handshake"), dict) else None
+    if handshake:
+        handshake_meta = handshake.get("meta") if isinstance(handshake.get("meta"), dict) else {}
+        handshake_status = str(handshake.get("status") or "").strip().lower()
+        if handshake_status == "auth_blocked" or bool(handshake_meta.get("auth_required_detected")):
+            messages.append("Handshake likely requires authenticated session")
+
+    return messages
+
+
 def _build_collection_observability(
     *,
     source_results: dict[str, dict[str, Any]],
@@ -163,8 +270,10 @@ def _build_collection_observability(
     deduped_count: int,
     raw_job_count: int,
     successful_sources: list[str],
+    healthy_sources: list[str],
     max_total_jobs: int,
     truncated_by_run_limit_count: int,
+    run_preview_messages: list[str],
 ) -> dict[str, Any]:
     by_source: dict[str, dict[str, Any]] = {}
     breadth_candidates: list[tuple[str, int]] = []
@@ -228,10 +337,22 @@ def _build_collection_observability(
                     "source_error_type": str(row.get("source_error_type") or row.get("error_type") or "").strip() or None,
                     "error_status": row.get("error_status") if isinstance(row.get("error_status"), int) else None,
                     "cards_seen": _meta_count(row, "cards_seen", 0),
+                    "listing_cards_seen": _meta_count(row, "listing_cards_seen", _meta_count(row, "cards_seen", 0)),
                     "jobs_raw": _meta_count(row, "jobs_raw", _meta_count(row, "discovered_raw_count", 0)),
                     "jobs_kept": _meta_count(row, "jobs_kept", _meta_count(row, "returned_count", 0)),
+                    "wall_detected": bool(row.get("wall_detected", False)),
                     "auth_required_detected": bool(row.get("auth_required_detected", False)),
-                    "login_wall_detected": bool(row.get("login_wall_detected", False)),
+                    "login_wall_detected": bool(row.get("login_wall_detected", False))
+                    or str(row.get("source_error_type") or "").strip() in {"login_wall", "login_wall_detected"},
+                    "anti_bot_detected": bool(row.get("anti_bot_detected", False))
+                    or str(row.get("source_error_type") or "").strip() == "anti_bot_detected",
+                    "consent_wall_detected": bool(row.get("consent_wall_detected", False))
+                    or str(row.get("source_error_type") or "").strip() == "consent_wall_detected",
+                    "unexpected_redirect_detected": bool(row.get("unexpected_redirect_detected", False)),
+                    "layout_mismatch_detected": bool(row.get("layout_mismatch_detected", False))
+                    or str(row.get("source_status") or "").strip() == "layout_mismatch",
+                    "parsing_strategy_used": str(row.get("parsing_strategy_used") or "").strip() or None,
+                    "browser_fallback_used": bool(row.get("browser_fallback_used", False)),
                     "stop_reason": str(row.get("stop_reason") or "").strip() or None,
                 }
             )
@@ -248,9 +369,12 @@ def _build_collection_observability(
             "pages_fetched": pages_fetched,
             "pages_attempted": _meta_count(meta, "pages_attempted", pages_fetched),
             "cards_seen": _meta_count(meta, "cards_seen", discovered),
+            "listing_cards_seen": _meta_count(meta, "listing_cards_seen", _meta_count(meta, "cards_seen", discovered)),
             "jobs_raw": _meta_count(meta, "jobs_raw", discovered),
             "jobs_kept": _meta_count(meta, "jobs_kept", jobs_count),
             "jobs_found_per_source": discovered,
+            "healthy": result.get("status") in HEALTHY_SOURCE_STATUSES,
+            "contributed_usable_jobs": result.get("status") in SUCCESSFUL_SOURCE_STATUSES,
             "queries_executed_count": queries_executed,
             "queries_attempted_count": len([row for row in queries_attempted if isinstance(row, str) and row.strip()]),
             "empty_queries_count": empty_queries,
@@ -259,8 +383,19 @@ def _build_collection_observability(
             "last_request_url": str(meta.get("last_request_url") or "").strip() or None,
             "error_type": str(meta.get("error_type") or "").strip() or None,
             "error_status": meta.get("error_status") if isinstance(meta.get("error_status"), int) else None,
+            "wall_detected": bool(meta.get("wall_detected", False)),
             "auth_required_detected": bool(meta.get("auth_required_detected", False)),
-            "login_wall_detected": bool(meta.get("login_wall_detected", False)),
+            "login_wall_detected": bool(meta.get("login_wall_detected", False))
+            or str(meta.get("source_error_type") or meta.get("error_type") or "").strip() in {"login_wall", "login_wall_detected"},
+            "anti_bot_detected": bool(meta.get("anti_bot_detected", False))
+            or str(meta.get("source_error_type") or meta.get("error_type") or "").strip() == "anti_bot_detected",
+            "consent_wall_detected": bool(meta.get("consent_wall_detected", False))
+            or str(meta.get("source_error_type") or meta.get("error_type") or "").strip() == "consent_wall_detected",
+            "unexpected_redirect_detected": bool(meta.get("unexpected_redirect_detected", False)),
+            "layout_mismatch_detected": bool(meta.get("layout_mismatch_detected", False))
+            or str(meta.get("source_status") or result.get("status") or "").strip() == "layout_mismatch",
+            "parsing_strategy_used": str(meta.get("parsing_strategy_used") or "").strip() or None,
+            "browser_fallback_used": bool(meta.get("browser_fallback_used", False)),
             "missing_counts": {
                 "company": _meta_count(metadata, "missing_company", 0),
                 "posted_at": _meta_count(metadata, "missing_posted_at", 0),
@@ -281,8 +416,8 @@ def _build_collection_observability(
     )
 
     searched_enough = (
-        f"{discovered_raw_count} raw discovered across {len(successful_sources)} live sources"
-        f" from {total_queries_executed} executed queries."
+        f"{discovered_raw_count} raw discovered across {len(healthy_sources)} healthy sources"
+        f" and {len(successful_sources)} usable sources from {total_queries_executed} executed queries."
         + (f" Strongest {strongest_source}." if strongest_source else "")
         + (f" Weakest {weakest_source}." if weakest_source and weakest_source != strongest_source else "")
     )
@@ -313,6 +448,9 @@ def _build_collection_observability(
             "query_runs": query_runs,
         },
         "by_source": by_source,
+        "run_preview": {
+            "messages": run_preview_messages,
+        },
         "operator_questions": {
             "searched_enough": searched_enough,
             "which_source_is_weak": metadata_gap,
@@ -403,12 +541,12 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             logger.error("jobs_collect source=%s failed: %s", source_key, message)
             source_results[source_key] = {
                 "source": source_key,
-                "status": "failed",
+                "status": "upstream_failure",
                 "jobs_count": 0,
                 "warnings": [],
                 "errors": [message],
                 "error": message,
-                "meta": {},
+                "meta": {"source_status": "upstream_failure", "source_error_type": "unsupported_source"},
             }
             continue
 
@@ -459,10 +597,12 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             source_meta["jobs_found_per_source"] = _meta_count(source_meta, "jobs_found_per_source", len(collected))
 
             status_raw = str(collector_result.get("status") or "").strip().lower()
-            if status_raw not in SUCCESSFUL_SOURCE_STATUSES | EMPTY_SOURCE_STATUSES | FAILED_SOURCE_STATUSES:
-                status_raw = "failed" if source_errors and not collected else "partial_success" if source_errors else "success"
-            if status_raw == "success" and not collected and not source_errors:
-                status_raw = "empty"
+            status_raw = _normalize_source_status(
+                status_raw=status_raw,
+                collected_count=len(collected),
+                source_errors=source_errors,
+                source_meta=source_meta,
+            )
 
             if status_raw in FAILED_SOURCE_STATUSES and not source_errors:
                 source_errors = [f"{source_key}: collector_failed_without_error_details"]
@@ -498,17 +638,18 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             logger.error("jobs_collect source=%s failed: %s", source_key, error_text)
             source_results[source_key] = {
                 "source": source_key,
-                "status": "failed",
+                "status": "upstream_failure",
                 "jobs_count": 0,
                 "warnings": [],
                 "errors": [error_text],
                 "error": error_text,
-                "meta": {},
+                "meta": {"source_status": "upstream_failure", "source_error_type": type(exc).__name__},
             }
 
     successful_sources = [key for key, row in source_results.items() if row.get("status") in SUCCESSFUL_SOURCE_STATUSES]
+    healthy_sources = [key for key, row in source_results.items() if row.get("status") in HEALTHY_SOURCE_STATUSES]
     empty_sources = [key for key, row in source_results.items() if row.get("status") in EMPTY_SOURCE_STATUSES]
-    partial_sources = [key for key, row in source_results.items() if row.get("status") == "partial_success"]
+    under_target_sources = [key for key, row in source_results.items() if row.get("status") in DEGRADED_SOURCE_STATUSES]
     failed_sources = [key for key, row in source_results.items() if row.get("status") in FAILED_SOURCE_STATUSES]
     skipped_sources = [key for key, row in source_results.items() if row.get("status") == "skipped"]
 
@@ -526,7 +667,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
 
     board_counts = {board: int(source_results.get(board, {}).get("jobs_count", 0)) for board in DEFAULT_JOB_BOARDS}
     collection_status = "success"
-    if failed_sources or partial_sources:
+    if failed_sources or under_target_sources:
         collection_status = "partial_success"
 
     discovered_raw_count = 0
@@ -571,6 +712,11 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             for key, value in normalized_summary.items():
                 metadata_completeness_summary[key] += value
 
+    run_preview_messages = _build_run_preview_messages(
+        source_results=source_results,
+        successful_sources=successful_sources,
+    )
+
     collection_observability = _build_collection_observability(
         source_results=source_results,
         source_metadata_quality=source_metadata_quality,
@@ -580,8 +726,10 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         deduped_count=deduped_count,
         raw_job_count=len(raw_jobs),
         successful_sources=successful_sources,
+        healthy_sources=healthy_sources,
         max_total_jobs=max_total_jobs,
         truncated_by_run_limit_count=truncated_by_run_limit_count,
+        run_preview_messages=run_preview_messages,
     )
 
     artifact = {
@@ -600,8 +748,9 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "collection_status": collection_status,
         "partial_success": collection_status == "partial_success",
         "successful_sources": successful_sources,
+        "healthy_sources": healthy_sources,
         "empty_sources": empty_sources,
-        "partial_sources": partial_sources,
+        "under_target_sources": under_target_sources,
         "failed_sources": failed_sources,
         "skipped_sources": skipped_sources,
         "collection_counts": {
@@ -621,8 +770,9 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "requested_sources": sources,
             "collectors_enabled": collectors_enabled,
             "successful_source_count": len(successful_sources),
+            "healthy_source_count": len(healthy_sources),
             "empty_source_count": len(empty_sources),
-            "partial_source_count": len(partial_sources),
+            "under_target_source_count": len(under_target_sources),
             "failed_source_count": len(failed_sources),
             "skipped_source_count": len(skipped_sources),
             "raw_job_count": len(raw_jobs),
@@ -650,7 +800,9 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "pipeline_id": pipeline_id,
         "sources_attempted": sources,
         "sources_succeeded": successful_sources,
+        "sources_healthy": healthy_sources,
         "sources_empty": empty_sources,
+        "sources_under_target": under_target_sources,
         "sources_failed": failed_sources,
         "sources_skipped": skipped_sources,
         "per_source_job_counts": {key: int(row.get("jobs_count", 0) or 0) for key, row in source_results.items()},
@@ -660,6 +812,80 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
                 "status": str(row.get("status") or "").strip() or "unknown",
                 "error": row.get("error"),
                 "jobs_count": int(row.get("jobs_count", 0) or 0),
+                "source_status": str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("source_status")
+                    or row.get("status")
+                    or ""
+                ).strip()
+                or None,
+                "source_error_type": str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("source_error_type")
+                    or ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("error_type")
+                    or ""
+                ).strip()
+                or None,
+                "pages_attempted": _meta_count(row.get("meta") if isinstance(row.get("meta"), dict) else {}, "pages_attempted", 0),
+                "cards_seen": _meta_count(row.get("meta") if isinstance(row.get("meta"), dict) else {}, "cards_seen", 0),
+                "listing_cards_seen": _meta_count(
+                    row.get("meta") if isinstance(row.get("meta"), dict) else {},
+                    "listing_cards_seen",
+                    _meta_count(row.get("meta") if isinstance(row.get("meta"), dict) else {}, "cards_seen", 0),
+                ),
+                "jobs_raw": _meta_count(row.get("meta") if isinstance(row.get("meta"), dict) else {}, "jobs_raw", int(row.get("jobs_count", 0) or 0)),
+                "jobs_kept": _meta_count(row.get("meta") if isinstance(row.get("meta"), dict) else {}, "jobs_kept", int(row.get("jobs_count", 0) or 0)),
+                "wall_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("wall_detected", False)
+                ),
+                "auth_required_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("auth_required_detected", False)
+                ),
+                "login_wall_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("login_wall_detected", False)
+                )
+                or str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("source_error_type")
+                    or ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("error_type")
+                    or ""
+                ).strip()
+                in {"login_wall", "login_wall_detected"},
+                "anti_bot_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("anti_bot_detected", False)
+                )
+                or str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("source_error_type")
+                    or ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("error_type")
+                    or ""
+                ).strip()
+                == "anti_bot_detected",
+                "consent_wall_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("consent_wall_detected", False)
+                )
+                or str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("source_error_type")
+                    or ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("error_type")
+                    or ""
+                ).strip()
+                == "consent_wall_detected",
+                "unexpected_redirect_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("unexpected_redirect_detected", False)
+                ),
+                "layout_mismatch_detected": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("layout_mismatch_detected", False)
+                )
+                or str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("source_status")
+                    or row.get("status")
+                    or ""
+                ).strip()
+                == "layout_mismatch",
+                "parsing_strategy_used": str(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("parsing_strategy_used")
+                    or ""
+                ).strip()
+                or None,
+                "browser_fallback_used": bool(
+                    ((row.get("meta") if isinstance(row.get("meta"), dict) else {}) or {}).get("browser_fallback_used", False)
+                ),
             }
             for key, row in source_results.items()
         },
@@ -690,9 +916,10 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     return {
         "artifact_type": "jobs.collect.v1",
         "content_text": (
-            f"jobs_collect_v1 collected {len(raw_jobs)} jobs across {len(successful_sources)} successful sources"
+            f"jobs_collect_v1 collected {len(raw_jobs)} jobs across {len(successful_sources)} usable sources"
+            f" and {len(healthy_sources)} healthy sources"
             f" from {discovered_raw_count} discovered candidates"
-            f" with {len(failed_sources)} failed sources."
+            f" with {len(failed_sources)} blocked or failed sources."
         ),
         "content_json": artifact,
         "debug_json": debug_artifact,

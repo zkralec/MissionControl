@@ -30,6 +30,10 @@ _HANDSHAKE_CARD_RE = re.compile(
     r"""href=["'](?P<href>[^"']*(?:/stu/jobs/[0-9]+|/jobs/[0-9]+)[^"']*)["']""",
     re.IGNORECASE,
 )
+_GLASSDOOR_CARD_RE = re.compile(
+    r"""href=["'](?P<href>[^"']*(?:/partner/jobListing\.htm[^"']*|/Job/[^"']+-job-listing-[^"']*)[^"']*)["']""",
+    re.IGNORECASE,
+)
 
 _SALARY_RANGE_RE = re.compile(
     r"\$?\s*(?P<low>[0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*(?P<low_suffix>[kK]?)"
@@ -209,6 +213,47 @@ _HANDSHAKE_SEARCH_CONTEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 _HANDSHAKE_SEARCH_PATH_MARKERS = ("/stu/postings", "/students/jobs/search", "/jobs/search")
 _HANDSHAKE_AUTH_PATH_MARKERS = ("/login", "/sign_in", "/users/sign_in", "/session", "/sessions", "/auth")
+_GLASSDOOR_ANTI_BOT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"captcha", re.IGNORECASE),
+    re.compile(r"verify you are human", re.IGNORECASE),
+    re.compile(r"security check", re.IGNORECASE),
+    re.compile(r"unusual traffic", re.IGNORECASE),
+    re.compile(r"enable javascript and cookies", re.IGNORECASE),
+)
+_GLASSDOOR_CONSENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"accept all cookies", re.IGNORECASE),
+    re.compile(r"privacy preference center", re.IGNORECASE),
+    re.compile(r"cookie preferences", re.IGNORECASE),
+    re.compile(r"consent preferences", re.IGNORECASE),
+)
+_GLASSDOOR_LOGIN_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"sign in", re.IGNORECASE),
+    re.compile(r"log in", re.IGNORECASE),
+    re.compile(r"join glassdoor", re.IGNORECASE),
+    re.compile(r"continue with email", re.IGNORECASE),
+    re.compile(r"create an account", re.IGNORECASE),
+)
+_GLASSDOOR_EMPTY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b0 jobs\b", re.IGNORECASE),
+    re.compile(r"\bno results\b", re.IGNORECASE),
+    re.compile(r"try a different keyword", re.IGNORECASE),
+    re.compile(r"no jobs to display", re.IGNORECASE),
+    re.compile(r"didn'?t find any jobs", re.IGNORECASE),
+)
+_GLASSDOOR_SEARCH_CONTEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"glassdoor", re.IGNORECASE),
+    re.compile(r"\bsearch results\b", re.IGNORECASE),
+    re.compile(r"\bjobs in\b", re.IGNORECASE),
+    re.compile(r"jobcard", re.IGNORECASE),
+    re.compile(r"jobListings", re.IGNORECASE),
+)
+_GLASSDOOR_SEARCH_PATH_MARKERS = ("/job/jobs.htm",)
+_GLASSDOOR_AUTH_PATH_MARKERS = (
+    "/login",
+    "/member/home",
+    "/member/profile/login_input.htm",
+    "/profile/login_input.htm",
+)
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
@@ -258,6 +303,20 @@ def _extract_salary_range(snippet: str) -> tuple[float | None, float | None]:
         return value, value
 
     return None, None
+
+
+def _extract_salary_text(snippet: str) -> str | None:
+    range_match = _SALARY_RANGE_RE.search(snippet)
+    if range_match:
+        text = range_match.group(0)
+        suffix_match = re.match(r"\s*/?\s*(?:year|yr|annum|hour|hr)\b", snippet[range_match.end():], re.IGNORECASE)
+        if suffix_match:
+            text += suffix_match.group(0)
+        return _compact_ws(text)
+    single_match = _SALARY_SINGLE_RE.search(snippet)
+    if single_match:
+        return _compact_ws(single_match.group(0))
+    return None
 
 
 def _extract_company(snippet: str) -> str | None:
@@ -488,10 +547,12 @@ def _normalize_url_for_compare(url: str | None) -> str:
 
 
 def _handshake_cookie_header() -> str | None:
-    cookie_header = str(os.getenv("HANDSHAKE_COOKIE_HEADER") or "").strip()
+    cookie_header = str(os.getenv("HANDSHAKE_COOKIE_HEADER") or "").strip().strip("\"'")
+    if cookie_header.lower().startswith("cookie:"):
+        cookie_header = cookie_header.split(":", 1)[1].strip()
     if cookie_header:
         return cookie_header
-    session_cookie = str(os.getenv("HANDSHAKE_SESSION_COOKIE") or "").strip()
+    session_cookie = str(os.getenv("HANDSHAKE_SESSION_COOKIE") or "").strip().strip("\"'")
     if not session_cookie:
         return None
     return session_cookie if "=" in session_cookie else f"_session_id={session_cookie}"
@@ -675,6 +736,472 @@ def _handshake_final_meta(
         "authenticated_session_supported": bool(_handshake_cookie_header()),
         "browser_fallback_requested": _handshake_browser_fallback_enabled(),
     }
+
+
+def _glassdoor_browser_fallback_enabled() -> bool:
+    return _env_flag("GLASSDOOR_USE_BROWSER_FALLBACK", default=False)
+
+
+def _fetch_glassdoor_browser_response(url: str, *, extra_headers: dict[str, str] | None = None) -> dict[str, Any] | None:
+    try:
+        module = import_module("integrations.glassdoor_browser_fallback")
+    except ImportError:
+        return None
+
+    fetcher = getattr(module, "fetch_glassdoor_page", None)
+    if not callable(fetcher):
+        return None
+
+    response = fetcher(url=url, extra_headers=extra_headers or {})
+    if isinstance(response, str):
+        return {
+            "html_text": response,
+            "final_url": url,
+            "status_code": None,
+            "from_cache": False,
+        }
+    if isinstance(response, dict):
+        return {
+            "html_text": str(response.get("html_text") or ""),
+            "final_url": str(response.get("final_url") or url),
+            "status_code": int(response.get("status_code")) if isinstance(response.get("status_code"), int) else None,
+            "from_cache": bool(response.get("from_cache", False)),
+        }
+    raise TypeError("fetch_glassdoor_page must return str or dict")
+
+
+def _count_glassdoor_cards(html_text: str, *, base_url: str) -> int:
+    seen: set[str] = set()
+    for match in _GLASSDOOR_CARD_RE.finditer(html_text):
+        href = str(match.group("href") or "").strip()
+        if not href:
+            continue
+        url = absolute_url(base_url, unescape(href))
+        if _is_job_url_for_board("glassdoor", url):
+            seen.add(url)
+    return len(seen)
+
+
+def _is_glassdoor_search_url(url: str | None) -> bool:
+    if not url:
+        return False
+    low = urlsplit(url).path.lower()
+    return any(marker in low for marker in _GLASSDOOR_SEARCH_PATH_MARKERS)
+
+
+def _is_glassdoor_auth_url(url: str | None) -> bool:
+    if not url:
+        return False
+    low = urlsplit(url).path.lower()
+    return any(marker in low for marker in _GLASSDOOR_AUTH_PATH_MARKERS)
+
+
+def _glassdoor_page_diagnostics(
+    *,
+    requested_url: str,
+    final_url: str | None,
+    html_text: str,
+    status_code: int | None,
+    listing_cards_seen: int,
+) -> dict[str, Any]:
+    final_value = str(final_url or "").strip() or requested_url
+    anti_bot_detected = (
+        status_code in {403, 429}
+        or any(pattern.search(html_text) for pattern in _GLASSDOOR_ANTI_BOT_PATTERNS)
+        or "/captcha" in urlsplit(final_value).path.lower()
+    )
+    consent_wall_detected = any(pattern.search(html_text) for pattern in _GLASSDOOR_CONSENT_PATTERNS)
+    login_wall_detected = _is_glassdoor_auth_url(final_value) or any(
+        pattern.search(html_text) for pattern in _GLASSDOOR_LOGIN_PATTERNS
+    )
+    wall_detected = bool(anti_bot_detected or consent_wall_detected or login_wall_detected)
+    true_empty_results = any(pattern.search(html_text) for pattern in _GLASSDOOR_EMPTY_PATTERNS)
+    search_context = _is_glassdoor_search_url(requested_url) or any(
+        pattern.search(html_text) for pattern in _GLASSDOOR_SEARCH_CONTEXT_PATTERNS
+    )
+    unexpected_redirect = bool(
+        final_value
+        and _normalize_url_for_compare(final_value) != _normalize_url_for_compare(requested_url)
+        and not _is_glassdoor_search_url(final_value)
+        and not _is_job_url_for_board("glassdoor", final_value)
+    )
+    dynamic_or_layout_issue = bool(listing_cards_seen == 0 and not true_empty_results and not wall_detected and search_context)
+
+    source_status = "success"
+    source_error_type = None
+    page_state = "results"
+    if listing_cards_seen <= 0:
+        if anti_bot_detected:
+            source_status = "anti_bot_blocked"
+            source_error_type = "anti_bot_detected"
+            page_state = "anti_bot_detected"
+        elif consent_wall_detected:
+            source_status = "consent_blocked"
+            source_error_type = "consent_wall_detected"
+            page_state = "consent_wall_detected"
+        elif login_wall_detected:
+            source_status = "auth_blocked"
+            source_error_type = "login_wall_detected"
+            page_state = "login_wall_detected"
+        elif unexpected_redirect:
+            source_status = "upstream_failure"
+            source_error_type = "unexpected_redirect"
+            page_state = "unexpected_redirect"
+        elif true_empty_results:
+            source_status = "empty_success"
+            source_error_type = "true_empty_results"
+            page_state = "true_empty_results"
+        elif dynamic_or_layout_issue:
+            source_status = "layout_mismatch"
+            source_error_type = "layout_mismatch"
+            page_state = "layout_mismatch"
+        else:
+            source_status = "layout_mismatch"
+            source_error_type = "layout_mismatch"
+            page_state = "layout_mismatch"
+
+    return {
+        "source_status": source_status,
+        "source_error_type": source_error_type,
+        "page_state": page_state,
+        "listing_cards_seen": int(listing_cards_seen),
+        "wall_detected": wall_detected,
+        "anti_bot_detected": bool(anti_bot_detected),
+        "consent_wall_detected": bool(consent_wall_detected),
+        "login_wall_detected": bool(login_wall_detected),
+        "true_empty_results": bool(true_empty_results),
+        "unexpected_redirect_detected": bool(unexpected_redirect),
+        "layout_mismatch_detected": bool(source_status == "layout_mismatch"),
+    }
+
+
+def _glassdoor_status_priority(status: str) -> int:
+    return {
+        "empty_success": 1,
+        "upstream_failure": 2,
+        "layout_mismatch": 3,
+        "anti_bot_blocked": 4,
+        "consent_blocked": 5,
+        "auth_blocked": 6,
+    }.get(status, 0)
+
+
+def _glassdoor_final_meta(
+    *,
+    jobs: list[dict[str, Any]],
+    discovered_raw_count: int,
+    pages_fetched: int,
+    pages_with_results: int,
+    request_attempts: list[dict[str, Any]],
+    request_urls_tried: list[str],
+    last_request_url: str | None,
+    stop_reason: str,
+    source_status: str,
+    source_error_type: str | None,
+    error_status: int | None,
+    listing_cards_seen: int,
+    wall_detected: bool,
+    anti_bot_detected: bool,
+    consent_wall_detected: bool,
+    login_wall_detected: bool,
+    unexpected_redirect_detected: bool,
+    layout_mismatch_detected: bool,
+    parsing_strategy_used: str,
+    browser_fallback_used: bool,
+) -> dict[str, Any]:
+    return {
+        "discovered_raw_count": discovered_raw_count,
+        "pages_fetched": pages_fetched,
+        "pages_attempted": pages_fetched,
+        "pages_with_results": pages_with_results,
+        "request_attempts": request_attempts,
+        "request_urls_tried": request_urls_tried,
+        "last_request_url": last_request_url,
+        "error_type": source_error_type,
+        "source_error_type": source_error_type,
+        "error_status": error_status,
+        "stop_reason": stop_reason,
+        "source_status": source_status,
+        "cards_seen": listing_cards_seen,
+        "listing_cards_seen": listing_cards_seen,
+        "jobs_raw": discovered_raw_count,
+        "jobs_kept": len(jobs),
+        "wall_detected": wall_detected,
+        "anti_bot_detected": anti_bot_detected,
+        "consent_wall_detected": consent_wall_detected,
+        "auth_required_detected": login_wall_detected,
+        "login_wall_detected": login_wall_detected,
+        "unexpected_redirect_detected": unexpected_redirect_detected,
+        "layout_mismatch_detected": layout_mismatch_detected,
+        "parsing_strategy_used": parsing_strategy_used,
+        "browser_fallback_used": browser_fallback_used,
+        "browser_fallback_requested": _glassdoor_browser_fallback_enabled(),
+    }
+
+
+def _collect_jobs_from_glassdoor(
+    *,
+    query: str,
+    location: str,
+    max_jobs: int,
+    max_pages: int,
+    early_stop_when_no_new_results: bool,
+    url_override: str | None,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    board_key = "glassdoor"
+    base_url = _BOARD_BASE_URLS[board_key]
+    base_search_url = str(url_override or "").strip() or None
+    warnings: list[str] = []
+    jobs: list[dict[str, Any]] = []
+    seen_unique: set[tuple[str, str, str]] = set()
+    max_items = max(1, int(max_jobs))
+    max_page_count = max(1, int(max_pages))
+    pages_fetched = 0
+    pages_with_results = 0
+    discovered_raw_count = 0
+    stop_reason = "max_pages_reached"
+    request_attempts: list[dict[str, Any]] = []
+    request_urls_tried: list[str] = []
+    last_request_url: str | None = None
+    error_status: int | None = None
+    listing_cards_seen_total = 0
+    wall_detected = False
+    anti_bot_detected = False
+    consent_wall_detected = False
+    login_wall_detected = False
+    unexpected_redirect_detected = False
+    layout_mismatch_detected = False
+    best_failure_status = "empty_success"
+    best_failure_error_type: str | None = "true_empty_results"
+    browser_fallback_used = False
+    parsing_strategy_used = "http_html"
+    browser_fallback_enabled = _glassdoor_browser_fallback_enabled()
+
+    for page_index in range(max_page_count):
+        candidate_urls = (
+            [_page_url_for_board(board_key, search_url=base_search_url, page_index=page_index)]
+            if base_search_url
+            else _candidate_search_urls(board_key, query=query, location=location, page_index=page_index)
+        )
+        page_selected = False
+        page_max_cards_seen = 0
+
+        for candidate_index, candidate_url in enumerate(candidate_urls, start=1):
+            modes: list[tuple[str, bool]] = [("http_html", False)]
+            if browser_fallback_enabled:
+                modes.append(("browser_fallback", True))
+
+            for mode_index, (mode, use_browser) in enumerate(modes, start=1):
+                pages_fetched += 1
+                request_urls_tried.append(candidate_url)
+                last_request_url = candidate_url
+
+                try:
+                    if use_browser:
+                        response = _fetch_glassdoor_browser_response(candidate_url)
+                        if response is None:
+                            request_attempts.append(
+                                {
+                                    "page_index": page_index + 1,
+                                    "candidate_index": candidate_index,
+                                    "mode_index": mode_index,
+                                    "mode": mode,
+                                    "url": candidate_url,
+                                    "status": "error",
+                                    "error_type": "browser_fallback_unavailable",
+                                }
+                            )
+                            continue
+                        browser_fallback_used = True
+                        parsing_strategy_used = "browser_fallback"
+                    else:
+                        response = fetch_html_response(
+                            candidate_url,
+                            **_request_options_for_board_with_headers(board_key, search_url=candidate_url),
+                        )
+
+                    html_text = str(response.get("html_text") or "")
+                    final_url = str(response.get("final_url") or candidate_url)
+                    status_code = response.get("status_code") if isinstance(response.get("status_code"), int) else None
+                    listing_cards_seen = _count_glassdoor_cards(html_text, base_url=base_url)
+                    page_max_cards_seen = max(page_max_cards_seen, listing_cards_seen)
+                    page_diag = _glassdoor_page_diagnostics(
+                        requested_url=candidate_url,
+                        final_url=final_url,
+                        html_text=html_text,
+                        status_code=status_code,
+                        listing_cards_seen=listing_cards_seen,
+                    )
+                    page_jobs: list[dict[str, Any]] = []
+                    if page_diag["source_status"] == "success":
+                        page_jobs = _extract_jobs_from_html(
+                            board_key,
+                            html_text=html_text,
+                            base_url=base_url,
+                            search_url=final_url,
+                            location=location,
+                        )
+                        if not page_jobs:
+                            page_diag.update(
+                                {
+                                    "source_status": "layout_mismatch",
+                                    "source_error_type": "layout_mismatch",
+                                    "page_state": "layout_mismatch",
+                                    "layout_mismatch_detected": True,
+                                }
+                            )
+
+                    wall_detected = wall_detected or bool(page_diag["wall_detected"])
+                    anti_bot_detected = anti_bot_detected or bool(page_diag["anti_bot_detected"])
+                    consent_wall_detected = consent_wall_detected or bool(page_diag["consent_wall_detected"])
+                    login_wall_detected = login_wall_detected or bool(page_diag["login_wall_detected"])
+                    unexpected_redirect_detected = (
+                        unexpected_redirect_detected or bool(page_diag["unexpected_redirect_detected"])
+                    )
+                    layout_mismatch_detected = (
+                        layout_mismatch_detected or bool(page_diag["layout_mismatch_detected"])
+                    )
+                    if _glassdoor_status_priority(str(page_diag["source_status"])) >= _glassdoor_status_priority(best_failure_status):
+                        best_failure_status = str(page_diag["source_status"])
+                        best_failure_error_type = str(page_diag.get("source_error_type") or "").strip() or None
+
+                    request_attempts.append(
+                        {
+                            "page_index": page_index + 1,
+                            "candidate_index": candidate_index,
+                            "mode_index": mode_index,
+                            "mode": mode,
+                            "url": candidate_url,
+                            "final_url": final_url,
+                            "status": "ok",
+                            "response_status": status_code,
+                            "listing_cards_seen": int(page_diag["listing_cards_seen"]),
+                            "cards_seen": int(page_diag["listing_cards_seen"]),
+                            "page_state": page_diag["page_state"],
+                            "source_status": page_diag["source_status"],
+                            "source_error_type": page_diag["source_error_type"],
+                            "wall_detected": bool(page_diag["wall_detected"]),
+                            "anti_bot_detected": bool(page_diag["anti_bot_detected"]),
+                            "consent_wall_detected": bool(page_diag["consent_wall_detected"]),
+                            "login_wall_detected": bool(page_diag["login_wall_detected"]),
+                            "unexpected_redirect_detected": bool(page_diag["unexpected_redirect_detected"]),
+                            "layout_mismatch_detected": bool(page_diag["layout_mismatch_detected"]),
+                            "parsing_strategy_used": mode,
+                            "browser_fallback_used": bool(use_browser),
+                        }
+                    )
+
+                    if page_diag["source_status"] == "success":
+                        discovered_raw_count += len(page_jobs)
+                        if page_jobs:
+                            pages_with_results += 1
+                        jobs.extend(page_jobs)
+                        new_unique = 0
+                        for row in page_jobs:
+                            key = _job_key(row)
+                            if key in seen_unique:
+                                continue
+                            seen_unique.add(key)
+                            new_unique += 1
+                        page_selected = True
+                        if len(jobs) >= max_items:
+                            stop_reason = "max_jobs_reached"
+                            jobs = jobs[:max_items]
+                            listing_cards_seen_total += page_max_cards_seen
+                            return jobs, warnings, _glassdoor_final_meta(
+                                jobs=jobs,
+                                discovered_raw_count=discovered_raw_count,
+                                pages_fetched=pages_fetched,
+                                pages_with_results=pages_with_results,
+                                request_attempts=request_attempts,
+                                request_urls_tried=request_urls_tried,
+                                last_request_url=last_request_url,
+                                stop_reason=stop_reason,
+                                source_status="success",
+                                source_error_type=None,
+                                error_status=error_status,
+                                listing_cards_seen=listing_cards_seen_total,
+                                wall_detected=wall_detected,
+                                anti_bot_detected=anti_bot_detected,
+                                consent_wall_detected=consent_wall_detected,
+                                login_wall_detected=login_wall_detected,
+                                unexpected_redirect_detected=unexpected_redirect_detected,
+                                layout_mismatch_detected=layout_mismatch_detected,
+                                parsing_strategy_used=parsing_strategy_used,
+                                browser_fallback_used=browser_fallback_used,
+                            )
+                        if early_stop_when_no_new_results and new_unique == 0:
+                            stop_reason = "no_new_results"
+                        else:
+                            stop_reason = "page_results"
+                        break
+
+                    if page_diag["source_status"] == "empty_success":
+                        page_selected = True
+                        stop_reason = page_diag["page_state"]
+                        break
+                except Exception as exc:
+                    error_type, error_status = _error_details(exc)
+                    if _glassdoor_status_priority("upstream_failure") >= _glassdoor_status_priority(best_failure_status):
+                        best_failure_status = "upstream_failure"
+                        best_failure_error_type = error_type
+                    request_attempts.append(
+                        {
+                            "page_index": page_index + 1,
+                            "candidate_index": candidate_index,
+                            "mode_index": mode_index,
+                            "mode": mode,
+                            "url": candidate_url,
+                            "status": "error",
+                            "error_type": error_type,
+                            "error_status": error_status,
+                            "parsing_strategy_used": mode,
+                            "browser_fallback_used": bool(use_browser),
+                        }
+                    )
+                    continue
+
+            if page_selected:
+                break
+
+        listing_cards_seen_total += page_max_cards_seen
+        if page_selected and stop_reason == "true_empty_results":
+            break
+        if stop_reason == "no_new_results":
+            break
+
+    final_status = "success" if jobs else best_failure_status
+    final_error_type = None if jobs else best_failure_error_type
+    if not jobs and final_status == "empty_success":
+        warnings.append(f"{board_key}: empty_success")
+    elif not jobs and final_status in {"auth_blocked", "consent_blocked", "anti_bot_blocked", "layout_mismatch", "upstream_failure"}:
+        warnings.append(
+            f"{board_key}: {final_status}"
+            + (f" error_type={final_error_type}" if final_error_type else "")
+        )
+
+    return jobs, warnings, _glassdoor_final_meta(
+        jobs=jobs,
+        discovered_raw_count=discovered_raw_count,
+        pages_fetched=pages_fetched,
+        pages_with_results=pages_with_results,
+        request_attempts=request_attempts,
+        request_urls_tried=request_urls_tried,
+        last_request_url=last_request_url,
+        stop_reason=stop_reason if jobs or final_status == "empty_success" else final_status,
+        source_status=final_status,
+        source_error_type=final_error_type,
+        error_status=error_status,
+        listing_cards_seen=listing_cards_seen_total,
+        wall_detected=wall_detected,
+        anti_bot_detected=anti_bot_detected,
+        consent_wall_detected=consent_wall_detected,
+        login_wall_detected=login_wall_detected,
+        unexpected_redirect_detected=unexpected_redirect_detected,
+        layout_mismatch_detected=layout_mismatch_detected,
+        parsing_strategy_used=parsing_strategy_used,
+        browser_fallback_used=browser_fallback_used,
+    )
 
 
 def _collect_jobs_from_handshake(
@@ -970,6 +1497,7 @@ def _extract_jobs_from_html(board_key: str, *, html_text: str, base_url: str, se
         posted_at = _extract_posted_at(board_key, snippet_html, snippet)
         description_snippet = _extract_description(board_key, snippet_html, snippet)
         salary_min, salary_max = _extract_salary_range(snippet)
+        salary_text = _extract_salary_text(snippet)
         experience_level = _extract_experience_level((raw_title + " " + snippet).lower())
         clearance_required, clearance_type = _extract_clearance((raw_title + " " + snippet).lower())
         work_mode = _extract_work_mode((raw_title + " " + snippet).lower())
@@ -983,6 +1511,7 @@ def _extract_jobs_from_html(board_key: str, *, html_text: str, base_url: str, se
                 "url": url,
                 "salary_min": salary_min,
                 "salary_max": salary_max,
+                "salary_text": salary_text,
                 "salary_currency": "USD" if salary_min is not None or salary_max is not None else None,
                 "experience_level": experience_level,
                 "clearance_required": clearance_required,
@@ -998,6 +1527,7 @@ def _extract_jobs_from_html(board_key: str, *, html_text: str, base_url: str, se
                     "company_text": company,
                     "location_text": location_text,
                     "posted_at_text": posted_at,
+                    "salary_text": salary_text,
                     "description_text": description_snippet,
                 },
             }
@@ -1033,6 +1563,15 @@ def collect_jobs_from_board(
         }
     if board_key == "handshake":
         return _collect_jobs_from_handshake(
+            query=query,
+            location=location,
+            max_jobs=max_jobs,
+            max_pages=max_pages,
+            early_stop_when_no_new_results=early_stop_when_no_new_results,
+            url_override=url_override,
+        )
+    if board_key == "glassdoor":
+        return _collect_jobs_from_glassdoor(
             query=query,
             location=location,
             max_jobs=max_jobs,

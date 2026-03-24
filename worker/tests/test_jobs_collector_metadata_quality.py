@@ -39,6 +39,16 @@ def test_source_collectors_extract_useful_metadata_from_messy_html(
 ) -> None:
     fixture_html = _fixture(fixture_name)
     monkeypatch.setattr(job_boards_scrape, "fetch_html", lambda url, **_kwargs: fixture_html)
+    monkeypatch.setattr(
+        job_boards_scrape,
+        "fetch_html_response",
+        lambda url, **_kwargs: {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        },
+    )
 
     module = importlib.import_module(f"integrations.jobs_collectors.{source}")
     result = module.collect_jobs(
@@ -114,3 +124,34 @@ def test_source_collectors_report_missing_metadata_honestly(monkeypatch) -> None
     assert summary["missing_posted_at"] == 1
     assert summary["missing_source_url"] == 0
     assert summary["missing_location"] == 0
+
+
+def test_glassdoor_collector_preserves_salary_text_when_available(monkeypatch) -> None:
+    fixture_html = _fixture("jobs_glassdoor_results.html")
+    monkeypatch.setattr(
+        job_boards_scrape,
+        "fetch_html_response",
+        lambda url, **_kwargs: {
+            "html_text": fixture_html,
+            "final_url": url,
+            "status_code": 200,
+            "from_cache": False,
+        },
+    )
+
+    module = importlib.import_module("integrations.jobs_collectors.glassdoor")
+    result = module.collect_jobs(
+        {
+            "query": "data scientist",
+            "location": "Remote",
+            "result_limit_per_source": 5,
+            "max_pages_per_source": 1,
+        }
+    )
+
+    assert result["status"] == "success"
+    assert len(result["jobs"]) == 1
+    job = result["jobs"][0]
+    assert job["salary_text"] == "$145K - $170K / year"
+    assert job["salary_min"] == 145000.0
+    assert job["salary_max"] == 170000.0

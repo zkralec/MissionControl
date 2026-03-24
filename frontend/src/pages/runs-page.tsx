@@ -351,6 +351,11 @@ function jobsPreviewRows(resultPayload: unknown): Array<Record<string, unknown>>
   ]);
 }
 
+function textArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => asText(row)?.trim() || "").filter(Boolean);
+}
+
 function JobsStagePreview({
   taskType,
   resultPayload,
@@ -375,6 +380,8 @@ function JobsStagePreview({
 
     const waterfall = isRecord(observability.waterfall) ? observability.waterfall : {};
     const operatorQuestions = isRecord(observability.operator_questions) ? observability.operator_questions : {};
+    const runPreview = isRecord(observability.run_preview) ? observability.run_preview : {};
+    const previewMessages = textArray(runPreview.messages);
     const bySourceRaw = isRecord(observability.by_source) ? observability.by_source : {};
     const rows = Object.entries(bySourceRaw)
       .filter(([, value]) => isRecord(value))
@@ -429,6 +436,17 @@ function JobsStagePreview({
           </div>
         ) : null}
 
+        {previewMessages.length > 0 ? (
+          <div className="rounded border border-border bg-muted/20 p-3 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Preview Signals</div>
+            <div className="mt-2 space-y-1">
+              {previewMessages.map((message) => (
+                <div key={message}>{message}</div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="rounded border border-border bg-card p-3">
           <div className="mb-2 text-xs font-medium uppercase tracking-[0.06em] text-muted-foreground">By Source</div>
           {rows.length === 0 ? (
@@ -438,6 +456,7 @@ function JobsStagePreview({
               <TableHeader>
                 <TableRow>
                   <TableHead>Source</TableHead>
+                  <TableHead>Health</TableHead>
                   <TableHead>Coverage</TableHead>
                   <TableHead>Collapse</TableHead>
                   <TableHead>Metadata Gaps</TableHead>
@@ -461,16 +480,21 @@ function JobsStagePreview({
                       `link ${formatPercent(value.missing_source_url_rate)}`,
                       `location ${formatPercent(value.missing_location_rate)}`
                     ].join(", ");
+                  const healthStatus = asText(value.status) || "unknown";
+                  const usableJobs = asNumber(value.jobs_kept) ?? asNumber(value.final_raw_jobs) ?? 0;
 
                   return (
                     <TableRow key={source}>
                       <TableCell>
                         <div className="space-y-0.5">
                           <div className="font-medium">{source}</div>
-                          {asText(value.status) ? (
-                            <div className="text-[11px] text-muted-foreground">{asText(value.status)}</div>
+                          {usableJobs <= 0 ? (
+                            <div className="text-[11px] text-muted-foreground">No usable jobs collected</div>
                           ) : null}
                         </div>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        <StatusBadge status={healthStatus} />
                       </TableCell>
                       <TableCell className="text-xs">{coverage}</TableCell>
                       <TableCell className="text-xs">{collapse}</TableCell>

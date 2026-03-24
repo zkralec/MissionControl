@@ -33,6 +33,7 @@
           "url": {"type": ["string", "null"]},
           "salary_min": {"type": ["number", "integer", "null"]},
           "salary_max": {"type": ["number", "integer", "null"]},
+          "salary_text": {"type": ["string", "null"]},
           "salary_currency": {"type": ["string", "null"]},
           "experience_level": {"type": ["string", "null"]},
           "work_mode": {"type": ["string", "null"]},
@@ -52,7 +53,20 @@
         "type": "object",
         "required": ["status", "jobs_count", "warnings", "errors", "meta"],
         "properties": {
-          "status": {"type": "string", "enum": ["success", "partial_success", "failed", "skipped"]},
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "empty_success",
+              "under_target",
+              "auth_blocked",
+              "consent_blocked",
+              "anti_bot_blocked",
+              "layout_mismatch",
+              "upstream_failure",
+              "skipped"
+            ]
+          },
           "jobs_count": {"type": "integer", "minimum": 0},
           "warnings": {"type": "array", "items": {"type": "string"}},
           "errors": {"type": "array", "items": {"type": "string"}},
@@ -68,7 +82,8 @@
     "collection_status": {"type": "string", "enum": ["success", "partial_success"]},
     "partial_success": {"type": "boolean"},
     "successful_sources": {"type": "array", "items": {"type": "string"}},
-    "partial_sources": {"type": "array", "items": {"type": "string"}},
+    "healthy_sources": {"type": "array", "items": {"type": "string"}},
+    "under_target_sources": {"type": "array", "items": {"type": "string"}},
     "failed_sources": {"type": "array", "items": {"type": "string"}},
     "skipped_sources": {"type": "array", "items": {"type": "string"}},
     "collection_summary": {"type": "object"},

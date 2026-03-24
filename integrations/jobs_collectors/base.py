@@ -312,6 +312,7 @@ def _normalize_job(board: str, row: dict[str, Any], *, url_override: str | None)
         "url": row.get("url"),
         "salary_min": row.get("salary_min"),
         "salary_max": row.get("salary_max"),
+        "salary_text": row.get("salary_text"),
         "salary_currency": row.get("salary_currency"),
         "experience_level": row.get("experience_level"),
         "work_mode": row.get("work_mode"),
@@ -340,10 +341,14 @@ def _split_warnings_and_errors(board: str, messages: list[str]) -> tuple[list[st
             or "fetch_http_" in low
             or "unsupported_board" in low
             or "auth_blocked" in low
+            or "consent_blocked" in low
+            or "anti_bot_blocked" in low
             or "layout_mismatch" in low
             or "upstream_failure" in low
             or "login_wall" in low
             or "auth_required" in low
+            or "anti_bot_detected" in low
+            or "consent_wall_detected" in low
             or "unexpected_redirect" in low
             or "selector_mismatch" in low
         ):
@@ -356,9 +361,12 @@ def _split_warnings_and_errors(board: str, messages: list[str]) -> tuple[list[st
 def _source_status_priority(status: str) -> int:
     return {
         "empty_success": 1,
-        "upstream_failure": 2,
-        "layout_mismatch": 3,
-        "auth_blocked": 4,
+        "under_target": 2,
+        "upstream_failure": 3,
+        "layout_mismatch": 4,
+        "anti_bot_blocked": 5,
+        "consent_blocked": 6,
+        "auth_blocked": 7,
     }.get(status, 0)
 
 
@@ -367,16 +375,20 @@ def _aggregate_source_status(
     search_attempts: list[dict[str, Any]],
     errors: list[str],
     collected_count: int,
+    requested_limit: int,
 ) -> tuple[str, str | None]:
-    if collected_count > 0:
-        return ("partial_success", None) if errors else ("success", None)
-
     statuses = [str(row.get("source_status") or "").strip() for row in search_attempts if str(row.get("source_status") or "").strip()]
     error_types = [
         str(row.get("source_error_type") or row.get("error_type") or "").strip()
         for row in search_attempts
         if str(row.get("source_error_type") or row.get("error_type") or "").strip()
     ]
+
+    if collected_count > 0:
+        degraded_signals = {"auth_blocked", "consent_blocked", "anti_bot_blocked", "layout_mismatch", "upstream_failure"}
+        if errors or any(status in degraded_signals for status in statuses):
+            return "under_target", next((value for value in reversed(error_types) if value), "under_target")
+        return ("success", None)
 
     chosen_status = "empty_success"
     if statuses:
@@ -388,8 +400,12 @@ def _aggregate_source_status(
         for candidate in ("unexpected_redirect", "login_wall", "auth_required"):
             if candidate in error_types:
                 return chosen_status, candidate
+    if chosen_status == "consent_blocked":
+        return chosen_status, next((value for value in reversed(error_types) if value), "consent_wall_detected")
+    if chosen_status == "anti_bot_blocked":
+        return chosen_status, next((value for value in reversed(error_types) if value), "anti_bot_detected")
     if chosen_status == "layout_mismatch":
-        return chosen_status, "selector_mismatch"
+        return chosen_status, next((value for value in reversed(error_types) if value), "selector_mismatch")
     if chosen_status == "upstream_failure":
         return chosen_status, next((value for value in reversed(error_types) if value), "upstream_failure")
     if chosen_status == "empty_success":
@@ -595,12 +611,18 @@ def collect_board_jobs(board: str, request: dict[str, Any], *, url_override: str
                     else None
                 ),
                 "cards_seen": int(board_meta.get("cards_seen") or 0),
+                "listing_cards_seen": int(board_meta.get("listing_cards_seen") or board_meta.get("cards_seen") or 0),
                 "jobs_raw": int(board_meta.get("jobs_raw") or board_meta.get("discovered_raw_count") or len(jobs)),
                 "jobs_kept": len(jobs),
+                "wall_detected": bool(board_meta.get("wall_detected", False)),
                 "auth_required_detected": bool(board_meta.get("auth_required_detected", False)),
                 "login_wall_detected": bool(board_meta.get("login_wall_detected", False)),
+                "anti_bot_detected": bool(board_meta.get("anti_bot_detected", False)),
+                "consent_wall_detected": bool(board_meta.get("consent_wall_detected", False)),
                 "unexpected_redirect_detected": bool(board_meta.get("unexpected_redirect_detected", False)),
                 "layout_mismatch_detected": bool(board_meta.get("layout_mismatch_detected", False)),
+                "parsing_strategy_used": str(board_meta.get("parsing_strategy_used") or "").strip() or None,
+                "browser_fallback_used": bool(board_meta.get("browser_fallback_used", False)),
             }
         )
 
@@ -684,6 +706,7 @@ def collect_board_jobs(board: str, request: dict[str, Any], *, url_override: str
         search_attempts=search_attempts,
         errors=errors,
         collected_count=len(collected),
+        requested_limit=max_jobs,
     )
 
     return {
@@ -719,12 +742,25 @@ def collect_board_jobs(board: str, request: dict[str, Any], *, url_override: str
             "source_status": source_status,
             "source_error_type": source_error_type,
             "cards_seen": sum(int(row.get("cards_seen") or 0) for row in search_attempts),
+            "listing_cards_seen": sum(int(row.get("listing_cards_seen") or row.get("cards_seen") or 0) for row in search_attempts),
             "jobs_raw": discovered_raw_count,
             "jobs_kept": len(collected),
+            "wall_detected": any(bool(row.get("wall_detected")) for row in search_attempts),
             "auth_required_detected": any(bool(row.get("auth_required_detected")) for row in search_attempts),
             "login_wall_detected": any(bool(row.get("login_wall_detected")) for row in search_attempts),
+            "anti_bot_detected": any(bool(row.get("anti_bot_detected")) for row in search_attempts),
+            "consent_wall_detected": any(bool(row.get("consent_wall_detected")) for row in search_attempts),
             "unexpected_redirect_detected": any(bool(row.get("unexpected_redirect_detected")) for row in search_attempts),
             "layout_mismatch_detected": any(bool(row.get("layout_mismatch_detected")) for row in search_attempts),
+            "parsing_strategy_used": next(
+                (
+                    row.get("parsing_strategy_used")
+                    for row in reversed(search_attempts)
+                    if isinstance(row.get("parsing_strategy_used"), str) and str(row.get("parsing_strategy_used")).strip()
+                ),
+                None,
+            ),
+            "browser_fallback_used": any(bool(row.get("browser_fallback_used")) for row in search_attempts),
             "jobs_found_per_query": jobs_found_per_query,
             "jobs_found_per_source": len(collected),
             "query_examples": [row.get("query") for row in query_plan[:5] if isinstance(row.get("query"), str)],

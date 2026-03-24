@@ -127,10 +127,16 @@ describe("RunsPage", () => {
             final_raw_jobs: 168
           },
           operator_questions: {
-            searched_enough: "220 raw discovered across 4 live sources.",
+            searched_enough: "220 raw discovered across 3 healthy sources and 2 usable sources from 8 executed queries.",
             which_source_is_weak: "Weakest metadata source: indeed.",
             why_raw_count_collapsed: "40 dropped in basic filtering and 12 deduped before returning 168 raw jobs.",
             are_we_missing_metadata: "Weakest metadata source: indeed."
+          },
+          run_preview: {
+            messages: [
+              "Only LinkedIn contributed usable jobs",
+              "Glassdoor returned zero cards; likely blocked or selector mismatch"
+            ]
           },
           by_source: {
             linkedin: {
@@ -139,14 +145,16 @@ describe("RunsPage", () => {
               kept_after_basic_filter: 100,
               jobs_dropped: 20,
               deduped_in_collection: 5,
+              jobs_kept: 100,
               weakness_summary: "post date 18%"
             },
             indeed: {
-              status: "success",
+              status: "empty_success",
               raw_jobs_discovered: 40,
-              kept_after_basic_filter: 28,
+              kept_after_basic_filter: 0,
               jobs_dropped: 12,
               deduped_in_collection: 4,
+              jobs_kept: 0,
               weakness_summary: "company 46%, post date 71%"
             }
           }
@@ -162,9 +170,13 @@ describe("RunsPage", () => {
 
     fireEvent.click(screen.getByText("jobs_collect_v1"));
     expect(screen.getAllByText("Did We Search Enough?").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("220 raw discovered across 4 live sources.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("220 raw discovered across 3 healthy sources and 2 usable sources from 8 executed queries.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Only LinkedIn contributed usable jobs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Glassdoor returned zero cards; likely blocked or selector mismatch").length).toBeGreaterThan(0);
     expect(screen.getAllByText("linkedin").length).toBeGreaterThan(0);
     expect(screen.getAllByText("120 raw -> 100 kept").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No usable jobs collected").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("empty success").length).toBeGreaterThan(0);
     expect(screen.getAllByText("company 46%, post date 71%").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/broad discovery/i).length).toBeGreaterThan(0);
   });
