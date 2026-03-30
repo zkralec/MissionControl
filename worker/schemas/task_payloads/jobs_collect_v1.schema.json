@@ -38,10 +38,12 @@
         "result_limit_per_source": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 250},
         "sources": {
           "type": "array",
+          "description": "Active sources are linkedin and indeed. Legacy inactive source values are accepted for compatibility and ignored.",
           "items": {"type": "string", "enum": ["linkedin", "indeed", "glassdoor", "handshake", "manual"]}
         },
         "enabled_sources": {
           "type": "array",
+          "description": "Active sources are linkedin and indeed. Legacy inactive source values are accepted for compatibility and ignored.",
           "items": {"type": "string", "enum": ["linkedin", "indeed", "glassdoor", "handshake", "manual"]}
         },
         "collectors_enabled": {"type": "boolean"},

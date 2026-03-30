@@ -127,34 +127,44 @@ describe("RunsPage", () => {
             final_raw_jobs: 168
           },
           operator_questions: {
-            searched_enough: "220 raw discovered across 3 healthy sources and 2 usable sources from 8 executed queries.",
-            which_source_is_weak: "Weakest metadata source: indeed.",
+            searched_enough: "LinkedIn + Indeed active. LinkedIn contributed 120 raw jobs; Indeed contributed 40 raw jobs. 8 queries executed.",
+            which_source_is_weak: "Indeed under target after 3 pages attempted.",
             why_raw_count_collapsed: "40 dropped in basic filtering and 12 deduped before returning 168 raw jobs.",
-            are_we_missing_metadata: "Weakest metadata source: indeed."
+            are_we_missing_metadata: "Weakest metadata source: Indeed."
           },
           run_preview: {
             messages: [
-              "Only LinkedIn contributed usable jobs",
-              "Glassdoor returned zero cards; likely blocked or selector mismatch"
+              "LinkedIn + Indeed active",
+              "LinkedIn contributed 120 raw jobs",
+              "Indeed contributed 40 raw jobs",
+              "Indeed is under target for this run"
             ]
           },
           by_source: {
             linkedin: {
+              source_label: "LinkedIn",
               status: "success",
               raw_jobs_discovered: 120,
               kept_after_basic_filter: 100,
               jobs_dropped: 20,
               deduped_in_collection: 5,
               jobs_kept: 100,
+              pages_attempted: 5,
+              under_target: false,
+              suspected_blocking: false,
               weakness_summary: "post date 18%"
             },
             indeed: {
-              status: "empty_success",
+              source_label: "Indeed",
+              status: "under_target",
               raw_jobs_discovered: 40,
               kept_after_basic_filter: 0,
               jobs_dropped: 12,
               deduped_in_collection: 4,
               jobs_kept: 0,
+              pages_attempted: 3,
+              under_target: true,
+              suspected_blocking: false,
               weakness_summary: "company 46%, post date 71%"
             }
           }
@@ -170,14 +180,14 @@ describe("RunsPage", () => {
 
     fireEvent.click(screen.getByText("jobs_collect_v1"));
     expect(screen.getAllByText("Did We Search Enough?").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("220 raw discovered across 3 healthy sources and 2 usable sources from 8 executed queries.").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Only LinkedIn contributed usable jobs").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Glassdoor returned zero cards; likely blocked or selector mismatch").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("linkedin").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("LinkedIn + Indeed active. LinkedIn contributed 120 raw jobs; Indeed contributed 40 raw jobs. 8 queries executed.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("LinkedIn contributed 120 raw jobs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Indeed is under target for this run").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("LinkedIn").length).toBeGreaterThan(0);
     expect(screen.getAllByText("120 raw -> 100 kept").length).toBeGreaterThan(0);
     expect(screen.getAllByText("No usable jobs collected").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("empty success").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("company 46%, post date 71%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("under target").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/company 46%, post date 71%/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/broad discovery/i).length).toBeGreaterThan(0);
   });
 

@@ -9,8 +9,10 @@ from candidate_profile import get_resume_profile as get_stored_resume_profile
 from task_handlers.errors import NonRetryableTaskError
 from task_handlers.jobs_normalize_helpers import metadata_quality_details
 
-SUPPORTED_JOB_SOURCES = ("linkedin", "indeed", "glassdoor", "handshake", "manual")
-DEFAULT_JOB_BOARDS = ("linkedin", "indeed", "glassdoor", "handshake")
+ACTIVE_JOB_SOURCES = ("linkedin", "indeed")
+LEGACY_DISABLED_JOB_SOURCES = ("glassdoor", "handshake")
+SUPPORTED_JOB_SOURCES = ACTIVE_JOB_SOURCES + LEGACY_DISABLED_JOB_SOURCES + ("manual",)
+DEFAULT_JOB_BOARDS = ACTIVE_JOB_SOURCES
 DEFAULT_QUERY = "software engineer"
 DEFAULT_LOCATION = "United States"
 MAX_RESUME_CHARS_FOR_LLM = 16_000
@@ -491,12 +493,45 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
         requested_sources = list(DEFAULT_JOB_BOARDS)
         if isinstance(request.get("manual_jobs"), list) and request.get("manual_jobs"):
             requested_sources.append("manual")
+
     sources: list[str] = []
+    disabled_sources: list[str] = []
+    unsupported_sources: list[str] = []
+    requested_sources_original: list[str] = []
     for source in requested_sources:
-        if source in SUPPORTED_JOB_SOURCES and source not in sources:
+        if not source or source in requested_sources_original:
+            continue
+        requested_sources_original.append(source)
+        if source == "manual":
             sources.append(source)
+            continue
+        if source in ACTIVE_JOB_SOURCES:
+            sources.append(source)
+            continue
+        if source in LEGACY_DISABLED_JOB_SOURCES:
+            disabled_sources.append(source)
+            continue
+        unsupported_sources.append(source)
+
+    source_configuration_notes: list[str] = []
+    if disabled_sources:
+        source_configuration_notes.append(
+            "Inactive legacy job sources were ignored. Only linkedin and indeed are active."
+        )
+
     if not sources:
         sources = list(DEFAULT_JOB_BOARDS)
+        if requested_sources_original and any(
+            source in LEGACY_DISABLED_JOB_SOURCES or source not in SUPPORTED_JOB_SOURCES
+            for source in requested_sources_original
+        ):
+            source_configuration_notes.append(
+                "No active job sources remained after filtering inactive or unsupported sources; defaulted to linkedin and indeed."
+            )
+    if unsupported_sources:
+        source_configuration_notes.append(
+            "Unsupported job sources were ignored: " + ", ".join(unsupported_sources) + "."
+        )
 
     max_total_jobs = _as_bounded_int(
         request.get("max_total_jobs")
@@ -621,6 +656,10 @@ def resolve_request(raw_request: dict[str, Any] | None) -> dict[str, Any]:
         "enable_query_expansion": bool(enable_query_expansion),
         "early_stop_when_no_new_results": bool(early_stop_when_no_new_results),
         "enabled_sources": list(sources),
+        "requested_sources_original": requested_sources_original,
+        "disabled_sources": list(disabled_sources),
+        "unsupported_sources": list(unsupported_sources),
+        "source_configuration_notes": source_configuration_notes,
         "collectors_enabled": collectors_enabled,
         "sources": sources,
         "max_jobs_per_source": max_jobs,

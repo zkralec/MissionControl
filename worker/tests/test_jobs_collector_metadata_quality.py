@@ -1,3 +1,5 @@
+"""Metadata extraction coverage for active collectors plus dormant legacy adapters."""
+
 import importlib
 import os
 import sys

@@ -26,7 +26,7 @@ def _legacy_to_collect_request(payload: dict[str, Any]) -> dict[str, Any]:
 
     collectors_enabled = bool(payload.get("collectors_enabled", True))
     if not board_sources:
-        board_sources = ["linkedin", "indeed", "glassdoor", "handshake"]
+        board_sources = ["linkedin", "indeed"]
 
     profile_mode = "resume_profile"
     if bool(payload.get("use_resume_profile", True)) is False:

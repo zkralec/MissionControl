@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+"""Inactive legacy Glassdoor collector kept for compatibility coverage."""
+
 from typing import Any
 
 from .base import collect_board_jobs, supported_fields
 
 SOURCE = "glassdoor"
+ACTIVE = False
 SUPPORTED_FIELDS = supported_fields(SOURCE)
 
 

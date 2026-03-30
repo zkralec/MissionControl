@@ -246,7 +246,7 @@ def _materialize_payload_json(
 
         # Backward compatibility for legacy jobs payload templates.
         if task_type == "jobs_digest_v1":
-            request_obj.setdefault("sources", request_obj.get("job_boards") or ["linkedin", "indeed", "glassdoor", "handshake"])
+            request_obj.setdefault("sources", request_obj.get("job_boards") or ["linkedin", "indeed"])
             request_obj.setdefault("query", request_obj.get("search_query") or request_obj.get("query") or "software engineer")
             request_obj.setdefault("location", request_obj.get("search_location") or request_obj.get("location") or "United States")
 

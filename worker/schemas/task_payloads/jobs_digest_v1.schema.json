@@ -14,7 +14,7 @@
     "search_location": {"type": "string", "description": "Alias for location."},
     "job_boards": {
       "type": "array",
-      "description": "Boards to scrape. Supported: linkedin, indeed, glassdoor, handshake.",
+      "description": "Boards to scrape. Active sources: linkedin, indeed. Legacy inactive source values are accepted for compatibility and ignored.",
       "items": {"type": "string"}
     },
     "board_url_overrides": {

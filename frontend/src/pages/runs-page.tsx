@@ -45,6 +45,16 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return null;
+}
+
 function parseMaybeJsonText(raw: string): unknown {
   const trimmed = raw.trim();
   if (!trimmed) return "";
@@ -356,6 +366,16 @@ function textArray(value: unknown): string[] {
   return value.map((row) => asText(row)?.trim() || "").filter(Boolean);
 }
 
+function isInactiveSourceCoverageRow(value: Record<string, unknown>): boolean {
+  const sourceErrorType = asText(value.source_error_type);
+  const status = asText(value.status);
+  return sourceErrorType === "source_disabled" || status === "skipped";
+}
+
+function displaySourceName(source: string, value: Record<string, unknown>): string {
+  return asText(value.source_label) || (source === "linkedin" ? "LinkedIn" : source === "indeed" ? "Indeed" : source);
+}
+
 function JobsStagePreview({
   taskType,
   resultPayload,
@@ -385,6 +405,7 @@ function JobsStagePreview({
     const bySourceRaw = isRecord(observability.by_source) ? observability.by_source : {};
     const rows = Object.entries(bySourceRaw)
       .filter(([, value]) => isRecord(value))
+      .filter(([, value]) => !isInactiveSourceCoverageRow(value as Record<string, unknown>))
       .map(([source, value]) => ({ source, value: value as Record<string, unknown> }));
 
     const summaryCards =
@@ -403,9 +424,9 @@ function JobsStagePreview({
           ];
 
     const questionCards = [
-      { label: "Did We Search Enough?", value: asText(operatorQuestions.searched_enough) || "-" },
+      { label: "Did We Search Enough?", value: asText(operatorQuestions.searched_enough) || asText(operatorQuestions.did_we_search_enough) || "-" },
       { label: "Which Source Is Weak?", value: asText(operatorQuestions.which_source_is_weak) || "-" },
-      { label: "Why Did Raw Count Collapse?", value: asText(operatorQuestions.why_raw_count_collapsed) || "-" },
+      { label: "Why Did Raw Count Collapse?", value: asText(operatorQuestions.why_raw_count_collapsed) || asText(operatorQuestions.why_did_raw_count_collapse) || "-" },
       { label: "Are We Missing Metadata?", value: asText(operatorQuestions.are_we_missing_metadata) || "-" }
     ];
 
@@ -457,21 +478,18 @@ function JobsStagePreview({
                 <TableRow>
                   <TableHead>Source</TableHead>
                   <TableHead>Health</TableHead>
-                  <TableHead>Coverage</TableHead>
-                  <TableHead>Collapse</TableHead>
-                  <TableHead>Metadata Gaps</TableHead>
+                  <TableHead>Jobs</TableHead>
+                  <TableHead>Pages</TableHead>
+                  <TableHead>Signals</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map(({ source, value }) => {
-                  const coverage =
+                  const jobsSummary =
                     taskType === "jobs_collect_v1"
                       ? `${asNumber(value.raw_jobs_discovered) ?? 0} raw -> ${asNumber(value.kept_after_basic_filter) ?? 0} kept`
                       : `${asNumber(value.raw_jobs_discovered) ?? 0} raw -> ${asNumber(value.kept_after_basic_filter) ?? 0} kept -> ${asNumber(value.deduped_unique_groups) ?? 0} unique`;
-                  const collapse =
-                    taskType === "jobs_collect_v1"
-                      ? `drop ${asNumber(value.jobs_dropped) ?? 0} · dedupe ${asNumber(value.deduped_in_collection) ?? 0}`
-                      : `drop ${asNumber(value.jobs_dropped) ?? 0} · dedupe ${asNumber(value.dedupe_collapsed) ?? 0}`;
+                  const pagesSummary = `${asNumber(value.pages_attempted) ?? asNumber(value.pages_fetched) ?? 0} attempted`;
                   const gaps =
                     asText(value.weakness_summary) ||
                     [
@@ -482,12 +500,21 @@ function JobsStagePreview({
                     ].join(", ");
                   const healthStatus = asText(value.status) || "unknown";
                   const usableJobs = asNumber(value.jobs_kept) ?? asNumber(value.final_raw_jobs) ?? 0;
+                  const signals = [
+                    asBoolean(value.under_target) ? "under target" : null,
+                    asBoolean(value.suspected_blocking)
+                      ? `suspected blocking${asText(value.suspected_blocking_reason) ? ` (${asText(value.suspected_blocking_reason)})` : ""}`
+                      : null,
+                    gaps
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
 
                   return (
                     <TableRow key={source}>
                       <TableCell>
                         <div className="space-y-0.5">
-                          <div className="font-medium">{source}</div>
+                          <div className="font-medium">{displaySourceName(source, value)}</div>
                           {usableJobs <= 0 ? (
                             <div className="text-[11px] text-muted-foreground">No usable jobs collected</div>
                           ) : null}
@@ -496,9 +523,9 @@ function JobsStagePreview({
                       <TableCell className="text-xs">
                         <StatusBadge status={healthStatus} />
                       </TableCell>
-                      <TableCell className="text-xs">{coverage}</TableCell>
-                      <TableCell className="text-xs">{collapse}</TableCell>
-                      <TableCell className="text-xs">{gaps}</TableCell>
+                      <TableCell className="text-xs">{jobsSummary}</TableCell>
+                      <TableCell className="text-xs">{pagesSummary}</TableCell>
+                      <TableCell className="text-xs">{signals}</TableCell>
                     </TableRow>
                   );
                 })}

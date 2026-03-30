@@ -754,7 +754,9 @@ def ensure_jobs_digest_template(
     enabled: bool = True,
     boards: list[str] | None = None,
 ) -> dict[str, Any]:
-    allowed_sources = {"linkedin", "indeed", "glassdoor", "handshake"}
+    active_sources = ["linkedin", "indeed"]
+    legacy_disabled_sources = {"glassdoor", "handshake"}
+    allowed_sources = set(active_sources) | legacy_disabled_sources
     allowed_work_modes = {"remote", "hybrid", "onsite"}
     allowed_freshness = {"off", "prefer_recent", "strong_prefer_recent"}
     allowed_search_modes = {"broad_discovery", "precision_match"}
@@ -845,10 +847,23 @@ def ensure_jobs_digest_template(
 
     preferred_sources = _normalize_text_list(enabled_sources, lower=True)
     fallback_boards = _normalize_text_list(boards, lower=True)
-    safe_boards = [row for row in preferred_sources + fallback_boards if row in allowed_sources]
-    safe_boards = _normalize_text_list(safe_boards, lower=True)
+    requested_sources = _normalize_text_list(
+        [row for row in preferred_sources + fallback_boards if row in allowed_sources],
+        lower=True,
+    )
+    disabled_sources = [row for row in requested_sources if row in legacy_disabled_sources]
+    safe_boards = [row for row in requested_sources if row in active_sources]
+    source_configuration_notes: list[str] = []
+    if disabled_sources:
+        source_configuration_notes.append(
+            "Inactive legacy job sources were ignored. Only linkedin and indeed are active."
+        )
     if not safe_boards:
-        safe_boards = ["linkedin", "indeed", "glassdoor", "handshake"]
+        safe_boards = list(active_sources)
+        if requested_sources:
+            source_configuration_notes.append(
+                "No active job sources remained after filtering inactive or unsupported sources; defaulted to linkedin and indeed."
+            )
 
     max_jobs = max(1, min(int(result_limit_per_source or 250), 1000))
     max_queries_default = 14 if normalized_search_mode == "broad_discovery" else 8
@@ -873,6 +888,8 @@ def ensure_jobs_digest_template(
         "collectors_enabled": True,
         "sources": safe_boards,
         "enabled_sources": safe_boards,
+        "disabled_sources": disabled_sources,
+        "source_configuration_notes": source_configuration_notes,
         "max_jobs_per_source": max_jobs,
         "result_limit_per_source": max_jobs,
         "max_queries_per_run": max_queries,
@@ -928,9 +945,14 @@ def ensure_jobs_digest_template(
             priority=20,
             metadata_json={
                 "preset": "jobs_digest",
-                "description": "Scrape multi-board jobs and summarize top matches",
+                "description": "Scrape supported job boards and summarize top matches",
                 "payload_strategy": "runtime_nonce",
                 "watcher_category": "jobs",
+                "source_policy": {
+                    "active_sources": list(active_sources),
+                    "disabled_sources": disabled_sources,
+                    "notes": source_configuration_notes,
+                },
                 "notification_behavior": {
                     "mode": "digest",
                     "channel": "operator_default",
@@ -951,9 +973,14 @@ def ensure_jobs_digest_template(
             "priority": 20,
             "metadata_json": {
                 "preset": "jobs_digest",
-                "description": "Scrape multi-board jobs and summarize top matches",
+                "description": "Scrape supported job boards and summarize top matches",
                 "payload_strategy": "runtime_nonce",
                 "watcher_category": "jobs",
+                "source_policy": {
+                    "active_sources": list(active_sources),
+                    "disabled_sources": disabled_sources,
+                    "notes": source_configuration_notes,
+                },
                 "notification_behavior": {
                     "mode": "digest",
                     "channel": "operator_default",

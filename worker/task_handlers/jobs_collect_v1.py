@@ -17,7 +17,8 @@ from task_handlers.jobs_pipeline_common import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_COLLECTOR_SOURCES = ("linkedin", "indeed", "glassdoor", "handshake")
+ACTIVE_COLLECTOR_SOURCES = DEFAULT_JOB_BOARDS
+ACTIVE_OBSERVABILITY_SOURCES = tuple(ACTIVE_COLLECTOR_SOURCES)
 SUCCESSFUL_SOURCE_STATUSES = {"success", "under_target"}
 HEALTHY_SOURCE_STATUSES = {"success", "empty_success"}
 EMPTY_SOURCE_STATUSES = {"empty_success"}
@@ -33,9 +34,21 @@ KNOWN_SOURCE_STATUSES = (
 DISPLAY_SOURCE_NAMES = {
     "linkedin": "LinkedIn",
     "indeed": "Indeed",
-    "glassdoor": "Glassdoor",
-    "handshake": "Handshake",
     "manual": "Manual",
+}
+BLOCKING_REASON_LABELS = {
+    "login_wall": "login wall",
+    "login_wall_detected": "login wall",
+    "auth_required": "auth required",
+    "anti_bot_detected": "anti-bot defenses",
+    "consent_wall_detected": "consent wall",
+    "unexpected_redirect": "unexpected redirect",
+    "layout_mismatch": "layout mismatch",
+    "selector_mismatch": "layout mismatch",
+    "fetch_blocked_403": "blocked fetch",
+    "auth_blocked": "auth blocked",
+    "consent_blocked": "consent blocked",
+    "anti_bot_blocked": "anti-bot defenses",
 }
 MANUAL_SUPPORTED_FIELDS = {
     "source": "manual",
@@ -138,6 +151,74 @@ def _source_error_type(meta: dict[str, Any]) -> str | None:
     return value or None
 
 
+def _active_sources_label(sources: list[str]) -> str:
+    labels = [_display_source_name(source) for source in sources if source]
+    if not labels:
+        return "No active sources"
+    if len(labels) == 1:
+        return f"{labels[0]} active"
+    if len(labels) == 2:
+        return f"{labels[0]} + {labels[1]} active"
+    return ", ".join(labels[:-1]) + f", and {labels[-1]} active"
+
+
+def _suspected_blocking_signal(*, status: str, meta: dict[str, Any]) -> tuple[bool, str | None]:
+    source_error_type = _source_error_type(meta)
+    low_status = str(status or "").strip().lower()
+
+    if bool(meta.get("login_wall_detected")) or bool(meta.get("auth_required_detected")):
+        return True, "login wall"
+    if bool(meta.get("anti_bot_detected")):
+        return True, "anti-bot defenses"
+    if bool(meta.get("consent_wall_detected")):
+        return True, "consent wall"
+    if bool(meta.get("unexpected_redirect_detected")):
+        return True, "unexpected redirect"
+    if bool(meta.get("layout_mismatch_detected")):
+        return True, "layout mismatch"
+    if source_error_type and source_error_type in BLOCKING_REASON_LABELS:
+        return True, BLOCKING_REASON_LABELS[source_error_type]
+    if low_status in BLOCKING_REASON_LABELS:
+        return True, BLOCKING_REASON_LABELS[low_status]
+    return False, None
+
+
+def _source_focus_snapshot(source_key: str, result: dict[str, Any]) -> dict[str, Any]:
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    jobs_count = int(result.get("jobs_count", 0) or 0)
+    raw_jobs_found = _meta_count(meta, "discovered_raw_count", jobs_count)
+    jobs_kept = _meta_count(meta, "jobs_kept", jobs_count)
+    pages_attempted = _meta_count(meta, "pages_attempted", _meta_count(meta, "pages_fetched", 0))
+    requested_limit = _meta_count(meta, "requested_limit", 0)
+    status = str(result.get("status") or "").strip().lower()
+    under_target = status in DEGRADED_SOURCE_STATUSES
+    suspected_blocking, blocking_reason = _suspected_blocking_signal(status=status, meta=meta)
+
+    return {
+        "source": source_key,
+        "source_label": _display_source_name(source_key),
+        "status": status or "unknown",
+        "raw_jobs_found": raw_jobs_found,
+        "jobs_kept": jobs_kept,
+        "pages_attempted": pages_attempted,
+        "requested_limit": requested_limit,
+        "under_target": under_target,
+        "under_target_reason": "below target for current run" if under_target else None,
+        "suspected_blocking": suspected_blocking,
+        "suspected_blocking_reason": blocking_reason,
+    }
+
+
+def _active_source_focus_snapshots(source_results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for source_key in ACTIVE_OBSERVABILITY_SOURCES:
+        result = source_results.get(source_key)
+        if not isinstance(result, dict):
+            continue
+        snapshots.append(_source_focus_snapshot(source_key, result))
+    return snapshots
+
+
 def _promote_source_status(status: str, source_error_type: str | None, *, collected_count: int) -> str:
     if collected_count > 0:
         return status
@@ -226,36 +307,25 @@ def _compact_missing_summary(missing_rates: dict[str, float]) -> str:
 def _build_run_preview_messages(
     *,
     source_results: dict[str, dict[str, Any]],
-    successful_sources: list[str],
 ) -> list[str]:
     messages: list[str] = []
 
-    if len(successful_sources) == 1 and len(source_results) > 1:
-        messages.append(f"Only {_display_source_name(successful_sources[0])} contributed usable jobs")
+    source_focus = _active_source_focus_snapshots(source_results)
+    if source_focus:
+        messages.append(_active_sources_label([str(row.get("source") or "") for row in source_focus]))
 
-    glassdoor = source_results.get("glassdoor") if isinstance(source_results.get("glassdoor"), dict) else None
-    if glassdoor:
-        glassdoor_meta = glassdoor.get("meta") if isinstance(glassdoor.get("meta"), dict) else {}
-        glassdoor_status = str(glassdoor.get("status") or "").strip().lower()
-        listing_cards_seen = _meta_count(
-            glassdoor_meta,
-            "listing_cards_seen",
-            _meta_count(glassdoor_meta, "cards_seen", 0),
-        )
-        if listing_cards_seen <= 0 and glassdoor_status in {
-            "layout_mismatch",
-            "anti_bot_blocked",
-            "consent_blocked",
-            "upstream_failure",
-        }:
-            messages.append("Glassdoor returned zero cards; likely blocked or selector mismatch")
-
-    handshake = source_results.get("handshake") if isinstance(source_results.get("handshake"), dict) else None
-    if handshake:
-        handshake_meta = handshake.get("meta") if isinstance(handshake.get("meta"), dict) else {}
-        handshake_status = str(handshake.get("status") or "").strip().lower()
-        if handshake_status == "auth_blocked" or bool(handshake_meta.get("auth_required_detected")):
-            messages.append("Handshake likely requires authenticated session")
+    for row in source_focus:
+        label = str(row.get("source_label") or row.get("source") or "").strip()
+        raw_jobs_found = int(row.get("raw_jobs_found", 0) or 0)
+        jobs_kept = int(row.get("jobs_kept", 0) or 0)
+        pages_attempted = int(row.get("pages_attempted", 0) or 0)
+        messages.append(f"{label} contributed {raw_jobs_found} raw jobs")
+        messages.append(f"{label} kept {jobs_kept} jobs after filtering")
+        messages.append(f"{label} attempted {pages_attempted} pages")
+        if bool(row.get("under_target")):
+            messages.append(f"{label} is under target for this run")
+        if bool(row.get("suspected_blocking")) and row.get("suspected_blocking_reason"):
+            messages.append(f"{label} suspected blocking: {row['suspected_blocking_reason']}")
 
     return messages
 
@@ -276,6 +346,7 @@ def _build_collection_observability(
     run_preview_messages: list[str],
 ) -> dict[str, Any]:
     by_source: dict[str, dict[str, Any]] = {}
+    source_focus = _active_source_focus_snapshots(source_results)
     breadth_candidates: list[tuple[str, int]] = []
     weak_candidates: list[tuple[str, float]] = []
     query_examples: list[str] = []
@@ -359,6 +430,7 @@ def _build_collection_observability(
 
         by_source[source_key] = {
             "status": result.get("status"),
+            "source_label": _display_source_name(source_key),
             "source_status": str(meta.get("source_status") or result.get("status") or "").strip() or None,
             "source_error_type": str(meta.get("source_error_type") or meta.get("error_type") or "").strip() or None,
             "raw_jobs_discovered": discovered,
@@ -373,6 +445,13 @@ def _build_collection_observability(
             "jobs_raw": _meta_count(meta, "jobs_raw", discovered),
             "jobs_kept": _meta_count(meta, "jobs_kept", jobs_count),
             "jobs_found_per_source": discovered,
+            "requested_limit": _meta_count(meta, "requested_limit", 0),
+            "under_target": str(result.get("status") or "").strip().lower() in DEGRADED_SOURCE_STATUSES,
+            "under_target_reason": (
+                "below target for current run"
+                if str(result.get("status") or "").strip().lower() in DEGRADED_SOURCE_STATUSES
+                else None
+            ),
             "healthy": result.get("status") in HEALTHY_SOURCE_STATUSES,
             "contributed_usable_jobs": result.get("status") in SUCCESSFUL_SOURCE_STATUSES,
             "queries_executed_count": queries_executed,
@@ -396,6 +475,14 @@ def _build_collection_observability(
             or str(meta.get("source_status") or result.get("status") or "").strip() == "layout_mismatch",
             "parsing_strategy_used": str(meta.get("parsing_strategy_used") or "").strip() or None,
             "browser_fallback_used": bool(meta.get("browser_fallback_used", False)),
+            "suspected_blocking": _suspected_blocking_signal(
+                status=str(result.get("status") or "").strip().lower(),
+                meta=meta,
+            )[0],
+            "suspected_blocking_reason": _suspected_blocking_signal(
+                status=str(result.get("status") or "").strip().lower(),
+                meta=meta,
+            )[1],
             "missing_counts": {
                 "company": _meta_count(metadata, "missing_company", 0),
                 "posted_at": _meta_count(metadata, "missing_posted_at", 0),
@@ -415,22 +502,48 @@ def _build_collection_observability(
         else None
     )
 
+    active_sources_label = _active_sources_label([str(row.get("source") or "") for row in source_focus])
+    contribution_summary = "; ".join(
+        f"{row['source_label']} contributed {int(row.get('raw_jobs_found', 0) or 0)} raw jobs"
+        for row in source_focus
+    )
     searched_enough = (
-        f"{discovered_raw_count} raw discovered across {len(healthy_sources)} healthy sources"
-        f" and {len(successful_sources)} usable sources from {total_queries_executed} executed queries."
-        + (f" Strongest {strongest_source}." if strongest_source else "")
-        + (f" Weakest {weakest_source}." if weakest_source and weakest_source != strongest_source else "")
+        f"{active_sources_label}. {contribution_summary}. {total_queries_executed} queries executed."
+        if contribution_summary
+        else f"{active_sources_label}. {total_queries_executed} queries executed."
     )
     collapse_reason = (
         f"{dropped_by_basic_filter_count} dropped in basic filtering and {deduped_count} deduped before returning {raw_job_count} raw jobs."
     )
     if truncated_by_run_limit_count > 0:
         collapse_reason += f" Run cap truncated another {truncated_by_run_limit_count} jobs at the artifact level."
-    metadata_gap = (
-        f"Weakest metadata source: {weakest_metadata_source}."
-        if weakest_metadata_source
-        else "No source-level metadata gaps were detected."
-    )
+    if weakest_metadata_source:
+        metadata_gap = f"Weakest metadata source: {_display_source_name(weakest_metadata_source)}."
+    else:
+        metadata_gap = "LinkedIn + Indeed metadata look stable."
+
+    weak_source_signals = [
+        row
+        for row in source_focus
+        if bool(row.get("under_target")) or bool(row.get("suspected_blocking"))
+    ]
+    if weak_source_signals:
+        weak_source_summary = "; ".join(
+            (
+                f"{row['source_label']} under target"
+                + (f" after {int(row.get('pages_attempted', 0) or 0)} pages attempted" if int(row.get("pages_attempted", 0) or 0) > 0 else "")
+                + (
+                    f" with suspected blocking ({row['suspected_blocking_reason']})"
+                    if row.get("suspected_blocking") and row.get("suspected_blocking_reason")
+                    else ""
+                )
+            )
+            for row in weak_source_signals
+        )
+    elif weakest_source:
+        weak_source_summary = f"Lowest raw contribution came from {_display_source_name(weakest_source)}."
+    else:
+        weak_source_summary = "LinkedIn + Indeed are both contributing normally."
 
     return {
         "waterfall": {
@@ -439,6 +552,7 @@ def _build_collection_observability(
             "jobs_dropped": dropped_by_basic_filter_count,
             "deduped_in_collection": deduped_count,
             "final_raw_jobs": raw_job_count,
+            "queries_executed": total_queries_executed,
         },
         "query_summary": {
             "queries_executed": total_queries_executed,
@@ -448,13 +562,17 @@ def _build_collection_observability(
             "query_runs": query_runs,
         },
         "by_source": by_source,
+        "active_sources_label": active_sources_label,
+        "source_focus": source_focus,
         "run_preview": {
             "messages": run_preview_messages,
         },
         "operator_questions": {
             "searched_enough": searched_enough,
-            "which_source_is_weak": metadata_gap,
+            "did_we_search_enough": searched_enough,
+            "which_source_is_weak": weak_source_summary,
             "why_raw_count_collapsed": collapse_reason,
+            "why_did_raw_count_collapse": collapse_reason,
             "are_we_missing_metadata": metadata_gap,
         },
     }
@@ -478,10 +596,42 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     supported_fields_by_source: dict[str, dict[str, Any]] = {}
 
     sources = list(request.get("sources") or [])
+    disabled_sources = [
+        str(source).strip().lower()
+        for source in (request.get("disabled_sources") if isinstance(request.get("disabled_sources"), list) else [])
+        if isinstance(source, str) and str(source).strip()
+    ]
+    source_configuration_notes = [
+        str(note).strip()
+        for note in (request.get("source_configuration_notes") if isinstance(request.get("source_configuration_notes"), list) else [])
+        if isinstance(note, str) and str(note).strip()
+    ]
     max_total_jobs = max(1, int(request.get("max_total_jobs") or len(sources) or 1))
     board_url_overrides = request.get("board_url_overrides") if isinstance(request.get("board_url_overrides"), dict) else {}
     collectors_enabled = bool(request.get("collectors_enabled", True))
     truncated_by_run_limit_count = 0
+
+    for note in source_configuration_notes:
+        if note not in warnings:
+            warnings.append(note)
+
+    for source_key in disabled_sources:
+        message = f"{source_key}: source_disabled currently unsupported and ignored"
+        logger.info("jobs_collect source=%s skipped: %s", source_key, message)
+        source_results[source_key] = {
+            "source": source_key,
+            "status": "skipped",
+            "jobs_count": 0,
+            "warnings": [message],
+            "errors": [],
+            "error": None,
+            "meta": {
+                "reason": "source_disabled",
+                "source_status": "skipped",
+                "source_error_type": "source_disabled",
+                "currently_supported_sources": list(DEFAULT_JOB_BOARDS),
+            },
+        }
 
     for source in sources:
         source_key = str(source).strip().lower()
@@ -535,7 +685,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             supported_fields_by_source[source_key] = dict(MANUAL_SUPPORTED_FIELDS)
             continue
 
-        if source_key not in SUPPORTED_COLLECTOR_SOURCES:
+        if source_key not in ACTIVE_COLLECTOR_SOURCES:
             message = f"{source_key}: unsupported_source"
             collector_errors.append(message)
             logger.error("jobs_collect source=%s failed: %s", source_key, message)
@@ -657,7 +807,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     enabled_non_manual_sources = [
         source
         for source in sources
-        if str(source).strip().lower() in SUPPORTED_COLLECTOR_SOURCES and collectors_enabled
+        if str(source).strip().lower() in ACTIVE_COLLECTOR_SOURCES and collectors_enabled
     ]
     if enabled_non_manual_sources and failed_sources and len(failed_sources) == len(enabled_non_manual_sources) and not raw_jobs:
         raise RuntimeError(
@@ -714,8 +864,10 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
 
     run_preview_messages = _build_run_preview_messages(
         source_results=source_results,
-        successful_sources=successful_sources,
     )
+    for note in source_configuration_notes:
+        if note not in run_preview_messages:
+            run_preview_messages.insert(0, note)
 
     collection_observability = _build_collection_observability(
         source_results=source_results,
@@ -768,6 +920,8 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "collection_observability": collection_observability,
         "collection_summary": {
             "requested_sources": sources,
+            "disabled_sources": disabled_sources,
+            "source_configuration_notes": source_configuration_notes,
             "collectors_enabled": collectors_enabled,
             "successful_source_count": len(successful_sources),
             "healthy_source_count": len(healthy_sources),
@@ -799,6 +953,8 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "artifact_type": "debug.json",
         "pipeline_id": pipeline_id,
         "sources_attempted": sources,
+        "disabled_sources": disabled_sources,
+        "source_configuration_notes": source_configuration_notes,
         "sources_succeeded": successful_sources,
         "sources_healthy": healthy_sources,
         "sources_empty": empty_sources,

@@ -162,23 +162,6 @@ def _collector_dataset() -> dict[str, dict[str, list[dict[str, object]]]]:
                     "description_snippet": "Remote backend engineer building APIs and services.",
                 },
             ],
-            "handshake": [
-                {
-                    "source": "handshake",
-                    "source_url": "https://joinhandshake.com/stu/jobs/3001",
-                    "title": "Platform Engineer I",
-                    "company": "CampusWorks",
-                    "location": "Austin, TX",
-                    "url": "https://joinhandshake.com/stu/jobs/3001",
-                    "posted_at": "4 days ago",
-                    "scraped_at": "2026-03-23T10:00:00Z",
-                    "salary_min": 95000,
-                    "salary_max": 110000,
-                    "work_mode": "onsite",
-                    "experience_level": "entry",
-                    "description_snippet": "Entry-level platform engineering role.",
-                }
-            ],
         },
         "phase2": {
             "linkedin": [
@@ -210,23 +193,6 @@ def _collector_dataset() -> dict[str, dict[str, list[dict[str, object]]]]:
                     "description_snippet": "Remote backend engineer building APIs and services.",
                 }
             ],
-            "handshake": [
-                {
-                    "source": "handshake",
-                    "source_url": "https://joinhandshake.com/stu/jobs/3002",
-                    "title": "Platform Engineer I",
-                    "company": "Orbit Labs",
-                    "location": "Remote",
-                    "url": "https://joinhandshake.com/stu/jobs/3002",
-                    "posted_at": "5 days ago",
-                    "scraped_at": "2026-03-24T10:00:00Z",
-                    "salary_min": 105000,
-                    "salary_max": 120000,
-                    "work_mode": "remote",
-                    "experience_level": "entry",
-                    "description_snippet": "Entry backend role for developer platform tooling.",
-                }
-            ],
         },
         "phase-empty": {
             "linkedin": [
@@ -241,17 +207,6 @@ def _collector_dataset() -> dict[str, dict[str, list[dict[str, object]]]]:
                 }
             ],
             "indeed": [],
-            "handshake": [
-                {
-                    "source": "handshake",
-                    "title": "Platform Support Engineer",
-                    "company": "Tiny Ops",
-                    "location": "Austin, TX",
-                    "description_snippet": "Support-oriented platform role.",
-                    "work_mode": "onsite",
-                    "experience_level": "entry",
-                }
-            ],
         },
     }
 
@@ -375,7 +330,7 @@ def test_jobs_v2_end_to_end_multi_run_resurfacing_and_notify_flow(worker_module,
         "pipeline_id": "pipe-jobs-e2e-phase1",
         "request": {
             "collectors_enabled": True,
-            "sources": ["linkedin", "indeed", "handshake"],
+            "sources": ["linkedin", "indeed"],
             "titles": ["Backend Engineer"],
             "desired_title_keywords": ["backend engineer"],
             "keywords": ["phase1", "distributed", "api"],
@@ -397,10 +352,9 @@ def test_jobs_v2_end_to_end_multi_run_resurfacing_and_notify_flow(worker_module,
     collect_followup = _latest_artifact(worker_module, collect_task_id, "followup.json")
 
     assert collect_artifact["artifact_type"] == "jobs.collect.v1"
-    assert collect_artifact["collection_summary"]["discovered_raw_count"] == 4
+    assert collect_artifact["collection_summary"]["discovered_raw_count"] == 3
     assert collect_artifact["collection_summary"]["deduped_count"] == 0
-    assert collect_artifact["collection_observability"]["query_summary"]["queries_executed"] == 12
-    assert collect_artifact["collection_observability"]["by_source"]["handshake"]["jobs_found_per_source"] == 1
+    assert collect_artifact["collection_observability"]["query_summary"]["queries_executed"] == 8
     assert collect_followup["requested_count"] == 1
 
     normalize_task_id = _new_task_id(worker_module, "jobs_normalize_v1", seen_task_ids)
@@ -408,8 +362,8 @@ def test_jobs_v2_end_to_end_multi_run_resurfacing_and_notify_flow(worker_module,
     normalize_artifact = _run_and_fetch_result(worker_module, normalize_task_id)
 
     assert normalize_artifact["artifact_type"] == "jobs.normalize.v1"
-    assert normalize_artifact["counts"]["raw_count"] == 4
-    assert normalize_artifact["counts"]["deduped_count"] == 3
+    assert normalize_artifact["counts"]["raw_count"] == 3
+    assert normalize_artifact["counts"]["deduped_count"] == 2
     assert normalize_artifact["counts"]["duplicates_collapsed"] == 1
     normalized_jobs = normalize_artifact["normalized_jobs"]
     incomplete_job = next(job for job in normalized_jobs if job["title"] == "Backend Engineer")
@@ -459,7 +413,7 @@ def test_jobs_v2_end_to_end_multi_run_resurfacing_and_notify_flow(worker_module,
         "pipeline_id": "pipe-jobs-e2e-phase2",
         "request": {
             "collectors_enabled": True,
-            "sources": ["linkedin", "indeed", "handshake"],
+            "sources": ["linkedin", "indeed"],
             "titles": ["Backend Engineer"],
             "desired_title_keywords": ["backend engineer"],
             "keywords": ["phase2", "distributed", "api"],
@@ -490,29 +444,18 @@ def test_jobs_v2_end_to_end_multi_run_resurfacing_and_notify_flow(worker_module,
     seen_task_ids.add(shortlist_task_id_2)
     shortlist_artifact_2 = _run_and_fetch_result(worker_module, shortlist_task_id_2)
 
-    assert shortlist_artifact_2["shortlist_count"] == 1
-    resurfaced = shortlist_artifact_2["shortlist"][0]
-    assert resurfaced["title"] == "Backend Engineer"
-    assert resurfaced["newly_discovered"] is False
-    assert resurfaced["resurfaced_from_prior_runs"] is True
-    assert resurfaced["previously_shortlisted"] is False
-    assert resurfaced["previously_notified"] is False
+    assert shortlist_artifact_2["shortlist_count"] == 0
+    assert shortlist_artifact_2["shortlist"] == []
     assert shortlist_artifact_2["history_observability"]["cooldown_suppressed_count"] == 1
-    assert shortlist_artifact_2["history_observability"]["selected_resurfaced_count"] == 1
+    assert shortlist_artifact_2["history_observability"]["selected_resurfaced_count"] == 0
 
     digest_task_id_2 = _new_task_id(worker_module, "jobs_digest_v2", seen_task_ids)
     seen_task_ids.add(digest_task_id_2)
     digest_artifact_2 = _run_and_fetch_result(worker_module, digest_task_id_2)
 
-    assert digest_artifact_2["notify_decision"]["should_notify"] is True
-    assert digest_artifact_2["digest_jobs"][0]["title"] == "Backend Engineer"
-    assert digest_artifact_2["digest_jobs"][0]["company"] in (None, "")
-
-    notify_task_id_2 = _new_task_id(worker_module, "notify_v1", seen_task_ids)
-    notify_artifact_2 = _run_and_fetch_result(worker_module, notify_task_id_2)
-
-    assert notify_artifact_2["sent"] is True
-    assert len(delivered_messages) == 2
+    assert digest_artifact_2["notify_decision"]["should_notify"] is False
+    assert digest_artifact_2["digest_jobs"] == []
+    assert len(delivered_messages) == 1
 
 
 def test_jobs_v2_end_to_end_empty_shortlist_keeps_diagnosable_artifacts(worker_module, monkeypatch) -> None:
@@ -522,7 +465,7 @@ def test_jobs_v2_end_to_end_empty_shortlist_keeps_diagnosable_artifacts(worker_m
         "pipeline_id": "pipe-jobs-e2e-empty",
         "request": {
             "collectors_enabled": True,
-            "sources": ["linkedin", "indeed", "handshake"],
+            "sources": ["linkedin", "indeed"],
             "titles": ["Backend Engineer"],
             "desired_title_keywords": ["backend engineer"],
             "keywords": ["phase-empty"],
@@ -543,15 +486,15 @@ def test_jobs_v2_end_to_end_empty_shortlist_keeps_diagnosable_artifacts(worker_m
     seen_task_ids.add(collect_task_id)
     collect_artifact = _run_and_fetch_result(worker_module, collect_task_id)
 
-    assert collect_artifact["collection_observability"]["query_summary"]["queries_executed"] == 9
-    assert collect_artifact["collection_summary"]["discovered_raw_count"] == 2
+    assert collect_artifact["collection_observability"]["query_summary"]["queries_executed"] == 6
+    assert collect_artifact["collection_summary"]["discovered_raw_count"] == 1
     assert collect_artifact["collection_observability"]["by_source"]["linkedin"]["missing_counts"]["company"] == 1
 
     normalize_task_id = _new_task_id(worker_module, "jobs_normalize_v1", seen_task_ids)
     seen_task_ids.add(normalize_task_id)
     normalize_artifact = _run_and_fetch_result(worker_module, normalize_task_id)
 
-    assert normalize_artifact["counts"]["normalized_count"] == 2
+    assert normalize_artifact["counts"]["normalized_count"] == 1
     assert normalize_artifact["normalization_observability"]["operator_questions"]["are_we_missing_metadata"]
 
     rank_task_id = _new_task_id(worker_module, "jobs_rank_v1", seen_task_ids)

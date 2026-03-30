@@ -166,8 +166,10 @@ def test_resolve_request_preserves_structured_collect_inputs() -> None:
     assert request["jobs_shortlist_repeat_penalty"] == 6.0
     assert request["resurface_seen_jobs"] is True
     assert request["early_stop_when_no_new_results"] is False
-    assert request["sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
-    assert request["enabled_sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
+    assert request["sources"] == ["linkedin", "indeed"]
+    assert request["enabled_sources"] == ["linkedin", "indeed"]
+    assert request["disabled_sources"] == ["glassdoor", "handshake"]
+    assert request["source_configuration_notes"]
     assert request["shortlist_max_items"] == 6
     assert request["shortlist_freshness_preference"] == "strong_prefer_recent"
     assert request["shortlist_freshness_weight_enabled"] is True
@@ -329,7 +331,7 @@ def test_jobs_collect_v1_success_multisource_fixture(monkeypatch, jobs_v2_sample
         "pipeline_id": "pipe-success-all",
         "request": {
             "collectors_enabled": True,
-            "sources": ["linkedin", "indeed", "glassdoor", "handshake"],
+            "sources": ["linkedin", "indeed"],
             "titles": ["Machine Learning Engineer"],
             "locations": ["Remote", "New York, NY"],
             "result_limit_per_source": 10,
@@ -338,7 +340,7 @@ def test_jobs_collect_v1_success_multisource_fixture(monkeypatch, jobs_v2_sample
     result = jobs_collect_v1.execute(_task(payload), db=None)
     artifact = result["content_json"]
 
-    expected_count = sum(len(rows) for rows in source_jobs.values())
+    expected_count = len(source_jobs["linkedin"]) + len(source_jobs["indeed"])
     assert artifact["artifact_type"] == "jobs.collect.v1"
     assert artifact["artifact_schema"] == "jobs_raw.v1"
     assert artifact["collection_status"] == "success"
@@ -350,12 +352,10 @@ def test_jobs_collect_v1_success_multisource_fixture(monkeypatch, jobs_v2_sample
     assert artifact["collection_summary"]["deduped_count"] == 0
 
 
-def test_jobs_collect_v1_surfaces_source_specific_error_observability(monkeypatch) -> None:
+def test_jobs_collect_v1_surfaces_disabled_source_observability(monkeypatch) -> None:
     def _fake_load(source: str):
         if source == "linkedin":
             return _SuccessCollector
-        if source == "glassdoor":
-            return _BlockedCollector
         raise AssertionError(f"unexpected source requested: {source}")
 
     monkeypatch.setattr(jobs_collect_v1, "_load_collector_module", _fake_load)
@@ -373,232 +373,23 @@ def test_jobs_collect_v1_surfaces_source_specific_error_observability(monkeypatc
     result = jobs_collect_v1.execute(_task(payload), db=None)
     artifact = result["content_json"]
     source_view = artifact["collection_observability"]["by_source"]["glassdoor"]
-    query_run = next(row for row in artifact["collection_observability"]["query_summary"]["query_runs"] if row["source"] == "glassdoor")
 
-    assert source_view["error_type"] == "fetch_blocked_403"
-    assert source_view["error_status"] == 403
-    assert source_view["last_request_url"] == "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=ml+engineer"
-    assert source_view["request_urls_tried"] == ["https://www.glassdoor.com/Job/jobs.htm?sc.keyword=ml+engineer"]
-    assert query_run["error_type"] == "fetch_blocked_403"
-    assert query_run["pages_attempted"] == 1
-    assert artifact["partial_success"] is True
+    assert artifact["partial_success"] is False
     assert artifact["successful_sources"] == ["linkedin"]
     assert artifact["healthy_sources"] == ["linkedin"]
-    assert artifact["failed_sources"] == ["glassdoor"]
-    assert artifact["collector_errors"]
+    assert artifact["failed_sources"] == []
+    assert artifact["skipped_sources"] == ["glassdoor"]
+    assert any("inactive legacy job sources were ignored" in warning.lower() for warning in artifact["warnings"])
     assert result["next_tasks"][0]["task_type"] == "jobs_normalize_v1"
     assert all(str(job.get("source", "")).strip() for job in artifact["raw_jobs"])
     assert all(str(job.get("source_url", "")).strip() for job in artifact["raw_jobs"])
     assert artifact["source_results"]["linkedin"]["status"] == "success"
-    assert artifact["source_results"]["glassdoor"]["status"] == "upstream_failure"
+    assert artifact["source_results"]["glassdoor"]["status"] == "skipped"
+    assert source_view["source_status"] == "skipped"
+    assert source_view["source_error_type"] == "source_disabled"
+    assert source_view["queries_executed_count"] == 0
     assert "linkedin" in artifact["supported_fields_by_source"]
-    assert "glassdoor" in artifact["supported_fields_by_source"]
-
-
-def test_jobs_collect_v1_surfaces_handshake_auth_blocked_diagnostics(monkeypatch) -> None:
-    class _HandshakeAuthBlockedCollector:
-        SUPPORTED_FIELDS = {"source": "handshake"}
-
-        @staticmethod
-        def collect_jobs(request: dict, *, url_override: str | None = None) -> dict:
-            del request, url_override
-            return {
-                "status": "auth_blocked",
-                "jobs": [],
-                "warnings": [],
-                "errors": ["handshake: auth_blocked error_type=login_wall"],
-                "meta": {
-                    "source_status": "auth_blocked",
-                    "source_error_type": "login_wall",
-                    "pages_attempted": 2,
-                    "pages_fetched": 2,
-                    "cards_seen": 0,
-                    "jobs_raw": 0,
-                    "jobs_kept": 0,
-                    "auth_required_detected": True,
-                    "login_wall_detected": True,
-                    "request_urls_tried": [
-                        "https://app.joinhandshake.com/stu/postings?query=ml+engineer",
-                        "https://joinhandshake.com/students/jobs/search/?query=ml+engineer",
-                    ],
-                    "last_request_url": "https://joinhandshake.com/students/jobs/search/?query=ml+engineer",
-                    "search_attempts": [
-                        {
-                            "query": "ml engineer",
-                            "location": "Remote",
-                            "query_index": 1,
-                            "pages_attempted": 2,
-                            "pages_fetched": 2,
-                            "pages_with_results": 0,
-                            "jobs_found": 0,
-                            "new_unique_jobs": 0,
-                            "returned_count": 0,
-                            "source_status": "auth_blocked",
-                            "source_error_type": "login_wall",
-                            "cards_seen": 0,
-                            "jobs_raw": 0,
-                            "jobs_kept": 0,
-                            "auth_required_detected": True,
-                            "login_wall_detected": True,
-                            "request_urls_tried": [
-                                "https://app.joinhandshake.com/stu/postings?query=ml+engineer",
-                                "https://joinhandshake.com/students/jobs/search/?query=ml+engineer",
-                            ],
-                            "last_request_url": "https://joinhandshake.com/students/jobs/search/?query=ml+engineer",
-                            "stop_reason": "auth_blocked",
-                        }
-                    ],
-                },
-            }
-
-    def _fake_load(source: str):
-        if source == "linkedin":
-            return _SuccessCollector
-        if source == "handshake":
-            return _HandshakeAuthBlockedCollector
-        raise AssertionError(f"unexpected source requested: {source}")
-
-    monkeypatch.setattr(jobs_collect_v1, "_load_collector_module", _fake_load)
-
-    payload = {
-        "pipeline_id": "pipe-handshake-auth",
-        "request": {
-            "collectors_enabled": True,
-            "sources": ["linkedin", "handshake"],
-            "titles": ["Machine Learning Engineer"],
-            "locations": ["Remote"],
-            "result_limit_per_source": 5,
-        },
-    }
-    result = jobs_collect_v1.execute(_task(payload), db=None)
-    artifact = result["content_json"]
-    handshake_view = artifact["collection_observability"]["by_source"]["handshake"]
-    handshake_debug = result["debug_json"]["per_source_status"]["handshake"]
-
-    assert artifact["partial_success"] is True
-    assert artifact["successful_sources"] == ["linkedin"]
-    assert artifact["healthy_sources"] == ["linkedin"]
-    assert artifact["failed_sources"] == ["handshake"]
-    assert artifact["source_results"]["handshake"]["status"] == "auth_blocked"
-    assert artifact["collection_observability"]["run_preview"]["messages"] == [
-        "Only LinkedIn contributed usable jobs",
-        "Handshake likely requires authenticated session",
-    ]
-    assert handshake_view["source_status"] == "auth_blocked"
-    assert handshake_view["source_error_type"] == "login_wall"
-    assert handshake_view["pages_attempted"] == 2
-    assert handshake_view["cards_seen"] == 0
-    assert handshake_view["jobs_raw"] == 0
-    assert handshake_view["jobs_kept"] == 0
-    assert handshake_view["auth_required_detected"] is True
-    assert handshake_view["login_wall_detected"] is True
-    assert handshake_debug["source_status"] == "auth_blocked"
-    assert handshake_debug["source_error_type"] == "login_wall"
-    assert handshake_debug["pages_attempted"] == 2
-    assert handshake_debug["auth_required_detected"] is True
-    assert handshake_debug["login_wall_detected"] is True
-
-
-def test_jobs_collect_v1_surfaces_glassdoor_layout_mismatch_diagnostics(monkeypatch) -> None:
-    class _GlassdoorLayoutMismatchCollector:
-        SUPPORTED_FIELDS = {"source": "glassdoor"}
-
-        @staticmethod
-        def collect_jobs(request: dict, *, url_override: str | None = None) -> dict:
-            del request, url_override
-            return {
-                "status": "layout_mismatch",
-                "jobs": [],
-                "warnings": [],
-                "errors": ["glassdoor: layout_mismatch error_type=layout_mismatch"],
-                "meta": {
-                    "source_status": "layout_mismatch",
-                    "source_error_type": "layout_mismatch",
-                    "pages_attempted": 1,
-                    "pages_fetched": 1,
-                    "cards_seen": 0,
-                    "listing_cards_seen": 0,
-                    "jobs_raw": 0,
-                    "jobs_kept": 0,
-                    "wall_detected": False,
-                    "parsing_strategy_used": "http_html",
-                    "browser_fallback_used": False,
-                    "request_urls_tried": ["https://www.glassdoor.com/Job/jobs.htm?sc.keyword=data+scientist"],
-                    "last_request_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=data+scientist",
-                    "search_attempts": [
-                        {
-                            "query": "data scientist",
-                            "location": "Remote",
-                            "query_index": 1,
-                            "pages_attempted": 1,
-                            "pages_fetched": 1,
-                            "pages_with_results": 0,
-                            "jobs_found": 0,
-                            "new_unique_jobs": 0,
-                            "returned_count": 0,
-                            "source_status": "layout_mismatch",
-                            "source_error_type": "layout_mismatch",
-                            "cards_seen": 0,
-                            "listing_cards_seen": 0,
-                            "jobs_raw": 0,
-                            "jobs_kept": 0,
-                            "wall_detected": False,
-                            "parsing_strategy_used": "http_html",
-                            "browser_fallback_used": False,
-                            "request_urls_tried": ["https://www.glassdoor.com/Job/jobs.htm?sc.keyword=data+scientist"],
-                            "last_request_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=data+scientist",
-                            "stop_reason": "layout_mismatch",
-                        }
-                    ],
-                },
-            }
-
-    def _fake_load(source: str):
-        if source == "linkedin":
-            return _SuccessCollector
-        if source == "glassdoor":
-            return _GlassdoorLayoutMismatchCollector
-        raise AssertionError(f"unexpected source requested: {source}")
-
-    monkeypatch.setattr(jobs_collect_v1, "_load_collector_module", _fake_load)
-
-    payload = {
-        "pipeline_id": "pipe-glassdoor-layout",
-        "request": {
-            "collectors_enabled": True,
-            "sources": ["linkedin", "glassdoor"],
-            "titles": ["Data Scientist"],
-            "locations": ["Remote"],
-            "result_limit_per_source": 5,
-        },
-    }
-    result = jobs_collect_v1.execute(_task(payload), db=None)
-    artifact = result["content_json"]
-    source_view = artifact["collection_observability"]["by_source"]["glassdoor"]
-    query_run = next(row for row in artifact["collection_observability"]["query_summary"]["query_runs"] if row["source"] == "glassdoor")
-    debug_row = result["debug_json"]["per_source_status"]["glassdoor"]
-
-    assert artifact["failed_sources"] == ["glassdoor"]
-    assert artifact["healthy_sources"] == ["linkedin"]
-    assert artifact["source_results"]["glassdoor"]["status"] == "layout_mismatch"
-    assert artifact["collection_observability"]["run_preview"]["messages"] == [
-        "Only LinkedIn contributed usable jobs",
-        "Glassdoor returned zero cards; likely blocked or selector mismatch",
-    ]
-    assert source_view["source_status"] == "layout_mismatch"
-    assert source_view["source_error_type"] == "layout_mismatch"
-    assert source_view["listing_cards_seen"] == 0
-    assert source_view["wall_detected"] is False
-    assert source_view["layout_mismatch_detected"] is True
-    assert source_view["parsing_strategy_used"] == "http_html"
-    assert source_view["browser_fallback_used"] is False
-    assert query_run["listing_cards_seen"] == 0
-    assert query_run["parsing_strategy_used"] == "http_html"
-    assert query_run["layout_mismatch_detected"] is True
-    assert debug_row["source_status"] == "layout_mismatch"
-    assert debug_row["listing_cards_seen"] == 0
-    assert debug_row["layout_mismatch_detected"] is True
-    assert debug_row["parsing_strategy_used"] == "http_html"
+    assert "glassdoor" not in artifact["supported_fields_by_source"]
 
 
 def test_jobs_collect_v1_empty_success_when_sources_return_no_jobs(monkeypatch) -> None:
@@ -786,7 +577,11 @@ def test_jobs_collect_v1_surfaces_source_metadata_quality(monkeypatch) -> None:
     assert observability["by_source"]["indeed"]["kept_after_basic_filter"] == 1
     assert observability["by_source"]["indeed"]["jobs_dropped"] == 0
     assert observability["by_source"]["indeed"]["missing_rates"]["missing_company_rate"] == 100.0
-    assert "Weakest metadata source: indeed." in observability["operator_questions"]["which_source_is_weak"]
+    assert observability["active_sources_label"] == "Indeed active"
+    assert observability["by_source"]["indeed"]["source_label"] == "Indeed"
+    assert observability["operator_questions"]["which_source_is_weak"] == "Lowest raw contribution came from Indeed."
+    assert observability["operator_questions"]["are_we_missing_metadata"] == "Weakest metadata source: Indeed."
+    assert "Indeed contributed 1 raw jobs" in observability["run_preview"]["messages"]
 
 
 def test_jobs_collect_v1_aggregates_query_observability_and_run_cap(monkeypatch) -> None:
@@ -899,31 +694,21 @@ def test_jobs_collect_v1_aggregates_query_observability_and_run_cap(monkeypatch)
     assert observability["by_source"]["linkedin"]["queries_executed_count"] == 2
     assert observability["by_source"]["indeed"]["queries_executed_count"] == 2
     assert observability["by_source"]["indeed"]["jobs_found_per_source"] == 1
-    assert artifact["source_results"]["glassdoor"]["meta"]["reason"] == "max_total_jobs_reached"
+    assert artifact["source_results"]["glassdoor"]["meta"]["reason"] == "source_disabled"
 
 
 def test_jobs_collect_v1_logs_per_source_execution_and_empty_results(monkeypatch, caplog) -> None:
     class _EmptyCollector:
-        SUPPORTED_FIELDS = {"source": "glassdoor"}
+        SUPPORTED_FIELDS = {"source": "active"}
 
         @staticmethod
         def collect_jobs(request: dict, *, url_override: str | None = None) -> dict:
             del request, url_override
             return {"status": "success", "jobs": [], "warnings": [], "errors": [], "meta": {"returned_count": 0}}
 
-    class _BrokenCollector:
-        SUPPORTED_FIELDS = {"source": "handshake"}
-
-        @staticmethod
-        def collect_jobs(request: dict, *, url_override: str | None = None) -> dict:
-            del request, url_override
-            raise RuntimeError("boom")
-
     def _fake_load(source: str):
-        if source == "glassdoor":
+        if source in {"linkedin", "indeed"}:
             return _EmptyCollector
-        if source == "handshake":
-            return _BrokenCollector
         raise AssertionError(f"unexpected source requested: {source}")
 
     monkeypatch.setattr(jobs_collect_v1, "_load_collector_module", _fake_load)
@@ -943,15 +728,16 @@ def test_jobs_collect_v1_logs_per_source_execution_and_empty_results(monkeypatch
         result = jobs_collect_v1.execute(_task(payload), db=None)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("jobs_collect source=glassdoor status=start" in message for message in messages)
-    assert any("jobs_collect source=glassdoor jobs=0 status=empty" in message for message in messages)
-    assert any("jobs_collect source=handshake status=start" in message for message in messages)
-    assert any("jobs_collect source=handshake failed:" in message for message in messages)
+    assert any("jobs_collect source=glassdoor skipped:" in message for message in messages)
+    assert any("jobs_collect source=handshake skipped:" in message for message in messages)
+    assert any("jobs_collect source=linkedin status=start" in message for message in messages)
+    assert any("jobs_collect source=indeed status=start" in message for message in messages)
     assert result["debug_json"]["sources_succeeded"] == []
-    assert result["debug_json"]["sources_healthy"] == ["glassdoor"]
-    assert result["debug_json"]["sources_empty"] == ["glassdoor"]
-    assert result["debug_json"]["sources_failed"] == ["handshake"]
-    assert result["debug_json"]["per_source_job_counts"] == {"glassdoor": 0, "handshake": 0}
+    assert result["debug_json"]["sources_healthy"] == ["linkedin", "indeed"]
+    assert result["debug_json"]["sources_empty"] == ["linkedin", "indeed"]
+    assert result["debug_json"]["sources_failed"] == []
+    assert result["debug_json"]["sources_skipped"] == ["glassdoor", "handshake"]
+    assert result["debug_json"]["per_source_job_counts"] == {"glassdoor": 0, "handshake": 0, "linkedin": 0, "indeed": 0}
 
 
 def test_jobs_collect_v1_defaults_enabled_sources_when_payload_omits_them(monkeypatch) -> None:
@@ -978,6 +764,6 @@ def test_jobs_collect_v1_defaults_enabled_sources_when_payload_omits_them(monkey
     }
     result = jobs_collect_v1.execute(_task(payload), db=None)
 
-    assert result["content_json"]["request"]["enabled_sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
-    assert result["content_json"]["request"]["sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
-    assert result["debug_json"]["sources_attempted"] == ["linkedin", "indeed", "glassdoor", "handshake"]
+    assert result["content_json"]["request"]["enabled_sources"] == ["linkedin", "indeed"]
+    assert result["content_json"]["request"]["sources"] == ["linkedin", "indeed"]
+    assert result["debug_json"]["sources_attempted"] == ["linkedin", "indeed"]

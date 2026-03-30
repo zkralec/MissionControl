@@ -1,4 +1,9 @@
-"""Multi-board job scraping helpers for jobs_digest_v1."""
+"""Board scraping helpers for jobs collectors.
+
+Active collection targets are LinkedIn and Indeed. Legacy Glassdoor and
+Handshake adapters remain in this module for compatibility coverage and future
+reactivation work, but they are not part of the default jobs pipeline.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +24,9 @@ from integrations.scrape_common import (
     parse_price,
 )
 
-SUPPORTED_JOB_BOARDS = ("linkedin", "indeed", "glassdoor", "handshake")
+ACTIVE_JOB_BOARDS = ("linkedin", "indeed")
+INACTIVE_JOB_BOARDS = ("glassdoor", "handshake")
+KNOWN_JOB_BOARDS = ACTIVE_JOB_BOARDS + INACTIVE_JOB_BOARDS
 
 _ANCHOR_RE = re.compile(
     r"""<a[^>]+href=["'](?P<href>[^"']+)["'][^>]*>(?P<title>.*?)</a>""",
@@ -1546,7 +1553,7 @@ def collect_jobs_from_board(
     url_override: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     board_key = board.strip().lower()
-    if board_key not in SUPPORTED_JOB_BOARDS:
+    if board_key not in KNOWN_JOB_BOARDS:
         return [], [f"{board_key}: unsupported_board"], {
             "discovered_raw_count": 0,
             "pages_fetched": 0,

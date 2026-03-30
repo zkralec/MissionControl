@@ -33,39 +33,6 @@
           "search_url": "https://www.indeed.com/jobs?q=machine+learning+engineer"
         }
       }
-    ],
-    "glassdoor": [
-      {
-        "source": "glassdoor",
-        "source_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=machine+learning+engineer",
-        "title": "Machine Learning Engineer",
-        "company": "Beta Labs",
-        "location": "New York, NY",
-        "url": "https://www.glassdoor.com/partner/jobListing.htm?pos=101",
-        "description_snippet": "Hybrid ML engineer for product intelligence.",
-        "salary_text": "USD 165,000 - 195,000",
-        "source_metadata": {
-          "job_id": "gd-3003",
-          "search_url": "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=machine+learning+engineer"
-        }
-      }
-    ],
-    "handshake": [
-      {
-        "source": "handshake",
-        "source_url": "https://app.joinhandshake.com/stu/postings?query=machine+learning+engineer",
-        "title": "Machine Learning Engineer",
-        "company": "Campus Robotics",
-        "location": "San Francisco, CA",
-        "url": "https://app.joinhandshake.com/stu/jobs/4004",
-        "description_snippet": "Early-career ML engineer role with mentorship.",
-        "salary_min": 120000,
-        "salary_max": 145000,
-        "source_metadata": {
-          "job_id": "hs-4004",
-          "search_url": "https://app.joinhandshake.com/stu/postings?query=machine+learning+engineer"
-        }
-      }
     ]
   },
   "normalize_duplicate_heavy_raw_jobs": [
@@ -189,4 +156,3 @@
     }
   ]
 }
-

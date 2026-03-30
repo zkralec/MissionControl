@@ -778,7 +778,7 @@
 
             <article class="builder-card" style="margin-top: 0;">
               <h3 class="section-title">Job Scan</h3>
-              <p class="small-note">Scan major job boards and rank openings against your profile.</p>
+              <p class="small-note">Scan supported job boards and rank openings against your profile.</p>
               <div class="field">
                 <label for="jobsBuilderTitleInput">Desired role title</label>
                 <input id="jobsBuilderTitleInput" type="text" value="Software Developer">
@@ -795,8 +795,9 @@
                 <summary>Advanced</summary>
                 <div class="field" style="margin-top: 10px;">
                   <label for="jobsBuilderBoardsInput">Boards (comma separated)</label>
-                  <input id="jobsBuilderBoardsInput" type="text" value="linkedin, indeed, glassdoor, handshake">
+                  <input id="jobsBuilderBoardsInput" type="text" value="linkedin, indeed">
                 </div>
+                <div class="small-note">LinkedIn + Indeed active. Inactive legacy sources in old configs are ignored automatically.</div>
                 <div class="row">
                   <label class="chip-toggle" for="jobsBuilderUseResumeInput">
                     <input id="jobsBuilderUseResumeInput" type="checkbox" checked style="width:auto;">
@@ -1500,7 +1501,7 @@
           use_resume_profile: true,
           search_query: "Software Developer",
           location: "United States",
-          job_boards: ["linkedin", "indeed", "glassdoor", "handshake"],
+          job_boards: ["linkedin", "indeed"],
           desired_salary_min: 100000,
           work_modes: ["remote", "hybrid"],
         };
@@ -1546,7 +1547,7 @@
         location: location || "United States",
         desired_title_keywords: title ? [title] : ["Software Developer"],
         desired_salary_min: Number.isFinite(salaryMin) && salaryMin > 0 ? salaryMin : null,
-        job_boards: boards.length > 0 ? boards : ["linkedin", "indeed", "glassdoor", "handshake"],
+        job_boards: boards.length > 0 ? boards : ["linkedin", "indeed"],
         work_modes: ["remote", "hybrid"],
       };
     }
@@ -2881,7 +2882,7 @@
             desired_salary_min: Number.isFinite(salaryMin) ? salaryMin : null,
             location: location || null,
             experience_levels: ["entry", "mid", "senior"],
-            boards: ["linkedin", "indeed", "glassdoor", "handshake"],
+            boards: ["linkedin", "indeed"],
             enabled: true,
           }),
         });

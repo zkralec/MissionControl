@@ -1533,7 +1533,9 @@ class PlannerRtxPresetCreate(BaseModel):
     enabled: bool = True
 
 
-ALLOWED_JOB_WATCHER_SOURCES = {"linkedin", "indeed", "glassdoor", "handshake"}
+ACTIVE_JOB_WATCHER_SOURCES = {"linkedin", "indeed"}
+LEGACY_DISABLED_JOB_WATCHER_SOURCES = {"glassdoor", "handshake"}
+ALLOWED_JOB_WATCHER_SOURCES = ACTIVE_JOB_WATCHER_SOURCES | LEGACY_DISABLED_JOB_WATCHER_SOURCES
 ALLOWED_JOB_WATCHER_WORK_MODES = {"remote", "hybrid", "onsite"}
 ALLOWED_JOB_WATCHER_FRESHNESS = {"off", "prefer_recent", "strong_prefer_recent"}
 ALLOWED_JOB_WATCHER_SEARCH_MODES = {"broad_discovery", "precision_match"}
@@ -1643,7 +1645,7 @@ class PlannerJobsPresetCreate(BaseModel):
         invalid = [row for row in normalized if row not in ALLOWED_JOB_WATCHER_SOURCES]
         if invalid:
             raise ValueError(
-                "enabled sources must be one or more of: linkedin, indeed, glassdoor, handshake"
+                "enabled sources must be one or more of: linkedin, indeed. Legacy inactive source values are accepted and ignored."
             )
         return normalized
 
@@ -1882,6 +1884,38 @@ def _as_summary_int(value: Any, fallback: int = 0) -> int:
     return parsed
 
 
+def _as_summary_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
+
+
+def _jobs_source_display_name(source: str) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized == "linkedin":
+        return "LinkedIn"
+    if normalized == "indeed":
+        return "Indeed"
+    if normalized == "manual":
+        return "Manual"
+    return normalized.title() or source
+
+
+def _jobs_active_sources_label(sources: list[str]) -> str:
+    labels = [_jobs_source_display_name(source) for source in sources if source]
+    if not labels:
+        return "No active sources"
+    if len(labels) == 1:
+        return f"{labels[0]} active"
+    if len(labels) == 2:
+        return f"{labels[0]} + {labels[1]} active"
+    return ", ".join(labels[:-1]) + f", and {labels[-1]} active"
+
+
 def _extract_pipeline_id(payload: dict[str, Any]) -> str | None:
     direct = payload.get("pipeline_id")
     if isinstance(direct, str) and direct.strip():
@@ -1904,7 +1938,7 @@ def _artifact_content_json(artifact: Artifact | None) -> dict[str, Any]:
     return dict(artifact.content_json)
 
 
-def _summary_sources_from_request(request: dict[str, Any]) -> list[str]:
+def _summary_requested_sources_from_request(request: dict[str, Any]) -> list[str]:
     sources: list[str] = []
     for key in ("enabled_sources", "sources", "boards"):
         raw = request.get(key)
@@ -1917,6 +1951,63 @@ def _summary_sources_from_request(request: dict[str, Any]) -> list[str]:
             if text and text not in sources:
                 sources.append(text)
     return sources
+
+
+def _summary_sources_from_request(request: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+    raw = request.get("enabled_sources")
+    if isinstance(raw, list):
+        candidates = raw
+    else:
+        candidates = _summary_requested_sources_from_request(request)
+    for item in candidates:
+        text = str(item).strip().lower()
+        if text and (text in ACTIVE_JOB_WATCHER_SOURCES or text == "manual") and text not in sources:
+            sources.append(text)
+    return sources or ["linkedin", "indeed"]
+
+
+def _summary_disabled_sources_from_request(request: dict[str, Any]) -> list[str]:
+    explicit = request.get("disabled_sources")
+    if isinstance(explicit, list):
+        output: list[str] = []
+        for item in explicit:
+            text = str(item).strip().lower()
+            if text and text not in output:
+                output.append(text)
+        return output
+
+    output: list[str] = []
+    for item in _summary_requested_sources_from_request(request):
+        if item in LEGACY_DISABLED_JOB_WATCHER_SOURCES and item not in output:
+            output.append(item)
+    return output
+
+
+def _summary_source_notes_from_request(request: dict[str, Any]) -> list[str]:
+    explicit = request.get("source_configuration_notes")
+    if isinstance(explicit, list):
+        notes = [str(item).strip() for item in explicit if isinstance(item, str) and str(item).strip()]
+        if notes:
+            return notes
+
+    disabled_sources = _summary_disabled_sources_from_request(request)
+    requested_sources = _summary_requested_sources_from_request(request)
+    active_sources = _summary_sources_from_request(request)
+    notes: list[str] = []
+    if disabled_sources:
+        notes.append(
+            "Inactive legacy job sources were ignored. Only linkedin and indeed are active."
+        )
+    if requested_sources and not any(
+        source in ACTIVE_JOB_WATCHER_SOURCES or source == "manual" for source in requested_sources
+    ):
+        notes.append(
+            "No active job sources remained after filtering inactive or unsupported sources; defaulted to "
+            + ", ".join(active_sources)
+            + "."
+        )
+    return notes
 
 
 def _summary_search_mode_from_request(request: dict[str, Any]) -> str:
@@ -2005,18 +2096,33 @@ def _build_jobs_workflow_summary(
     pipeline_counts = shortlist_json.get("pipeline_counts") if isinstance(shortlist_json.get("pipeline_counts"), dict) else {}
     collection_observability = collect_json.get("collection_observability") if isinstance(collect_json.get("collection_observability"), dict) else {}
     by_source = collection_observability.get("by_source") if isinstance(collection_observability.get("by_source"), dict) else {}
+    active_sources = _summary_sources_from_request(request)
+    active_sources_label = (
+        str(collection_observability.get("active_sources_label") or "").strip()
+        or _jobs_active_sources_label(active_sources)
+    )
 
     source_rows: list[dict[str, Any]] = []
     for source, value in by_source.items():
         if not isinstance(value, dict):
             continue
+        if str(value.get("source_error_type") or "").strip().lower() == "source_disabled":
+            continue
+        if source not in ACTIVE_JOB_WATCHER_SOURCES:
+            continue
         missing_rates = value.get("missing_rates") if isinstance(value.get("missing_rates"), dict) else {}
         source_rows.append(
             {
                 "source": source,
+                "source_label": str(value.get("source_label") or "").strip() or _jobs_source_display_name(source),
+                "status": str(value.get("status") or value.get("source_status") or "").strip() or None,
                 "raw_jobs_found": _as_summary_int(value.get("raw_jobs_discovered")),
                 "kept_after_basic_filter": _as_summary_int(value.get("kept_after_basic_filter")),
                 "jobs_dropped": _as_summary_int(value.get("jobs_dropped")),
+                "pages_attempted": _as_summary_int(value.get("pages_attempted")),
+                "under_target": _as_summary_bool(value.get("under_target")),
+                "suspected_blocking": _as_summary_bool(value.get("suspected_blocking")),
+                "suspected_blocking_reason": str(value.get("suspected_blocking_reason") or "").strip() or None,
                 "missing_company_rate": float(missing_rates.get("missing_company_rate") or 0.0),
                 "missing_posted_at_rate": float(missing_rates.get("missing_posted_at_rate") or 0.0),
                 "missing_source_url_rate": float(missing_rates.get("missing_source_url_rate") or 0.0),
@@ -2024,6 +2130,11 @@ def _build_jobs_workflow_summary(
                 "weakness_summary": str(value.get("weakness_summary") or "").strip() or None,
             }
         )
+    source_rows.sort(key=lambda row: active_sources.index(row["source"]) if row["source"] in active_sources else 999)
+    source_contribution_summary = [
+        f"{row['source_label']} contributed {row['raw_jobs_found']} raw jobs"
+        for row in source_rows
+    ]
 
     digest_jobs = _job_preview_rows(digest_json)
     source_diversity: list[str] = []
@@ -2074,7 +2185,11 @@ def _build_jobs_workflow_summary(
         "kind": "jobs_watcher",
         "pipeline_id": pipeline_id,
         "search_mode": _summary_search_mode_from_request(request),
-        "enabled_sources": _summary_sources_from_request(request),
+        "enabled_sources": active_sources,
+        "active_sources_label": active_sources_label,
+        "source_contribution_summary": source_contribution_summary,
+        "disabled_sources": _summary_disabled_sources_from_request(request),
+        "source_notes": _summary_source_notes_from_request(request),
         "query_count_used": _as_summary_int(collection_counts.get("queries_executed_count"), _as_summary_int(collection_observability.get("queries_executed"))),
         "counts": {
             "raw_jobs_found": _as_summary_int(collection_counts.get("discovered_raw_count"), _as_summary_int(collection_counts.get("raw_job_count"))),
@@ -2102,6 +2217,8 @@ def _build_jobs_workflow_summary(
             ][:3],
         },
         "collection_quality": {
+            "active_sources_label": active_sources_label,
+            "source_contribution_summary": source_contribution_summary,
             "by_source": source_rows,
             "operator_summary": (
                 collection_observability.get("operator_questions")

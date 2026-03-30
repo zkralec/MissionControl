@@ -213,15 +213,15 @@ def test_jobs_watcher_includes_compact_workflow_summary() -> None:
 
         with SessionLocal() as db:
             task_specs = [
-                (
-                    task_ids[0],
-                    run_ids[0],
-                    "jobs_collect_v1",
-                    {
-                        "pipeline_id": pipeline_id,
-                        "planner_template_id": watcher_id,
-                        "request": {"enabled_sources": ["linkedin", "indeed"]},
-                    },
+                    (
+                        task_ids[0],
+                        run_ids[0],
+                        "jobs_collect_v1",
+                        {
+                            "pipeline_id": pipeline_id,
+                            "planner_template_id": watcher_id,
+                            "request": {"enabled_sources": ["linkedin", "indeed"], "search_mode": "broad_discovery"},
+                        },
                     {
                         "collection_counts": {
                             "discovered_raw_count": 420,
@@ -230,16 +230,20 @@ def test_jobs_watcher_includes_compact_workflow_summary() -> None:
                         },
                         "collection_observability": {
                             "operator_questions": {
-                                "did_we_search_enough": "420 raw discovered across 2 live sources.",
-                                "which_source_is_weak": "Weakest metadata source: indeed.",
+                                "searched_enough": "LinkedIn + Indeed active. LinkedIn contributed 220 raw jobs; Indeed contributed 200 raw jobs. 12 queries executed.",
+                                "which_source_is_weak": "Lowest raw contribution came from Indeed.",
                                 "why_did_raw_count_collapse": "Basic filtering removed 110 jobs.",
-                                "are_we_missing_metadata": "Indeed still misses post dates and links.",
+                                "are_we_missing_metadata": "Weakest metadata source: Indeed.",
                             },
                             "by_source": {
                                 "linkedin": {
+                                    "source_label": "LinkedIn",
                                     "raw_jobs_discovered": 220,
                                     "kept_after_basic_filter": 180,
                                     "jobs_dropped": 40,
+                                    "pages_attempted": 6,
+                                    "under_target": False,
+                                    "suspected_blocking": False,
                                     "missing_rates": {
                                         "missing_company_rate": 2.0,
                                         "missing_posted_at_rate": 6.0,
@@ -249,9 +253,13 @@ def test_jobs_watcher_includes_compact_workflow_summary() -> None:
                                     "weakness_summary": "post date 6%, location 4%",
                                 },
                                 "indeed": {
+                                    "source_label": "Indeed",
                                     "raw_jobs_discovered": 200,
                                     "kept_after_basic_filter": 130,
                                     "jobs_dropped": 70,
+                                    "pages_attempted": 4,
+                                    "under_target": True,
+                                    "suspected_blocking": False,
                                     "missing_rates": {
                                         "missing_company_rate": 4.0,
                                         "missing_posted_at_rate": 18.0,
@@ -385,6 +393,11 @@ def test_jobs_watcher_includes_compact_workflow_summary() -> None:
         workflow_summary = payload["workflow_summary"]
         assert workflow_summary["kind"] == "jobs_watcher"
         assert workflow_summary["search_mode"] == "broad_discovery"
+        assert workflow_summary["active_sources_label"] == "LinkedIn + Indeed active"
+        assert workflow_summary["source_contribution_summary"] == [
+            "LinkedIn contributed 220 raw jobs",
+            "Indeed contributed 200 raw jobs",
+        ]
         assert workflow_summary["counts"]["raw_jobs_found"] == 420
         assert workflow_summary["counts"]["jobs_after_filtering"] == 310
         assert workflow_summary["counts"]["jobs_after_dedupe"] == 180
@@ -393,6 +406,8 @@ def test_jobs_watcher_includes_compact_workflow_summary() -> None:
         assert workflow_summary["notify"]["status"] == "sent"
         assert workflow_summary["digest_preview"]["headline"] == "Solid senior backend batch with good source diversity."
         assert workflow_summary["digest_preview"]["top_jobs"][0]["source_url"] == "https://example.com/jobs/123"
+        assert workflow_summary["collection_quality"]["by_source"][0]["source_label"] == "LinkedIn"
+        assert workflow_summary["collection_quality"]["by_source"][1]["under_target"] is True
         assert workflow_summary["collection_quality"]["by_source"][1]["missing_posted_at_rate"] == 18.0
     finally:
         _cleanup_watcher_and_task(watcher_id, task_id=task_ids[0])

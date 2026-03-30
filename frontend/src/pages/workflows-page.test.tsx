@@ -177,6 +177,11 @@ describe("WorkflowsPage", () => {
           kind: "jobs_watcher",
           search_mode: "broad_discovery",
           enabled_sources: ["linkedin", "indeed"],
+          active_sources_label: "LinkedIn + Indeed active",
+          source_contribution_summary: [
+            "LinkedIn contributed 220 raw jobs",
+            "Indeed contributed 200 raw jobs"
+          ],
           query_count_used: 12,
           counts: {
             raw_jobs_found: 420,
@@ -205,17 +210,22 @@ describe("WorkflowsPage", () => {
           },
           collection_quality: {
             operator_summary: {
-              did_we_search_enough: "420 raw discovered across 2 live sources.",
-              which_source_is_weak: "Weakest metadata source: indeed.",
+              searched_enough: "LinkedIn + Indeed active. LinkedIn contributed 220 raw jobs; Indeed contributed 200 raw jobs. 12 queries executed.",
+              which_source_is_weak: "Lowest raw contribution came from Indeed.",
               why_did_raw_count_collapse: "Basic filtering removed 110 jobs.",
-              are_we_missing_metadata: "Indeed still misses post dates and links."
+              are_we_missing_metadata: "Weakest metadata source: Indeed."
             },
             by_source: [
               {
                 source: "linkedin",
+                source_label: "LinkedIn",
+                status: "success",
                 raw_jobs_found: 220,
                 kept_after_basic_filter: 180,
                 jobs_dropped: 40,
+                pages_attempted: 6,
+                under_target: false,
+                suspected_blocking: false,
                 missing_company_rate: 2,
                 missing_posted_at_rate: 6,
                 missing_source_url_rate: 1,
@@ -224,9 +234,14 @@ describe("WorkflowsPage", () => {
               },
               {
                 source: "indeed",
+                source_label: "Indeed",
+                status: "under_target",
                 raw_jobs_found: 200,
                 kept_after_basic_filter: 130,
                 jobs_dropped: 70,
+                pages_attempted: 4,
+                under_target: true,
+                suspected_blocking: false,
                 missing_company_rate: 4,
                 missing_posted_at_rate: 18,
                 missing_source_url_rate: 12,
@@ -254,7 +269,9 @@ describe("WorkflowsPage", () => {
 
     expect(screen.getByText("Latest Digest Preview")).toBeInTheDocument();
     expect(screen.getByText(/Solid senior backend batch with good source diversity/i)).toBeInTheDocument();
-    expect(screen.getByText(/420 raw discovered across 2 live sources/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/LinkedIn \+ Indeed active/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/LinkedIn contributed 220 raw jobs/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Indeed contributed 200 raw jobs/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/broad discovery/i).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Desired titles"), { target: { value: "ML Engineer, Data Engineer" } });

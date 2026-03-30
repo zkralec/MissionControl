@@ -70,7 +70,9 @@ def test_ensure_jobs_digest_template_maps_legacy_fields_for_compatibility() -> N
 
     assert request["titles"][0] == "Data Scientist"
     assert request["locations"][0] == "Austin, TX"
-    assert request["sources"] == ["glassdoor"]
+    assert request["sources"] == ["linkedin", "indeed"]
+    assert request["disabled_sources"] == ["glassdoor"]
+    assert request["source_configuration_notes"]
     assert request["minimum_salary"] == 125000.0
 
 
@@ -83,4 +85,4 @@ def test_ensure_jobs_digest_template_falls_back_when_sources_invalid() -> None:
     payload = json.loads(row["payload_json"])
     request = payload["request"]
 
-    assert request["sources"] == ["linkedin", "indeed", "glassdoor", "handshake"]
+    assert request["sources"] == ["linkedin", "indeed"]

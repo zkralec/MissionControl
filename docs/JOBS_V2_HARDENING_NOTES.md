@@ -9,10 +9,16 @@ Hardening focused on stage-level reliability and contract stability for:
 - `jobs_shortlist_v1`
 - `jobs_digest_v2`
 
+Current supported active collection sources:
+- `linkedin`
+- `indeed`
+
+Legacy disabled sources may still appear in older configs, but they are ignored safely and excluded from active-source summaries.
+
 ## Coverage Added
 
 ### `jobs_collect_v1`
-- Multi-source success path using fixture data (`linkedin`, `indeed`, `glassdoor`, `handshake`)
+- Multi-source success path using fixture data (`linkedin`, `indeed`)
 - Empty successful collection (zero jobs, no source errors)
 - Existing coverage retained for partial source failure and all-sources-failed retryable error
 

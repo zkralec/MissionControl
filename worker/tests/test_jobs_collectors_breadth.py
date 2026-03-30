@@ -1,3 +1,5 @@
+"""Collector breadth coverage, including dormant legacy adapter behavior."""
+
 import os
 import sys
 from pathlib import Path

@@ -213,9 +213,9 @@ The normal UI path is:
 1. `Workflows`
    Configure or review recurring automations, especially the Jobs watcher.
 2. `Runs`
-   Inspect stage-by-stage execution artifacts for collect, normalize, rank, shortlist, digest, and notify.
+   Inspect stage-by-stage execution artifacts for collect, normalize, rank, shortlist, digest, and notify, with source focus on LinkedIn and Indeed.
 3. `Alerts`
-   Review grouped failures, intentional notify skips, weak source coverage, and direct next actions.
+   Review grouped failures, intentional notify skips, weak LinkedIn/Indeed coverage, and direct next actions.
 4. `Observability`
    Check API, worker, scheduler, Redis, heartbeat, and runtime health signals.
 
@@ -267,7 +267,7 @@ curl -s -X POST http://localhost:8000/tasks \
   -H 'Content-Type: application/json' \
   -d '{
     "task_type": "jobs_collect_v1",
-    "payload_json": "{\"request\":{\"collectors_enabled\":true,\"profile_mode\":\"resume_profile\",\"sources\":[\"linkedin\",\"indeed\",\"glassdoor\",\"handshake\"],\"titles\":[\"Machine Learning Engineer\"],\"desired_title_keywords\":[\"machine learning engineer\",\"ai engineer\"],\"keywords\":[\"python\",\"llm\"],\"excluded_keywords\":[\"staff\"],\"locations\":[\"Remote\",\"New York, NY\"],\"work_modes\":[\"remote\",\"hybrid\"],\"desired_salary_min\":160000,\"experience_levels\":[\"entry\",\"mid\",\"senior\"],\"result_limit_per_source\":250,\"max_queries_per_run\":12,\"shortlist_count\":5,\"jobs_notification_cooldown_days\":3,\"resurface_seen_jobs\":true}}",
+    "payload_json": "{\"request\":{\"collectors_enabled\":true,\"profile_mode\":\"resume_profile\",\"sources\":[\"linkedin\",\"indeed\"],\"titles\":[\"Machine Learning Engineer\"],\"desired_title_keywords\":[\"machine learning engineer\",\"ai engineer\"],\"keywords\":[\"python\",\"llm\"],\"excluded_keywords\":[\"staff\"],\"locations\":[\"Remote\",\"New York, NY\"],\"work_modes\":[\"remote\",\"hybrid\"],\"desired_salary_min\":160000,\"experience_levels\":[\"entry\",\"mid\",\"senior\"],\"result_limit_per_source\":250,\"max_queries_per_run\":12,\"shortlist_count\":5,\"jobs_notification_cooldown_days\":3,\"resurface_seen_jobs\":true}}",
     "model": null
   }' | jq
 ```

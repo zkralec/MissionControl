@@ -104,7 +104,7 @@ function normalizeNotifyWorkflowPayload(rawPayloadJson: string | null | undefine
   return JSON.stringify(normalized);
 }
 
-const JOB_SOURCE_OPTIONS = ["linkedin", "indeed", "glassdoor", "handshake"] as const;
+const JOB_SOURCE_OPTIONS = ["linkedin", "indeed"] as const;
 type JobSourceOption = (typeof JOB_SOURCE_OPTIONS)[number];
 
 const JOB_WORK_MODE_OPTIONS = ["remote", "hybrid", "onsite"] as const;
@@ -143,7 +143,7 @@ const DEFAULT_JOBS_WATCHER_FORM_STATE: JobsWatcherFormState = {
   remotePreference: { remote: true, hybrid: true, onsite: false },
   minimumSalaryText: "",
   experienceLevel: "",
-  enabledSources: { linkedin: true, indeed: true, glassdoor: true, handshake: true },
+  enabledSources: { linkedin: true, indeed: true },
   resultLimitPerSourceText: "25",
   maxQueriesPerRunText: "12",
   shortlistCountText: "5",
@@ -190,7 +190,7 @@ const PRIMARY_WATCHERS: Array<{
         search_mode: "broad_discovery",
         query: "software engineer",
         location: "United States",
-        sources: ["linkedin", "indeed", "glassdoor", "handshake"],
+        sources: ["linkedin", "indeed"],
         notify_on_empty: false
       }
     }
@@ -236,6 +236,10 @@ type WorkflowInsight = {
 type JobsWorkflowSummary = {
   searchMode: string | null;
   enabledSources: string[];
+  activeSourcesLabel: string | null;
+  sourceContributionSummary: string[];
+  disabledSources: string[];
+  sourceNotes: string[];
   queryCountUsed: number | null;
   rawJobsFound: number | null;
   jobsAfterFiltering: number | null;
@@ -257,9 +261,15 @@ type JobsWorkflowSummary = {
   whyTopJobsWon: string[];
   collectionBySource: Array<{
     source: string;
+    sourceLabel: string;
+    status: string | null;
     rawJobsFound: number;
     keptAfterBasicFilter: number;
     jobsDropped: number;
+    pagesAttempted: number;
+    underTarget: boolean;
+    suspectedBlocking: boolean;
+    suspectedBlockingReason: string | null;
     missingCompanyRate: number;
     missingPostedAtRate: number;
     missingSourceUrlRate: number;
@@ -432,9 +442,7 @@ function parseJobsWatcherFormFromPayload(rawPayloadJson: string | null | undefin
   ].map((item) => item.toLowerCase());
   const enabledSources: Record<JobSourceOption, boolean> = {
     linkedin: false,
-    indeed: false,
-    glassdoor: false,
-    handshake: false
+    indeed: false
   };
   rawSources.forEach((source) => {
     if (source in enabledSources) {
@@ -521,9 +529,15 @@ function parseJobsWorkflowSummary(watcher: Watcher | null): JobsWorkflowSummary 
         .filter((row): row is Record<string, unknown> => isRecord(row))
         .map((row) => ({
           source: asText(row.source) || "unknown",
+          sourceLabel: asText(row.source_label) || asText(row.source) || "unknown",
+          status: asText(row.status),
           rawJobsFound: asNumber(row.raw_jobs_found) || 0,
           keptAfterBasicFilter: asNumber(row.kept_after_basic_filter) || 0,
           jobsDropped: asNumber(row.jobs_dropped) || 0,
+          pagesAttempted: asNumber(row.pages_attempted) || 0,
+          underTarget: asBoolean(row.under_target) ?? false,
+          suspectedBlocking: asBoolean(row.suspected_blocking) ?? false,
+          suspectedBlockingReason: asText(row.suspected_blocking_reason),
           missingCompanyRate: asNumber(row.missing_company_rate) || 0,
           missingPostedAtRate: asNumber(row.missing_posted_at_rate) || 0,
           missingSourceUrlRate: asNumber(row.missing_source_url_rate) || 0,
@@ -535,6 +549,12 @@ function parseJobsWorkflowSummary(watcher: Watcher | null): JobsWorkflowSummary 
   return {
     searchMode: asText(summary.search_mode),
     enabledSources: asStringArray(summary.enabled_sources),
+    activeSourcesLabel: asText(summary.active_sources_label) || asText(collectionQuality.active_sources_label),
+    sourceContributionSummary: asStringArray(summary.source_contribution_summary).length
+      ? asStringArray(summary.source_contribution_summary)
+      : asStringArray(collectionQuality.source_contribution_summary),
+    disabledSources: asStringArray(summary.disabled_sources),
+    sourceNotes: asStringArray(summary.source_notes),
     queryCountUsed: asNumber(summary.query_count_used),
     rawJobsFound: asNumber(counts.raw_jobs_found),
     jobsAfterFiltering: asNumber(counts.jobs_after_filtering),
@@ -549,9 +569,9 @@ function parseJobsWorkflowSummary(watcher: Watcher | null): JobsWorkflowSummary 
     whyTopJobsWon: asStringArray(digestPreview.why_top_jobs_won),
     collectionBySource,
     operatorSummary: {
-      searchedEnough: asText(operatorSummary.did_we_search_enough),
+      searchedEnough: asText(operatorSummary.searched_enough) || asText(operatorSummary.did_we_search_enough),
       whichSourceIsWeak: asText(operatorSummary.which_source_is_weak),
-      whyDidRawCountCollapse: asText(operatorSummary.why_did_raw_count_collapse),
+      whyDidRawCountCollapse: asText(operatorSummary.why_raw_count_collapsed) || asText(operatorSummary.why_did_raw_count_collapse),
       areWeMissingMetadata: asText(operatorSummary.are_we_missing_metadata)
     }
   };
@@ -1033,8 +1053,8 @@ export function WorkflowsPage(): JSX.Element {
         desired_titles: ["Software Engineer"],
         preferred_locations: ["United States"],
         remote_preference: ["remote", "hybrid"],
-        enabled_sources: ["linkedin", "indeed", "glassdoor", "handshake"],
-        boards: ["linkedin", "indeed", "glassdoor", "handshake"],
+        enabled_sources: ["linkedin", "indeed"],
+        boards: ["linkedin", "indeed"],
         result_limit_per_source: 25,
         max_queries_per_run: 12,
         shortlist_count: 5,
@@ -1518,14 +1538,28 @@ export function WorkflowsPage(): JSX.Element {
                           {(selectedJobsWorkflowSummary?.searchMode || jobsForm.searchMode).replace(/_/g, " ")}
                         </div>
                       </div>
-                      <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
-                        <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Sources</div>
-                        <div className="mt-1 text-foreground">
-                          {selectedJobsWorkflowSummary?.enabledSources.length
-                            ? selectedJobsWorkflowSummary.enabledSources.join(", ")
-                            : JOB_SOURCE_OPTIONS.filter((source) => jobsForm.enabledSources[source]).join(", ")}
+                        <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
+                          <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Sources</div>
+                          <div className="mt-1 text-foreground">
+                            {selectedJobsWorkflowSummary?.activeSourcesLabel
+                              ? selectedJobsWorkflowSummary.activeSourcesLabel
+                              : selectedJobsWorkflowSummary?.enabledSources.length
+                              ? selectedJobsWorkflowSummary.enabledSources.join(", ")
+                              : JOB_SOURCE_OPTIONS.filter((source) => jobsForm.enabledSources[source]).join(", ")}
+                          </div>
+                          {selectedJobsWorkflowSummary?.sourceContributionSummary.length ? (
+                            <div className="mt-1 space-y-0.5 text-muted-foreground">
+                              {selectedJobsWorkflowSummary.sourceContributionSummary.map((line) => (
+                                <div key={line}>{line}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {selectedJobsWorkflowSummary?.disabledSources.length ? (
+                            <div className="mt-1 text-muted-foreground">
+                              Inactive legacy sources were ignored for this watcher.
+                            </div>
+                          ) : null}
                         </div>
-                      </div>
                       <div className="rounded-md border border-border/70 bg-background/80 px-2 py-2 text-xs">
                         <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Counts</div>
                         <div className="mt-1 text-foreground">
@@ -1610,13 +1644,22 @@ export function WorkflowsPage(): JSX.Element {
                               : "No source diversity signal yet."}
                           </div>
                         </div>
+                        {selectedJobsWorkflowSummary?.sourceNotes.length ? (
+                          <div className="space-y-1">
+                            {selectedJobsWorkflowSummary.sourceNotes.map((note) => (
+                              <div key={note} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
+                                {note}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="space-y-3 rounded-md border border-border/70 bg-background/80 px-3 py-3">
                         <div>
                           <div className="text-sm font-semibold">Collection Quality</div>
                           <div className="text-xs text-muted-foreground">
-                            Search breadth and metadata completeness so you can see whether the watcher is searching widely enough.
+                            LinkedIn and Indeed source focus for jobs found, jobs kept, pages attempted, under-target status, and suspected blocking.
                           </div>
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2">
@@ -1630,6 +1673,13 @@ export function WorkflowsPage(): JSX.Element {
                           </div>
                         </div>
                         <div className="grid gap-2">
+                          {selectedJobsWorkflowSummary?.sourceContributionSummary.length ? (
+                            selectedJobsWorkflowSummary.sourceContributionSummary.map((line) => (
+                              <div key={line} className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs text-foreground">
+                                {line}
+                              </div>
+                            ))
+                          ) : null}
                           {[
                             selectedJobsWorkflowSummary?.operatorSummary.searchedEnough,
                             selectedJobsWorkflowSummary?.operatorSummary.whyDidRawCountCollapse,
@@ -1649,20 +1699,28 @@ export function WorkflowsPage(): JSX.Element {
                                 <TableHead>Source</TableHead>
                                 <TableHead>Raw</TableHead>
                                 <TableHead>Kept</TableHead>
-                                <TableHead>Dropped</TableHead>
-                                <TableHead>Metadata Gaps</TableHead>
+                                <TableHead>Pages</TableHead>
+                                <TableHead>Signals</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
                               {selectedJobsWorkflowSummary?.collectionBySource.length ? (
                                 selectedJobsWorkflowSummary.collectionBySource.map((row) => (
                                   <TableRow key={row.source}>
-                                    <TableCell className="capitalize">{row.source}</TableCell>
+                                    <TableCell>{row.sourceLabel}</TableCell>
                                     <TableCell>{row.rawJobsFound}</TableCell>
                                     <TableCell>{row.keptAfterBasicFilter}</TableCell>
-                                    <TableCell>{row.jobsDropped}</TableCell>
+                                    <TableCell>{row.pagesAttempted}</TableCell>
                                     <TableCell className="text-xs text-muted-foreground">
-                                      {row.weaknessSummary || `company ${row.missingCompanyRate}% · links ${row.missingSourceUrlRate}%`}
+                                      {[
+                                        row.underTarget ? "under target" : null,
+                                        row.suspectedBlocking
+                                          ? `suspected blocking${row.suspectedBlockingReason ? ` (${row.suspectedBlockingReason})` : ""}`
+                                          : null,
+                                        row.weaknessSummary || `company ${row.missingCompanyRate}% · links ${row.missingSourceUrlRate}%`
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" · ")}
                                     </TableCell>
                                   </TableRow>
                                 ))
@@ -1912,7 +1970,10 @@ export function WorkflowsPage(): JSX.Element {
                         <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
                           <div className="font-semibold uppercase tracking-[0.06em] text-muted-foreground">Coverage Notes</div>
                           <div className="mt-1 text-foreground">
-                            Wider search comes from source count, result limit, and query expansion together. Use the collection-quality panel above to see which source is actually weak.
+                            LinkedIn + Indeed active. Wider search comes from result limits and query expansion; use the collection-quality panel above to see which source is actually weak.
+                          </div>
+                          <div className="mt-1 text-muted-foreground">
+                            Old configs that still mention inactive legacy sources are ignored safely.
                           </div>
                         </div>
                       </div>

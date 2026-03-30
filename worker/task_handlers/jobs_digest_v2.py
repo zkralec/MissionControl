@@ -50,8 +50,6 @@ _UNKNOWN_COMPANY_CANONICAL = {
 _SOURCE_LABELS = {
     "linkedin": "LinkedIn",
     "indeed": "Indeed",
-    "glassdoor": "Glassdoor",
-    "handshake": "Handshake",
 }
 
 
