@@ -18,7 +18,13 @@ from models.catalog import (
 )
 
 
-ADVANCED_TASK_TYPES = {"slides_outline", "slides_outline_v1", "jobs_rank_v1", "jobs_digest_v2"}
+ADVANCED_TASK_TYPES = {
+    "slides_outline",
+    "slides_outline_v1",
+    "jobs_rank_v1",
+    "jobs_digest_v2",
+    "resume_tailor_v1",
+}
 LEGACY_FALLBACK_MODEL = "gpt-4o-mini"
 
 

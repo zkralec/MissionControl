@@ -35,6 +35,8 @@ KNOWN_SOURCE_STATUSES = (
 DISPLAY_SOURCE_NAMES = {
     "linkedin": "LinkedIn",
     "indeed": "Indeed",
+    "glassdoor": "Glassdoor",
+    "handshake": "Handshake",
     "manual": "Manual",
 }
 BLOCKING_REASON_LABELS = {
@@ -220,9 +222,13 @@ def _source_focus_snapshot(source_key: str, result: dict[str, Any]) -> dict[str,
     }
 
 
-def _active_source_focus_snapshots(source_results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _active_source_focus_snapshots(
+    source_results: dict[str, dict[str, Any]],
+    *,
+    focus_sources: tuple[str, ...] = ACTIVE_OBSERVABILITY_SOURCES,
+) -> list[dict[str, Any]]:
     snapshots: list[dict[str, Any]] = []
-    for source_key in ACTIVE_OBSERVABILITY_SOURCES:
+    for source_key in focus_sources:
         result = source_results.get(source_key)
         if not isinstance(result, dict):
             continue
@@ -335,10 +341,11 @@ def _compact_missing_summary(missing_rates: dict[str, float]) -> str:
 def _build_run_preview_messages(
     *,
     source_results: dict[str, dict[str, Any]],
+    focus_sources: tuple[str, ...] = ACTIVE_OBSERVABILITY_SOURCES,
 ) -> list[str]:
     messages: list[str] = []
 
-    source_focus = _active_source_focus_snapshots(source_results)
+    source_focus = _active_source_focus_snapshots(source_results, focus_sources=focus_sources)
     if source_focus:
         messages.append(_active_sources_label([str(row.get("source") or "") for row in source_focus]))
 
@@ -373,9 +380,10 @@ def _build_collection_observability(
     truncated_by_run_limit_count: int,
     run_preview_messages: list[str],
     minimum_targets: dict[str, Any],
+    focus_sources: tuple[str, ...] = ACTIVE_OBSERVABILITY_SOURCES,
 ) -> dict[str, Any]:
     by_source: dict[str, dict[str, Any]] = {}
-    source_focus = _active_source_focus_snapshots(source_results)
+    source_focus = _active_source_focus_snapshots(source_results, focus_sources=focus_sources)
     breadth_candidates: list[tuple[str, int]] = []
     weak_candidates: list[tuple[str, float]] = []
     query_examples: list[str] = []
@@ -410,6 +418,11 @@ def _build_collection_observability(
         total_queries_executed += queries_executed
         total_empty_queries += empty_queries
         source_examples = meta.get("query_examples") if isinstance(meta.get("query_examples"), list) else []
+        screenshot_references = (
+            meta.get("screenshot_references")
+            if isinstance(meta.get("screenshot_references"), list)
+            else []
+        )
         for value in source_examples:
             if not isinstance(value, str):
                 continue
@@ -487,6 +500,8 @@ def _build_collection_observability(
             "queries_attempted_count": len([row for row in queries_attempted if isinstance(row, str) and row.strip()]),
             "empty_queries_count": empty_queries,
             "query_examples": source_examples[:3],
+            "screenshot_count": len([row for row in screenshot_references if isinstance(row, dict)]),
+            "screenshot_references": [row for row in screenshot_references if isinstance(row, dict)][:10],
             "request_urls_tried": meta.get("request_urls_tried") if isinstance(meta.get("request_urls_tried"), list) else [],
             "last_request_url": str(meta.get("last_request_url") or "").strip() or None,
             "error_type": str(meta.get("error_type") or "").strip() or None,

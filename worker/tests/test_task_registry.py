@@ -32,10 +32,14 @@ def worker_module(tmp_path, monkeypatch):
 def test_registry_contains_required_handlers(worker_module) -> None:
     assert "jobs_digest_v1" in worker_module.HANDLERS
     assert "jobs_collect_v1" in worker_module.HANDLERS
+    assert "openclaw_jobs_collect_v1" in worker_module.HANDLERS
     assert "jobs_normalize_v1" in worker_module.HANDLERS
     assert "jobs_rank_v1" in worker_module.HANDLERS
     assert "jobs_shortlist_v1" in worker_module.HANDLERS
     assert "jobs_digest_v2" in worker_module.HANDLERS
+    assert "job_apply_prepare_v1" in worker_module.HANDLERS
+    assert "resume_tailor_v1" in worker_module.HANDLERS
+    assert "openclaw_apply_draft_v1" in worker_module.HANDLERS
     assert "deals_scan_v1" in worker_module.HANDLERS
     assert "slides_outline_v1" in worker_module.HANDLERS
     assert "notify_v1" in worker_module.HANDLERS
@@ -113,6 +117,83 @@ def test_run_task_enqueues_followup_tasks_from_handler(worker_module, monkeypatc
         )
         db.add(task)
         db.commit()
+
+    enqueued_ids: list[str] = []
+
+    def fake_enqueue(_func_name, queued_task_id):
+        enqueued_ids.append(str(queued_task_id))
+
+    monkeypatch.setattr(worker_module.queue, "enqueue", fake_enqueue)
+
+    worker_module.run_task(task_id)
+
+    with worker_module.SessionLocal() as db:
+        followup = (
+            db.query(worker_module.Task)
+            .filter(worker_module.Task.task_type == "jobs_normalize_v1")
+            .order_by(worker_module.Task.created_at.desc())
+            .first()
+        )
+        assert followup is not None
+        assert followup.status == worker_module.TaskStatus.queued
+        assert followup.id in enqueued_ids
+
+
+def test_run_task_enqueues_followup_tasks_from_openclaw_collect(worker_module, monkeypatch) -> None:
+    import task_handlers.openclaw_jobs_collect_v1 as openclaw_jobs_collect_v1
+
+    task_id = str(uuid.uuid4())
+    with worker_module.SessionLocal() as db:
+        task = worker_module.Task(
+            id=task_id,
+            created_at=worker_module.now_utc(),
+            updated_at=worker_module.now_utc(),
+            status=worker_module.TaskStatus.queued,
+            task_type="openclaw_jobs_collect_v1",
+            payload_json='{"request":{"sources":["handshake"],"openclaw_enabled":true,"query":"ml engineer"}}',
+            model="gpt-4o-mini",
+            max_attempts=3,
+        )
+        db.add(task)
+        db.commit()
+
+    monkeypatch.setenv("OPENCLAW_COLLECTOR_COMMAND", "/bin/true")
+
+    def _fake_collect(source, request, *, url_override=None):
+        del request, url_override
+        return {
+            "status": "success",
+            "jobs": [
+                {
+                    "source": source,
+                    "source_url": "https://example.com/search",
+                    "title": "ML Engineer",
+                    "company": "Acme",
+                    "location": "Remote",
+                    "url": "https://example.com/jobs/1",
+                    "source_metadata": {},
+                }
+            ],
+            "warnings": [],
+            "errors": [],
+            "meta": {
+                "source_status": "success",
+                "requested_limit": 1,
+                "discovered_raw_count": 1,
+                "kept_after_basic_filter_count": 1,
+                "dropped_by_basic_filter_count": 0,
+                "deduped_count": 0,
+                "pages_attempted": 1,
+                "pages_fetched": 1,
+                "queries_executed_count": 1,
+                "empty_queries_count": 0,
+                "query_examples": ["ml engineer"],
+                "request_urls_tried": ["https://example.com/search"],
+                "screenshot_references": [],
+            },
+        }
+
+    monkeypatch.setattr(openclaw_jobs_collect_v1, "collect_openclaw_source_jobs", _fake_collect)
 
     enqueued_ids: list[str] = []
 

@@ -12,7 +12,10 @@ from notifications.discord import NotificationConfigError
 from notifications.router import send_notification
 from task_handlers.errors import NonRetryableTaskError
 
-DEFAULT_ALLOWLIST = "deals_scan_v1,unicorn_deals_poll_v1,unicorn_deals_rank_v1,jobs_digest_v2,ops_report_v1"
+DEFAULT_ALLOWLIST = (
+    "deals_scan_v1,unicorn_deals_poll_v1,unicorn_deals_rank_v1,"
+    "jobs_digest_v2,openclaw_apply_draft_v1,ops_report_v1"
+)
 DEFAULT_DEDUPE_TTL_SECONDS = 21600
 REQUIRED_ALLOWLIST_SOURCE_TASK_TYPES = {"ops_report_v1"}
 

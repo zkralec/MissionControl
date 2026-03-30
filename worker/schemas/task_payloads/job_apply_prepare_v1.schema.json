@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "job_apply_prepare_v1 payload",
+  "type": "object",
+  "required": ["pipeline_id", "upstream"],
+  "properties": {
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "upstream": {
+      "type": "object",
+      "required": ["task_id", "run_id", "task_type"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "task_type": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "request": {"type": "object", "additionalProperties": true},
+    "selection": {
+      "type": "object",
+      "properties": {
+        "job_id": {"type": "string"},
+        "shortlist_index": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "prepare_policy": {
+      "type": "object",
+      "properties": {
+        "include_cover_letter": {"type": "boolean"},
+        "enqueue_openclaw_apply": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "lineage": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

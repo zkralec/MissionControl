@@ -30,10 +30,14 @@ Responsibilities:
 | `unicorn_deals_poll_v1` | Poll deals sources and normalize events | Raw/normalized deals artifact |
 | `unicorn_deals_rank_v1` | Score and rank candidate deals | Ranked deals artifact |
 | `jobs_collect_v1` | Collect jobs from multiple boards/manual sources | Jobs collect artifact |
+| `openclaw_jobs_collect_v1` | Bounded browser-assisted collect stage for hard boards | Jobs collect artifact |
 | `jobs_normalize_v1` | Canonicalize and dedupe collected jobs | Jobs normalize artifact |
 | `jobs_rank_v1` | Deterministically score + LLM-rank jobs | Jobs rank artifact |
 | `jobs_shortlist_v1` | Apply shortlist policy and future-action seeds | Jobs shortlist artifact |
 | `jobs_digest_v2` | Build digest output and notify decision | Jobs digest artifact |
+| `job_apply_prepare_v1` | Extract shortlisted job requirements and prep application inputs | Job apply prep artifact |
+| `resume_tailor_v1` | Tailor resume/application drafts from stored profile | Resume tailoring artifact |
+| `openclaw_apply_draft_v1` | Fill application in browser and stop at review checkpoint | Draft review artifact |
 | `school_agenda_sync_v1` | Sync school agenda/calendar/events | Agenda sync artifact |
 | `essay_draft_v1` | Generate structured draft content | Essay draft artifact |
 | `notify_v1` | Shared notification dispatch task | Notification delivery artifact |

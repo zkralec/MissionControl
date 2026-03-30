@@ -49,9 +49,13 @@ from task_handlers.jobs_collect_v1 import execute as jobs_collect_execute
 from task_handlers.jobs_digest_v1 import execute as jobs_digest_execute
 from task_handlers.jobs_digest_v2 import execute as jobs_digest_v2_execute
 from task_handlers.jobs_normalize_v1 import execute as jobs_normalize_execute
+from task_handlers.job_apply_prepare_v1 import execute as job_apply_prepare_execute
 from task_handlers.jobs_rank_v1 import execute as jobs_rank_execute
 from task_handlers.jobs_shortlist_v1 import execute as jobs_shortlist_execute
 from task_handlers.notify_v1 import execute as notify_execute
+from task_handlers.openclaw_apply_draft_v1 import execute as openclaw_apply_draft_execute
+from task_handlers.openclaw_jobs_collect_v1 import execute as openclaw_jobs_collect_execute
+from task_handlers.resume_tailor_v1 import execute as resume_tailor_execute
 from task_handlers.slides_outline_v1 import execute as slides_outline_execute
 
 
@@ -88,10 +92,14 @@ queue = Queue("default", connection=redis_conn, default_timeout=RQ_JOB_TIMEOUT_S
 HANDLERS = {
     "jobs_digest_v1": jobs_digest_execute,
     "jobs_collect_v1": jobs_collect_execute,
+    "openclaw_jobs_collect_v1": openclaw_jobs_collect_execute,
     "jobs_normalize_v1": jobs_normalize_execute,
     "jobs_rank_v1": jobs_rank_execute,
     "jobs_shortlist_v1": jobs_shortlist_execute,
     "jobs_digest_v2": jobs_digest_v2_execute,
+    "job_apply_prepare_v1": job_apply_prepare_execute,
+    "resume_tailor_v1": resume_tailor_execute,
+    "openclaw_apply_draft_v1": openclaw_apply_draft_execute,
     "deals_scan_v1": deals_scan_execute,
     "slides_outline_v1": slides_outline_execute,
     "notify_v1": notify_execute,

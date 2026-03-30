@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "openclaw_jobs_collect_v1 payload",
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "pipeline_id": {"type": "string", "minLength": 1},
+    "lineage": {
+      "type": "object",
+      "properties": {
+        "root_task_id": {"type": "string"},
+        "root_task_type": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string"},
+        "search_query": {"type": "string"},
+        "location": {"type": "string"},
+        "search_location": {"type": "string"},
+        "titles": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "excluded_keywords": {"type": "array", "items": {"type": "string"}},
+        "locations": {"type": "array", "items": {"type": "string"}},
+        "sources": {
+          "type": "array",
+          "description": "Phase 1 OpenClaw sources are glassdoor and handshake.",
+          "items": {"type": "string", "enum": ["glassdoor", "handshake", "linkedin", "indeed"]}
+        },
+        "enabled_sources": {
+          "type": "array",
+          "description": "Phase 1 OpenClaw sources are glassdoor and handshake.",
+          "items": {"type": "string", "enum": ["glassdoor", "handshake", "linkedin", "indeed"]}
+        },
+        "result_limit_per_source": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 250},
+        "max_jobs_per_source": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 250},
+        "max_jobs_per_board": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 250},
+        "max_total_jobs": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 2000},
+        "minimum_raw_jobs_total": {"type": "integer", "minimum": 0, "maximum": 5000, "default": 0},
+        "minimum_unique_jobs_total": {"type": "integer", "minimum": 0, "maximum": 5000, "default": 0},
+        "minimum_jobs_per_source": {"type": "integer", "minimum": 0, "maximum": 1000, "default": 0},
+        "stop_when_minimum_reached": {"type": "boolean", "default": true},
+        "collection_time_cap_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "max_pages_per_source": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+        "max_queries_per_title_location_pair": {"type": "integer", "minimum": 1, "maximum": 10, "default": 4},
+        "max_queries_per_run": {"type": "integer", "minimum": 1, "maximum": 20, "default": 12},
+        "enable_query_expansion": {"type": "boolean", "default": true},
+        "early_stop_when_no_new_results": {"type": "boolean", "default": true},
+        "board_url_overrides": {"type": "object", "additionalProperties": {"type": "string"}},
+        "profile_mode": {"type": "string", "enum": ["resume_profile", "inline_resume", "none"]},
+        "resume_text": {"type": "string"},
+        "resume_name": {"type": "string"},
+        "desired_title": {"type": "string"},
+        "desired_title_keywords": {"type": "array", "items": {"type": "string"}},
+        "excluded_title_keywords": {"type": "array", "items": {"type": "string"}},
+        "desired_salary_min": {"type": ["number", "integer"]},
+        "desired_salary_max": {"type": ["number", "integer"]},
+        "experience_levels": {"type": "array", "items": {"type": "string"}},
+        "work_modes": {"type": "array", "items": {"type": "string"}},
+        "location_keywords": {"type": "array", "items": {"type": "string"}},
+        "jobs_notification_cooldown_days": {"type": "integer", "minimum": 0, "maximum": 30, "default": 3},
+        "jobs_shortlist_repeat_penalty": {"type": ["number", "integer"], "minimum": 0, "maximum": 20, "default": 4},
+        "resurface_seen_jobs": {"type": "boolean", "default": true},
+        "notify_channels": {"type": "array", "items": {"type": "string"}},
+        "rank_llm_enabled": {"type": "boolean"},
+        "digest_llm_enabled": {"type": "boolean"},
+        "openclaw_enabled": {"type": "boolean", "default": false},
+        "openclaw_capture_screenshots": {"type": "boolean", "default": true},
+        "openclaw_max_screenshots_per_source": {"type": "integer", "minimum": 0, "maximum": 20, "default": 6},
+        "openclaw_command_timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 900, "default": 180}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

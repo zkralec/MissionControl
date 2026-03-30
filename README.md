@@ -349,14 +349,26 @@ High-level flow:
 Jobs v2 is now a full pipeline:
 
 1. `jobs_collect_v1`
-2. `jobs_normalize_v1`
-3. `jobs_rank_v1`
-4. `jobs_shortlist_v1`
-5. `jobs_digest_v2`
-6. optional `notify_v1`
+2. optional `openclaw_jobs_collect_v1` for bounded Handshake/Glassdoor browser collection
+3. `jobs_normalize_v1`
+4. `jobs_rank_v1`
+5. `jobs_shortlist_v1`
+6. `jobs_digest_v2`
+7. optional `notify_v1`
+
+Application-prep phase 2 layers onto shortlisted jobs without replacing the pipeline:
+
+1. `job_apply_prepare_v1`
+2. `resume_tailor_v1`
+3. `openclaw_apply_draft_v1`
+4. optional `notify_v1`
 
 Important behavior:
 - collection is intentionally broad and can run multiple queries per source
+- OpenClaw is an optional bounded collect stage for `handshake` and `glassdoor`; it is off by default and requires `OPENCLAW_ENABLED=true` plus `OPENCLAW_COLLECTOR_COMMAND`
+- OpenClaw application handling is draft-only in phase 2; it requires `OPENCLAW_APPLY_DRAFT_ENABLED=true` plus `OPENCLAW_APPLY_DRAFT_COMMAND`
+- `openclaw_apply_draft_v1` stops before final submission, records review artifacts, and queues review notification only when a draft is ready
+- the planner and watcher presets do not auto-submit applications
 - dedupe happens within a run, not as permanent cross-run suppression
 - previously seen but non-winning jobs can resurface in later runs
 - recently notified jobs can be cooled down to reduce spam

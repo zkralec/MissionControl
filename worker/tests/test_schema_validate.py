@@ -49,3 +49,59 @@ def test_jobs_collect_v1_accepts_breadth_controls() -> None:
             }
         },
     )
+
+
+def test_openclaw_jobs_collect_v1_accepts_feature_gate_controls() -> None:
+    validate_payload(
+        "openclaw_jobs_collect_v1",
+        {
+            "request": {
+                "query": "machine learning engineer",
+                "locations": ["Remote"],
+                "sources": ["handshake", "glassdoor"],
+                "result_limit_per_source": 80,
+                "minimum_raw_jobs_total": 40,
+                "minimum_unique_jobs_total": 20,
+                "openclaw_enabled": True,
+                "openclaw_capture_screenshots": True,
+                "openclaw_max_screenshots_per_source": 4,
+                "openclaw_command_timeout_seconds": 120,
+            }
+        },
+    )
+
+
+def test_job_apply_prepare_resume_tailor_and_openclaw_apply_payloads_validate() -> None:
+    validate_payload(
+        "job_apply_prepare_v1",
+        {
+            "pipeline_id": "pipe-apply-1",
+            "upstream": {"task_id": "task-shortlist", "run_id": "run-shortlist", "task_type": "jobs_shortlist_v1"},
+            "request": {"notify_channels": ["discord"]},
+            "selection": {"job_id": "job-123"},
+            "prepare_policy": {"include_cover_letter": True, "enqueue_openclaw_apply": True},
+        },
+    )
+    validate_payload(
+        "resume_tailor_v1",
+        {
+            "pipeline_id": "pipe-apply-1",
+            "upstream": {"task_id": "task-prepare", "run_id": "run-prepare", "task_type": "job_apply_prepare_v1"},
+            "request": {"notify_channels": ["discord"]},
+            "tailor_policy": {"include_cover_letter": True, "enqueue_openclaw_apply": True},
+        },
+    )
+    validate_payload(
+        "openclaw_apply_draft_v1",
+        {
+            "pipeline_id": "pipe-apply-1",
+            "upstream": {"task_id": "task-tailor", "run_id": "run-tailor", "task_type": "resume_tailor_v1"},
+            "request": {
+                "openclaw_apply_enabled": True,
+                "openclaw_apply_capture_screenshots": True,
+                "openclaw_apply_max_screenshots": 6,
+                "openclaw_apply_timeout_seconds": 300,
+                "notify_channels": ["discord"],
+            },
+        },
+    )

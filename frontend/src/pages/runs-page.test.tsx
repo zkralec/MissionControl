@@ -303,4 +303,71 @@ describe("RunsPage", () => {
     expect(screen.getAllByRole("link", { name: /Inspect Digest Artifact/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/precision match/i).length).toBeGreaterThan(0);
   });
+
+  it("shows application draft review preview in Runs for openclaw draft tasks", () => {
+    tasksFixture = [
+      {
+        id: "task-apply-draft-1",
+        created_at: "2026-03-14T00:00:00Z",
+        task_type: "openclaw_apply_draft_v1",
+        status: "success",
+        model: "gpt-5-mini",
+        cost_usd: 0.02,
+        updated_at: "2026-03-14T00:05:00Z",
+        payload_json: "{\"pipeline_id\":\"pipe-apply-1\"}",
+        max_attempts: 3
+      }
+    ];
+    runsFixture = [{ id: "run-apply-draft-1", task_id: "task-apply-draft-1", attempt: 1, status: "success", created_at: "2026-03-14T00:00:00Z" }];
+    taskFixture = tasksFixture[0];
+    taskRunsFixture = [{ id: "run-apply-draft-1", task_id: "task-apply-draft-1", created_at: "2026-03-14T00:00:00Z", attempt: 1, status: "success", wall_time_ms: 1800, cost_usd: 0.02 }];
+    taskResultFixture = {
+      task_id: "task-apply-draft-1",
+      artifact_type: "result.json",
+      created_at: "2026-03-14T00:05:00Z",
+      content_json: {
+        artifact_type: "openclaw.apply.draft.v1",
+        application_target_metadata: {
+          title: "Senior ML Engineer",
+          company: "Acme AI",
+          source: "linkedin",
+          application_url: "https://linkedin.example/jobs/view/1"
+        },
+        draft_status: "awaiting_review",
+        review_status: "awaiting_review",
+        awaiting_review: true,
+        submitted: false,
+        account_created_flag: true,
+        failure_category: null,
+        fields_filled_manifest: [
+          { field_name: "first_name", status: "filled", value_redacted: true },
+          { field_name: "resume_upload", status: "uploaded", value_redacted: true }
+        ],
+        screenshot_metadata_references: [
+          { label: "application-form", path: "/tmp/app-form.png" }
+        ],
+        resume_variant_used: {
+          resume_variant_name: "Tailored Resume - Acme AI"
+        },
+        notify_decision: {
+          should_notify: true,
+          reason: "draft_ready_for_review"
+        }
+      }
+    };
+
+    render(
+      <MemoryRouter>
+        <RunsPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByText("openclaw_apply_draft_v1"));
+    expect(screen.getAllByText("Review Status").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Submission not attempted").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Senior ML Engineer").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Tailored Resume - Acme AI").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Fields Filled").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Screenshots").length).toBeGreaterThan(0);
+  });
 });

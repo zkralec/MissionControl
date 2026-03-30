@@ -785,6 +785,145 @@ function JobsPreviewBody({
   );
 }
 
+function ApplicationReviewPreview({
+  taskType,
+  resultPayload,
+}: {
+  taskType: string;
+  resultPayload: unknown;
+}): JSX.Element | null {
+  if (!isRecord(resultPayload)) return null;
+
+  if (taskType === "job_apply_prepare_v1") {
+    const target = isRecord(resultPayload.application_target) ? resultPayload.application_target : {};
+    const candidateProfile = isRecord(resultPayload.candidate_profile) ? resultPayload.candidate_profile : {};
+    const requirements = toRecordArray(resultPayload.extracted_requirements);
+    const questions = toRecordArray(resultPayload.common_questions);
+    return (
+      <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Job</div>
+            <div className="mt-1 text-sm font-semibold">{asText(target.title) || "-"}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Company</div>
+            <div className="mt-1 text-sm font-semibold">{asText(target.company) || "-"}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Requirements</div>
+            <div className="mt-1 text-sm font-semibold">{requirements.length}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Draft Questions</div>
+            <div className="mt-1 text-sm font-semibold">{questions.length}</div>
+          </div>
+        </div>
+        <div className="rounded border border-border bg-muted/20 p-3 text-xs">
+          <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Resume Base</div>
+          <div className="mt-1">
+            {(asText(candidateProfile.resume_name) || "stored resume profile")}
+            {asText(candidateProfile.resume_source) ? ` · ${asText(candidateProfile.resume_source)}` : ""}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (taskType === "resume_tailor_v1") {
+    const resumeVariant = isRecord(resultPayload.resume_variant_artifact) ? resultPayload.resume_variant_artifact : {};
+    const answers = isRecord(resultPayload.application_answers_artifact) ? resultPayload.application_answers_artifact : {};
+    const coverLetter = isRecord(resultPayload.cover_letter_artifact) ? resultPayload.cover_letter_artifact : {};
+    const modelUsage = isRecord(resultPayload.model_usage) ? resultPayload.model_usage : {};
+    const answerItems = toRecordArray(answers.items);
+    return (
+      <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Generation Mode</div>
+            <div className="mt-1 text-sm font-semibold">{asText(resultPayload.generation_mode) || "-"}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Resume Variant</div>
+            <div className="mt-1 text-sm font-semibold">{asText(resumeVariant.resume_variant_name) || "-"}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Draft Answers</div>
+            <div className="mt-1 text-sm font-semibold">{answerItems.length}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Cover Letter</div>
+            <div className="mt-1 text-sm font-semibold">{asBoolean(coverLetter.enabled) ? "included" : "not included"}</div>
+          </div>
+        </div>
+        <div className="rounded border border-border bg-muted/20 p-3 text-xs">
+          <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">LLM / Fallback</div>
+          <div className="mt-1">
+            {`runtime ${asText(modelUsage.runtime_enabled) || "false"} · fallback ${asText(modelUsage.fallback_used) || "false"}`}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (taskType === "openclaw_apply_draft_v1") {
+    const target = isRecord(resultPayload.application_target_metadata) ? resultPayload.application_target_metadata : {};
+    const resumeVariant = isRecord(resultPayload.resume_variant_used) ? resultPayload.resume_variant_used : {};
+    const fieldsFilled = toRecordArray(resultPayload.fields_filled_manifest);
+    const screenshots = toRecordArray(resultPayload.screenshot_metadata_references);
+    const notifyDecision = isRecord(resultPayload.notify_decision) ? resultPayload.notify_decision : {};
+    const reviewStatus = asText(resultPayload.review_status) || asText(resultPayload.draft_status) || "-";
+    const submitted = asBoolean(resultPayload.submitted);
+    return (
+      <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Review Status</div>
+            <div className="mt-1 text-sm font-semibold"><StatusBadge status={reviewStatus} /></div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Awaiting Review</div>
+            <div className="mt-1 text-sm font-semibold">{asBoolean(resultPayload.awaiting_review) ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Fields Filled</div>
+            <div className="mt-1 text-sm font-semibold">{fieldsFilled.length}</div>
+          </div>
+          <div className="rounded border border-border bg-card p-2 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Screenshots</div>
+            <div className="mt-1 text-sm font-semibold">{screenshots.length}</div>
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="rounded border border-border bg-muted/20 p-3 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Application Target</div>
+            <div className="mt-1">{asText(target.title) || "Unknown role"}</div>
+            <div className="mt-1">{asText(target.company) || "Unknown company"}</div>
+            <div className="mt-1 text-muted-foreground">
+              {(asText(target.source) || "unknown source")}
+              {asText(target.application_url) || asText(target.source_url) ? ` · ${asText(target.application_url) || asText(target.source_url)}` : ""}
+            </div>
+          </div>
+          <div className="rounded border border-border bg-muted/20 p-3 text-xs">
+            <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Review State</div>
+            <div className="mt-1">{submitted ? "Submission attempted" : "Submission not attempted"}</div>
+            <div className="mt-1">{asBoolean(resultPayload.account_created_flag) ? "Account created during draft" : "No account created during draft"}</div>
+            <div className="mt-1 text-muted-foreground">
+              {asText(resultPayload.blocking_reason) || asText(resultPayload.failure_category) || asText(notifyDecision.reason) || "-"}
+            </div>
+          </div>
+        </div>
+        <div className="rounded border border-border bg-card p-3 text-xs">
+          <div className="font-medium uppercase tracking-[0.06em] text-muted-foreground">Resume Variant Used</div>
+          <div className="mt-1">{asText(resumeVariant.resume_variant_name) || "-"}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function ResultPreview({
   taskType,
   resultPayload,
@@ -806,6 +945,10 @@ function ResultPreview({
   }
   if (taskType.startsWith("jobs_")) {
     return <JobsPreviewBody taskType={taskType} resultPayload={resultPayload} taskId={taskId} />;
+  }
+  if (taskType === "job_apply_prepare_v1" || taskType === "resume_tailor_v1" || taskType === "openclaw_apply_draft_v1") {
+    const preview = ApplicationReviewPreview({ taskType, resultPayload });
+    if (preview) return preview;
   }
 
   return <PreviewFallback payload={resultPayload} />;
