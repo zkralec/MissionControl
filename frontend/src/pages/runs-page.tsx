@@ -12,6 +12,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  useApplicationDraftSummaries,
+  useCreateApplicationDraftMutation,
+  useReviewApplicationDraftMutation
+} from "@/features/applications/queries";
 import { useRuns, useTask, useTaskResult, useTaskRuns, useTasks } from "@/features/tasks/queries";
 import type { RunOut, TaskOut, TaskResultOut } from "@/lib/api/generated/openapi";
 import { errorMessage } from "@/lib/utils/errors";
@@ -361,6 +366,99 @@ function jobsPreviewRows(resultPayload: unknown): Array<Record<string, unknown>>
   ]);
 }
 
+type ApplicationDraftStatusRow = {
+  job_id?: string | null;
+  title?: string | null;
+  company?: string | null;
+  job_url?: string | null;
+  idempotency_key?: string | null;
+  state: string;
+  state_label: string;
+  review_status?: string | null;
+  awaiting_review: boolean;
+  can_create: boolean;
+  can_review: boolean;
+  prepare_task_id?: string | null;
+  resume_task_id?: string | null;
+  draft_task_id?: string | null;
+  pipeline_id?: string | null;
+  current_task_type?: string | null;
+  current_task_status?: string | null;
+  submitted: boolean;
+};
+
+function draftStatusBadge(status: ApplicationDraftStatusRow | null | undefined): JSX.Element | null {
+  if (!status) return null;
+  const label = status.state_label || "No draft";
+  if (status.state === "not_started") {
+    return <span className="text-muted-foreground">{label}</span>;
+  }
+  return <StatusBadge status={label} />;
+}
+
+function shortlistJobKey(row: Record<string, unknown>, index: number): string {
+  return asText(row.job_id) || asText(row.normalized_job_id) || asText(row.url) || asText(row.source_url) || `shortlist-${index}`;
+}
+
+function ShortlistDraftActions({
+  shortlistTaskId,
+  shortlistRunId,
+  row,
+  status,
+  createDraft,
+  reviewDraft,
+  busy,
+}: {
+  shortlistTaskId: string;
+  shortlistRunId: string | null;
+  row: Record<string, unknown>;
+  status: ApplicationDraftStatusRow | null;
+  createDraft: (input: { shortlist_task_id: string; shortlist_run_id: string; selected_job: Record<string, unknown> }) => void;
+  reviewDraft: (taskId: string, action: "approve" | "reject" | "mark_reviewed") => void;
+  busy: boolean;
+}): JSX.Element {
+  const canCreate = Boolean(shortlistRunId) && (status?.can_create ?? true);
+  const draftTaskId = status?.draft_task_id || null;
+  const showReviewControls = Boolean(draftTaskId) && Boolean(status?.can_review) && !status?.submitted;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      <Button
+        size="sm"
+        disabled={!canCreate || busy || !shortlistRunId}
+        onClick={() => {
+          if (!shortlistRunId) return;
+          createDraft({
+            shortlist_task_id: shortlistTaskId,
+            shortlist_run_id: shortlistRunId,
+            selected_job: row,
+          });
+        }}
+      >
+        Create Draft Application
+      </Button>
+      {showReviewControls && draftTaskId ? (
+        <>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => reviewDraft(draftTaskId, "approve")}>
+            Approve
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => reviewDraft(draftTaskId, "reject")}>
+            Reject
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => reviewDraft(draftTaskId, "mark_reviewed")}>
+            Mark as reviewed
+          </Button>
+        </>
+      ) : null}
+      {draftTaskId ? (
+        <Button asChild size="sm" variant="outline">
+          <Link to={buildRunsTaskLink(draftTaskId)}>Open Draft Run</Link>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function textArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((row) => asText(row)?.trim() || "").filter(Boolean);
@@ -379,11 +477,21 @@ function displaySourceName(source: string, value: Record<string, unknown>): stri
 function JobsStagePreview({
   taskType,
   resultPayload,
-  taskId
+  taskId,
+  shortlistRunId,
+  draftStatuses,
+  createDraft,
+  reviewDraft,
+  draftMutationBusy,
 }: {
   taskType: string;
   resultPayload: unknown;
   taskId?: string | null;
+  shortlistRunId?: string | null;
+  draftStatuses?: Record<string, ApplicationDraftStatusRow>;
+  createDraft?: (input: { shortlist_task_id: string; shortlist_run_id: string; selected_job: Record<string, unknown> }) => void;
+  reviewDraft?: (taskId: string, action: "approve" | "reject" | "mark_reviewed") => void;
+  draftMutationBusy?: boolean;
 }): JSX.Element | null {
   const jobsSearchMode = (() => {
     const artifact = isRecord(resultPayload) ? resultPayload : {};
@@ -643,17 +751,38 @@ function JobsStagePreview({
         {shortlist.length > 0 ? (
           <div className="space-y-2 rounded border border-border bg-card p-3">
             {shortlist.slice(0, 5).map((row, idx) => (
-              <div key={`${asText(row.title) || "job"}-${idx}`} className="rounded border border-border/80 bg-muted/20 px-2 py-2 text-xs">
-                <div className="font-medium">{asText(row.title) || `Job #${idx + 1}`}</div>
-                <div className="mt-1 text-muted-foreground">
-                  {(asText(row.company) || "unknown")} · {asText(row.source) || "unknown source"}
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  {row.newly_discovered === true ? "new" : row.resurfaced_from_prior_runs === true ? "resurfaced" : "prior run state unknown"}
-                  {row.previously_shortlisted === true ? " · previously shortlisted" : ""}
-                  {row.previously_notified === true ? " · previously notified" : ""}
-                </div>
-              </div>
+              (() => {
+                const key = shortlistJobKey(row, idx);
+                const status = draftStatuses?.[key] || null;
+                return (
+                  <div key={`${asText(row.title) || "job"}-${idx}`} className="rounded border border-border/80 bg-muted/20 px-2 py-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium">{asText(row.title) || `Job #${idx + 1}`}</div>
+                      {draftStatusBadge(status)}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {(asText(row.company) || "unknown")} · {asText(row.source) || "unknown source"}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {row.newly_discovered === true ? "new" : row.resurfaced_from_prior_runs === true ? "resurfaced" : "prior run state unknown"}
+                      {row.previously_shortlisted === true ? " · previously shortlisted" : ""}
+                      {row.previously_notified === true ? " · previously notified" : ""}
+                      {status?.current_task_type ? ` · stage ${status.current_task_type}` : ""}
+                    </div>
+                    {taskId && shortlistRunId && createDraft && reviewDraft ? (
+                      <ShortlistDraftActions
+                        shortlistTaskId={taskId}
+                        shortlistRunId={shortlistRunId}
+                        row={row}
+                        status={status}
+                        createDraft={createDraft}
+                        reviewDraft={reviewDraft}
+                        busy={Boolean(draftMutationBusy)}
+                      />
+                    ) : null}
+                  </div>
+                );
+              })()
             ))}
           </div>
         ) : null}
@@ -737,14 +866,24 @@ function JobsStagePreview({
 function JobsPreviewBody({
   taskType,
   resultPayload,
-  taskId
+  taskId,
+  shortlistRunId,
+  draftStatuses,
+  createDraft,
+  reviewDraft,
+  draftMutationBusy,
 }: {
   taskType: string | undefined;
   resultPayload: unknown;
   taskId?: string | null;
+  shortlistRunId?: string | null;
+  draftStatuses?: Record<string, ApplicationDraftStatusRow>;
+  createDraft?: (input: { shortlist_task_id: string; shortlist_run_id: string; selected_job: Record<string, unknown> }) => void;
+  reviewDraft?: (taskId: string, action: "approve" | "reject" | "mark_reviewed") => void;
+  draftMutationBusy?: boolean;
 }): JSX.Element {
   if (taskType === "jobs_collect_v1" || taskType === "jobs_normalize_v1" || taskType === "jobs_rank_v1" || taskType === "jobs_shortlist_v1" || taskType === "jobs_digest_v2") {
-    const stagePreview = JobsStagePreview({ taskType, resultPayload, taskId });
+    const stagePreview = JobsStagePreview({ taskType, resultPayload, taskId, shortlistRunId, draftStatuses, createDraft, reviewDraft, draftMutationBusy });
     if (stagePreview) return stagePreview;
   }
 
@@ -928,12 +1067,22 @@ function ResultPreview({
   taskType,
   resultPayload,
   taskPayload,
-  taskId
+  taskId,
+  shortlistRunId,
+  draftStatuses,
+  createDraft,
+  reviewDraft,
+  draftMutationBusy,
 }: {
   taskType: string | undefined;
   resultPayload: unknown;
   taskPayload: unknown | null;
   taskId?: string | null;
+  shortlistRunId?: string | null;
+  draftStatuses?: Record<string, ApplicationDraftStatusRow>;
+  createDraft?: (input: { shortlist_task_id: string; shortlist_run_id: string; selected_job: Record<string, unknown> }) => void;
+  reviewDraft?: (taskId: string, action: "approve" | "reject" | "mark_reviewed") => void;
+  draftMutationBusy?: boolean;
 }): JSX.Element {
   if (!taskType) return <PreviewFallback payload={resultPayload} />;
 
@@ -944,7 +1093,18 @@ function ResultPreview({
     return <DealsPreview resultPayload={resultPayload} />;
   }
   if (taskType.startsWith("jobs_")) {
-    return <JobsPreviewBody taskType={taskType} resultPayload={resultPayload} taskId={taskId} />;
+    return (
+      <JobsPreviewBody
+        taskType={taskType}
+        resultPayload={resultPayload}
+        taskId={taskId}
+        shortlistRunId={shortlistRunId}
+        draftStatuses={draftStatuses}
+        createDraft={createDraft}
+        reviewDraft={reviewDraft}
+        draftMutationBusy={draftMutationBusy}
+      />
+    );
   }
   if (taskType === "job_apply_prepare_v1" || taskType === "resume_tailor_v1" || taskType === "openclaw_apply_draft_v1") {
     const preview = ApplicationReviewPreview({ taskType, resultPayload });
@@ -988,6 +1148,8 @@ export function RunsPage(): JSX.Element {
   const selectedTaskQuery = useTask(selectedTaskId);
   const taskRunsQuery = useTaskRuns(selectedTaskId, 40);
   const taskResultQuery = useTaskResult(selectedTaskId);
+  const createDraftMutation = useCreateApplicationDraftMutation();
+  const reviewDraftMutation = useReviewApplicationDraftMutation();
 
   const filteredTasks = useMemo(() => {
     return (tasksQuery.data || []).filter((task) => {
@@ -1010,8 +1172,28 @@ export function RunsPage(): JSX.Element {
   const selectedResult = taskResultQuery.data || null;
   const selectedResultPayload = resolveResultPayload(selectedResult);
   const selectedTaskPayload = parseTaskPayload(selectedTask);
+  const latestSelectedRunId = selectedRuns[0]?.id || null;
+  const shortlistDraftJobs = useMemo(() => {
+    if (selectedTask?.task_type !== "jobs_shortlist_v1") return [];
+    return jobsPreviewRows(selectedResultPayload).slice(0, 5).map((row) => ({
+      job_id: asText(row.job_id) || asText(row.normalized_job_id),
+      title: asText(row.title),
+      company: asText(row.company),
+      source_url: asText(row.source_url),
+      url: asText(row.url),
+    }));
+  }, [selectedResultPayload, selectedTask?.task_type]);
+  const draftSummariesQuery = useApplicationDraftSummaries(shortlistDraftJobs, selectedTask?.task_type === "jobs_shortlist_v1");
   const selectedAttemptCount = selectedRuns.length;
   const selectedFailureMode = selectedTask ? taskFailureMode(selectedTask, selectedAttemptCount) : null;
+  const draftStatusesByKey = useMemo(() => {
+    const map: Record<string, ApplicationDraftStatusRow> = {};
+    for (const row of draftSummariesQuery.data || []) {
+      const key = row.job_id || row.job_url || row.idempotency_key || "";
+      if (key) map[key] = row;
+    }
+    return map;
+  }, [draftSummariesQuery.data]);
 
   const artifactRows = useMemo(() => {
     return [
@@ -1047,6 +1229,30 @@ export function RunsPage(): JSX.Element {
     if (selectedTaskId) {
       void Promise.all([selectedTaskQuery.refetch(), taskRunsQuery.refetch(), taskResultQuery.refetch()]);
     }
+  };
+
+  const handleCreateDraft = (input: { shortlist_task_id: string; shortlist_run_id: string; selected_job: Record<string, unknown> }): void => {
+    createDraftMutation.mutate(input, {
+      onSuccess: () => {
+        void tasksQuery.refetch();
+        void runsQuery.refetch();
+        void draftSummariesQuery.refetch();
+      }
+    });
+  };
+
+  const handleReviewDraft = (taskId: string, action: "approve" | "reject" | "mark_reviewed"): void => {
+    reviewDraftMutation.mutate(
+      { taskId, input: { action } },
+      {
+        onSuccess: () => {
+          void taskResultQuery.refetch();
+          void draftSummariesQuery.refetch();
+          void tasksQuery.refetch();
+          void runsQuery.refetch();
+        }
+      }
+    );
   };
 
   return (
@@ -1290,7 +1496,17 @@ export function RunsPage(): JSX.Element {
 
               <section>
                 <SectionHeader title="Result Preview" subtitle="Task-type-aware preview for operator scanability. Raw payload remains available below." />
-                <ResultPreview taskType={selectedTask?.task_type} resultPayload={selectedResultPayload} taskPayload={selectedTaskPayload} taskId={selectedTask?.id || null} />
+                <ResultPreview
+                  taskType={selectedTask?.task_type}
+                  resultPayload={selectedResultPayload}
+                  taskPayload={selectedTaskPayload}
+                  taskId={selectedTask?.id || null}
+                  shortlistRunId={latestSelectedRunId}
+                  draftStatuses={draftStatusesByKey}
+                  createDraft={handleCreateDraft}
+                  reviewDraft={handleReviewDraft}
+                  draftMutationBusy={createDraftMutation.isPending || reviewDraftMutation.isPending}
+                />
               </section>
 
               <section>

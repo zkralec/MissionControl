@@ -2,6 +2,7 @@
 Tests for FastAPI main.py endpoints.
 Tests cover model validation, budget enforcement, and request handling.
 """
+import json
 import sys
 import uuid
 from datetime import timedelta
@@ -411,3 +412,109 @@ class TestIdempotencyAndHealth:
         response = client.get("/ready")
         assert response.status_code == 200
         assert response.json()["status"] == "ready"
+
+
+class TestApplicationDraftEndpoints:
+    def test_create_application_draft_uses_job_url_company_idempotency(self):
+        shortlist_task_id = str(uuid.uuid4())
+        shortlist_run_id = str(uuid.uuid4())
+
+        with SessionLocal() as db:
+            task = Task(
+                id=shortlist_task_id,
+                created_at=now_utc(),
+                updated_at=now_utc(),
+                status=TaskStatus.success,
+                task_type="jobs_shortlist_v1",
+                payload_json='{"pipeline_id":"jobs-pipe-1"}',
+                model="gpt-5-mini",
+                max_attempts=3,
+            )
+            run = Run(
+                id=shortlist_run_id,
+                task_id=shortlist_task_id,
+                attempt=1,
+                status=RunStatus.success,
+                started_at=now_utc(),
+                ended_at=now_utc(),
+                created_at=now_utc(),
+            )
+            db.add(task)
+            db.add(run)
+            db.commit()
+
+        payload = {
+            "shortlist_task_id": shortlist_task_id,
+            "shortlist_run_id": shortlist_run_id,
+            "selected_job": {
+                "job_id": "job-123",
+                "title": "Applied AI Engineer",
+                "company": f"Acme AI {shortlist_task_id[:8]}",
+                "source_url": f"https://example.com/jobs/{shortlist_task_id}",
+            },
+        }
+
+        first = client.post("/applications/drafts", json=payload)
+        second = client.post("/applications/drafts", json=payload)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_task = first.json()
+        second_task = second.json()
+        assert first_task["id"] == second_task["id"]
+        assert first_task["task_type"] == "job_apply_prepare_v1"
+        assert first_task["idempotency_key"].startswith("jobapply:")
+
+        payload_json = json.loads(first_task["payload_json"])
+        assert payload_json["selected_job"]["company"] == payload["selected_job"]["company"]
+        assert payload_json["upstream"]["task_id"] == shortlist_task_id
+        assert payload_json["upstream"]["run_id"] == shortlist_run_id
+
+    def test_review_application_draft_persists_review_status(self):
+        draft_task_id = str(uuid.uuid4())
+        draft_run_id = str(uuid.uuid4())
+        with SessionLocal() as db:
+            task = Task(
+                id=draft_task_id,
+                created_at=now_utc(),
+                updated_at=now_utc(),
+                status=TaskStatus.success,
+                task_type="openclaw_apply_draft_v1",
+                payload_json='{"pipeline_id":"jobapply-ui-1"}',
+                model="gpt-5-mini",
+                max_attempts=3,
+            )
+            run = Run(
+                id=draft_run_id,
+                task_id=draft_task_id,
+                attempt=1,
+                status=RunStatus.success,
+                started_at=now_utc(),
+                ended_at=now_utc(),
+                created_at=now_utc(),
+            )
+            db.add(task)
+            db.add(run)
+            db.commit()
+            artifact = Artifact(
+                id=str(uuid.uuid4()),
+                task_id=draft_task_id,
+                run_id=draft_run_id,
+                artifact_type="result.json",
+                content_json={
+                    "artifact_type": "openclaw.apply.draft.v1",
+                    "review_status": "awaiting_review",
+                    "awaiting_review": True,
+                    "submitted": False,
+                },
+                created_at=now_utc(),
+            )
+            db.add(artifact)
+            db.commit()
+
+        response = client.post(f"/applications/drafts/{draft_task_id}/review", json={"action": "mark_reviewed"})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["content_json"]["review_status"] == "reviewed"
+        assert payload["content_json"]["awaiting_review"] is False
+        assert payload["content_json"]["review_metadata"]["action"] == "mark_reviewed"

@@ -8,6 +8,28 @@ let runsFixture: Array<Record<string, unknown>> = [];
 let taskFixture: Record<string, unknown> | null = null;
 let taskRunsFixture: Array<Record<string, unknown>> = [];
 let taskResultFixture: Record<string, unknown> | null = null;
+let draftSummariesFixture: Array<Record<string, unknown>> = [];
+const mutateCreateDraft = vi.fn();
+const mutateReviewDraft = vi.fn();
+
+vi.mock("@/features/applications/queries", () => ({
+  useApplicationDraftSummaries: () => ({
+    data: draftSummariesFixture,
+    isLoading: false,
+    error: null,
+    refetch: vi.fn()
+  }),
+  useCreateApplicationDraftMutation: () => ({
+    mutate: mutateCreateDraft,
+    isPending: false,
+    error: null
+  }),
+  useReviewApplicationDraftMutation: () => ({
+    mutate: mutateReviewDraft,
+    isPending: false,
+    error: null
+  })
+}));
 
 vi.mock("@/features/tasks/queries", () => ({
   useTasks: () => ({
@@ -43,6 +65,7 @@ vi.mock("@/features/tasks/queries", () => ({
 
 describe("RunsPage", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     tasksFixture = [
       {
         id: "task-1",
@@ -73,6 +96,7 @@ describe("RunsPage", () => {
       created_at: "2026-03-11T00:00:00Z",
       content_json: { summary: "result", jobs: [{ title: "SE", company: "ACME" }] }
     };
+    draftSummariesFixture = [];
   });
 
   it("opens detail surface after selecting a run row", () => {
@@ -223,20 +247,47 @@ describe("RunsPage", () => {
         },
         shortlist: [
           {
+            job_id: "job-1",
             title: "Backend Engineer",
             company: "Acme",
             source: "linkedin",
+            source_url: "https://example.com/acme-job",
             newly_discovered: true
           },
           {
+            job_id: "job-2",
             title: "Software Engineer II",
             company: "Orbit",
             source: "indeed",
+            source_url: "https://example.com/orbit-job",
             resurfaced_from_prior_runs: true
           }
         ]
       }
     };
+    draftSummariesFixture = [
+      {
+        job_id: "job-1",
+        state: "draft_in_progress",
+        state_label: "Draft in progress",
+        can_create: false,
+        can_review: false,
+        current_task_type: "resume_tailor_v1",
+        current_task_status: "running",
+        submitted: false
+      },
+      {
+        title: "Software Engineer II",
+        company: "Orbit",
+        job_url: "https://example.com/orbit-job",
+        state: "awaiting_review",
+        state_label: "Awaiting review",
+        can_create: false,
+        can_review: true,
+        draft_task_id: "task-draft-orbit",
+        submitted: false
+      }
+    ];
 
     render(
       <MemoryRouter initialEntries={["/runs?task_id=task-shortlist-1"]}>
@@ -248,6 +299,8 @@ describe("RunsPage", () => {
     expect(screen.getAllByText(/cooldown suppressed 3/i).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: /Inspect Digest Artifact/i }).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/resurfaced/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/stage resume_tailor_v1/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Create Draft Application" }).length).toBeGreaterThan(0);
   });
 
   it("shows digest preview notify decision and top job links", () => {
@@ -369,5 +422,89 @@ describe("RunsPage", () => {
     expect(screen.getAllByText("Tailored Resume - Acme AI").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Fields Filled").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Screenshots").length).toBeGreaterThan(0);
+  });
+
+  it("creates and reviews draft applications from shortlist jobs", () => {
+    tasksFixture = [
+      {
+        id: "task-shortlist-2",
+        created_at: "2026-03-15T00:00:00Z",
+        task_type: "jobs_shortlist_v1",
+        status: "success",
+        model: "gpt-5-mini",
+        cost_usd: 0.03,
+        updated_at: "2026-03-15T00:05:00Z",
+        payload_json: "{\"q\":\"jobs\"}",
+        max_attempts: 3
+      }
+    ];
+    runsFixture = [{ id: "run-shortlist-2", task_id: "task-shortlist-2", attempt: 1, status: "success", created_at: "2026-03-15T00:00:00Z" }];
+    taskFixture = tasksFixture[0];
+    taskRunsFixture = [{ id: "run-shortlist-2", task_id: "task-shortlist-2", created_at: "2026-03-15T00:00:00Z", attempt: 1, status: "success", wall_time_ms: 900, cost_usd: 0.03 }];
+    taskResultFixture = {
+      task_id: "task-shortlist-2",
+      artifact_type: "result.json",
+      created_at: "2026-03-15T00:05:00Z",
+      content_json: {
+        shortlist: [
+          {
+            job_id: "job-create-1",
+            title: "Applied AI Engineer",
+            company: "Acme",
+            source: "linkedin",
+            source_url: "https://example.com/jobs/1"
+          },
+          {
+            job_id: "job-review-2",
+            title: "Platform Engineer",
+            company: "Orbit",
+            source: "indeed",
+            source_url: "https://example.com/jobs/2"
+          }
+        ]
+      }
+    };
+    draftSummariesFixture = [
+      {
+        job_id: "job-create-1",
+        state: "not_started",
+        state_label: "No draft",
+        can_create: true,
+        can_review: false,
+        submitted: false
+      },
+      {
+        job_id: "job-review-2",
+        state: "awaiting_review",
+        state_label: "Awaiting review",
+        can_create: false,
+        can_review: true,
+        draft_task_id: "task-draft-review-2",
+        submitted: false
+      }
+    ];
+
+    render(
+      <MemoryRouter>
+        <RunsPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByText("jobs_shortlist_v1"));
+    fireEvent.click(screen.getAllByRole("button", { name: "Create Draft Application" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Mark as reviewed" })[0]);
+
+    expect(mutateCreateDraft).toHaveBeenCalled();
+    expect(mutateCreateDraft.mock.calls[0]?.[0]).toMatchObject({
+      shortlist_task_id: "task-shortlist-2",
+      shortlist_run_id: "run-shortlist-2"
+    });
+    expect(mutateReviewDraft).toHaveBeenCalledWith(
+      {
+        taskId: "task-draft-review-2",
+        input: { action: "mark_reviewed" }
+      },
+      expect.any(Object)
+    );
   });
 });

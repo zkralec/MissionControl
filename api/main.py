@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 import io
+import hashlib
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
@@ -774,6 +775,62 @@ class TaskResultOut(BaseModel):
     created_at: datetime
 
 
+class ApplicationDraftCreateIn(BaseModel):
+    shortlist_task_id: str = Field(..., min_length=1)
+    shortlist_run_id: str = Field(..., min_length=1)
+    selected_job: dict[str, Any]
+    request: Optional[dict[str, Any]] = None
+    prepare_policy: Optional[dict[str, Any]] = None
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+
+class ApplicationDraftReviewIn(BaseModel):
+    action: str = Field(..., min_length=1)
+    reviewer: Optional[str] = Field(default=None, max_length=120)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+
+    @field_validator("action")
+    @classmethod
+    def _validate_action(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"approve", "reject", "mark_reviewed"}:
+            raise ValueError("action must be one of approve, reject, mark_reviewed")
+        return normalized
+
+
+class ApplicationDraftSummaryJobIn(BaseModel):
+    job_id: Optional[str] = None
+    title: Optional[str] = None
+    company: Optional[str] = None
+    source_url: Optional[str] = None
+    url: Optional[str] = None
+
+
+class ApplicationDraftSummaryIn(BaseModel):
+    jobs: list[ApplicationDraftSummaryJobIn] = Field(default_factory=list)
+
+
+class ApplicationDraftSummaryOut(BaseModel):
+    job_id: Optional[str] = None
+    title: Optional[str] = None
+    company: Optional[str] = None
+    job_url: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    state: str
+    state_label: str
+    review_status: Optional[str] = None
+    awaiting_review: bool = False
+    can_create: bool = True
+    can_review: bool = False
+    prepare_task_id: Optional[str] = None
+    resume_task_id: Optional[str] = None
+    draft_task_id: Optional[str] = None
+    pipeline_id: Optional[str] = None
+    current_task_type: Optional[str] = None
+    current_task_status: Optional[str] = None
+    submitted: bool = False
+
+
 class RuntimeAgentStatusOut(BaseModel):
     name: str
     healthy: bool
@@ -1233,6 +1290,128 @@ def get_task_runs(task_id: str, limit: int = 50):
         runs = db.query(Run).filter(Run.task_id == task_id).order_by(Run.attempt.desc()).limit(limit).all()
         debug_by_run_id = _latest_debug_artifacts_by_run_id(db, {row.id for row in runs})
         return [_run_to_out(run, debug_by_run_id.get(run.id)) for run in runs]
+
+
+@app.post("/applications/drafts", response_model=TaskOut)
+def create_application_draft(req: ApplicationDraftCreateIn, request: Request):
+    selected_job = dict(req.selected_job or {})
+    if not selected_job:
+        raise HTTPException(status_code=400, detail="selected_job is required")
+
+    job_url = _application_job_url(selected_job)
+    company = _application_company(selected_job)
+    if not job_url or not company:
+        raise HTTPException(status_code=400, detail="selected_job requires both company and direct job URL")
+
+    selection: dict[str, Any] = {}
+    job_id = str(selected_job.get("job_id") or selected_job.get("normalized_job_id") or "").strip()
+    if job_id:
+        selection["job_id"] = job_id
+    shortlist_index = selected_job.get("shortlist_index")
+    if isinstance(shortlist_index, int) and shortlist_index >= 0:
+        selection["shortlist_index"] = shortlist_index
+
+    request_payload = dict(req.request or {})
+    request_payload.setdefault("profile_mode", "resume_profile")
+    request_payload.setdefault("notify_channels", ["discord"])
+    request_payload.setdefault("openclaw_apply_enabled", True)
+
+    prepare_policy = dict(req.prepare_policy or {})
+    prepare_policy.setdefault("include_cover_letter", True)
+    prepare_policy.setdefault("enqueue_openclaw_apply", True)
+
+    payload = {
+        "pipeline_id": f"jobapply-ui-{uuid.uuid4()}",
+        "upstream": {
+            "task_id": req.shortlist_task_id,
+            "run_id": req.shortlist_run_id,
+            "task_type": "jobs_shortlist_v1",
+        },
+        "request": request_payload,
+        "selection": selection,
+        "selected_job": selected_job,
+        "prepare_policy": prepare_policy,
+        "lineage": {
+            "source": "shortlist_ui",
+            "company": company,
+            "job_url": job_url,
+        },
+    }
+    task_req = TaskCreate(
+        task_type="job_apply_prepare_v1",
+        payload_json=json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+        idempotency_key=_application_draft_idempotency_key(selected_job),
+        max_attempts=req.max_attempts,
+    )
+    return create_task(task_req, request)
+
+
+@app.post("/applications/drafts/summary", response_model=list[ApplicationDraftSummaryOut])
+def summarize_application_drafts(req: ApplicationDraftSummaryIn):
+    jobs = [row.model_dump(exclude_none=True) for row in req.jobs]
+    if not jobs:
+        return []
+    with SessionLocal() as db:
+        return [ApplicationDraftSummaryOut(**row) for row in _application_draft_summary_rows(db, jobs)]
+
+
+@app.post("/applications/drafts/{task_id}/review", response_model=TaskResultOut)
+def review_application_draft(task_id: str, req: ApplicationDraftReviewIn):
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        if task is None or task.task_type != "openclaw_apply_draft_v1":
+            raise HTTPException(status_code=404, detail="Draft application task not found")
+
+        latest_result = (
+            db.query(Artifact)
+            .filter(Artifact.task_id == task_id, Artifact.artifact_type == RESULT_ARTIFACT_TYPE)
+            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            .first()
+        )
+        if latest_result is None or not isinstance(latest_result.content_json, dict):
+            raise HTTPException(status_code=404, detail="Draft result artifact not found")
+
+        run = db.query(Run).filter(Run.task_id == task_id).order_by(Run.created_at.desc(), Run.attempt.desc()).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="Draft run not found")
+
+        content_json = dict(latest_result.content_json)
+        existing_review = content_json.get("review_metadata")
+        review_metadata = dict(existing_review) if isinstance(existing_review, dict) else {}
+        action = req.action
+        review_status = "approved" if action == "approve" else ("rejected" if action == "reject" else "reviewed")
+
+        content_json["review_status"] = review_status
+        content_json["awaiting_review"] = False
+        content_json["review_metadata"] = {
+            **review_metadata,
+            "action": action,
+            "reviewed_at": now_utc().isoformat(),
+            "reviewer": req.reviewer,
+            "notes": req.notes,
+        }
+
+        updated_artifact = Artifact(
+            id=str(uuid.uuid4()),
+            task_id=task_id,
+            run_id=run.id,
+            artifact_type=RESULT_ARTIFACT_TYPE,
+            content_json=content_json,
+            content_text=None,
+            created_at=now_utc(),
+        )
+        db.add(updated_artifact)
+        task.updated_at = now_utc()
+        db.commit()
+        db.refresh(updated_artifact)
+
+        return TaskResultOut(
+            task_id=updated_artifact.task_id,
+            artifact_type=updated_artifact.artifact_type,
+            content_text=updated_artifact.content_text,
+            content_json=updated_artifact.content_json,
+            created_at=updated_artifact.created_at,
+        )
 
 
 @app.post("/schedules", response_model=ScheduleOut)
@@ -1838,6 +2017,198 @@ def _normalize_metadata_obj(metadata_json: Any) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     return {}
+
+
+def _application_job_url(job: dict[str, Any]) -> str:
+    for key in ("url", "source_url", "job_url"):
+        value = job.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _application_company(job: dict[str, Any]) -> str:
+    value = job.get("company")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _application_draft_idempotency_key(job: dict[str, Any]) -> str:
+    company = _application_company(job).lower()
+    job_url = _application_job_url(job).lower()
+    if not company or not job_url:
+        raise ValueError("Application drafts require both company and job URL.")
+    base = f"{job_url}|{company}"
+    digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
+    company_slug = "".join(ch if ch.isalnum() else "-" for ch in company)[:32].strip("-") or "company"
+    return f"jobapply:{company_slug}:{digest}"
+
+
+def _review_status_to_state(review_status: str | None, awaiting_review: bool) -> tuple[str, str]:
+    normalized = str(review_status or "").strip().lower()
+    if normalized == "rejected":
+        return "rejected", "Rejected"
+    if normalized in {"approved", "reviewed", "mark_reviewed"}:
+        return "draft_ready", "Draft ready"
+    if awaiting_review or normalized == "awaiting_review":
+        return "awaiting_review", "Awaiting review"
+    return "draft_in_progress", "Draft in progress"
+
+
+def _task_status_text(task: Task | None) -> str | None:
+    if task is None:
+        return None
+    return _status_to_str(task.status)
+
+
+def _latest_result_artifact_for_task_ids(db, task_ids: set[str]) -> dict[str, Artifact]:
+    if not task_ids:
+        return {}
+    rows = (
+        db.query(Artifact)
+        .filter(Artifact.task_id.in_(list(task_ids)), Artifact.artifact_type == RESULT_ARTIFACT_TYPE)
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        .all()
+    )
+    result: dict[str, Artifact] = {}
+    for row in rows:
+        if row.task_id not in result:
+            result[row.task_id] = row
+    return result
+
+
+def _application_draft_summary_rows(db, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    prepared_jobs: list[dict[str, Any]] = []
+    idempotency_keys: list[str] = []
+    for job in jobs:
+        job_row = dict(job)
+        job_row["job_url"] = _application_job_url(job_row) or None
+        company = _application_company(job_row) or None
+        job_row["company"] = company
+        try:
+            idempotency_key = _application_draft_idempotency_key(job_row)
+        except ValueError:
+            idempotency_key = None
+        job_row["idempotency_key"] = idempotency_key
+        prepared_jobs.append(job_row)
+        if isinstance(idempotency_key, str):
+            idempotency_keys.append(idempotency_key)
+
+    prepare_tasks: dict[str, Task] = {}
+    if idempotency_keys:
+        rows = (
+            db.query(Task)
+            .filter(Task.task_type == "job_apply_prepare_v1", Task.idempotency_key.in_(idempotency_keys))
+            .order_by(Task.updated_at.desc(), Task.created_at.desc())
+            .all()
+        )
+        for row in rows:
+            key = str(row.idempotency_key or "").strip()
+            if key and key not in prepare_tasks:
+                prepare_tasks[key] = row
+
+    pipeline_ids: set[str] = set()
+    for task in prepare_tasks.values():
+        pipeline_id = _parse_task_pipeline_id(task)
+        if pipeline_id:
+            pipeline_ids.add(pipeline_id)
+
+    pipeline_tasks: dict[str, dict[str, Task]] = {}
+    if pipeline_ids:
+        rows = (
+            db.query(Task)
+            .filter(Task.task_type.in_(["resume_tailor_v1", "openclaw_apply_draft_v1"]))
+            .order_by(Task.updated_at.desc(), Task.created_at.desc())
+            .limit(5000)
+            .all()
+        )
+        for row in rows:
+            pipeline_id = _parse_task_pipeline_id(row)
+            if pipeline_id not in pipeline_ids:
+                continue
+            bucket = pipeline_tasks.setdefault(pipeline_id, {})
+            if str(row.task_type) not in bucket:
+                bucket[str(row.task_type)] = row
+
+    draft_task_ids = {
+        row.get("openclaw_apply_draft_v1").id
+        for row in pipeline_tasks.values()
+        if row.get("openclaw_apply_draft_v1") is not None
+    }
+    result_by_task_id = _latest_result_artifact_for_task_ids(db, draft_task_ids)
+
+    output: list[dict[str, Any]] = []
+    for job in prepared_jobs:
+        idempotency_key = job.get("idempotency_key")
+        prepare_task = prepare_tasks.get(idempotency_key) if isinstance(idempotency_key, str) else None
+        pipeline_id = _parse_task_pipeline_id(prepare_task) if prepare_task is not None else None
+        stage_map = pipeline_tasks.get(pipeline_id or "", {})
+        resume_task = stage_map.get("resume_tailor_v1")
+        draft_task = stage_map.get("openclaw_apply_draft_v1")
+        draft_artifact = result_by_task_id.get(draft_task.id) if draft_task is not None else None
+        draft_result = _artifact_content_json(draft_artifact)
+
+        state = "not_started"
+        state_label = "No draft"
+        review_status = None
+        awaiting_review = False
+        can_review = False
+        current_task_type = None
+        current_task_status = None
+        submitted = False
+
+        if prepare_task is not None:
+            draft_status = _task_status_text(draft_task)
+            resume_status = _task_status_text(resume_task)
+            prepare_status = _task_status_text(prepare_task)
+            current_task_type = "job_apply_prepare_v1"
+            current_task_status = prepare_status
+
+            if draft_task is not None:
+                current_task_type = "openclaw_apply_draft_v1"
+                current_task_status = draft_status
+            elif resume_task is not None:
+                current_task_type = "resume_tailor_v1"
+                current_task_status = resume_status
+
+            if draft_result:
+                review_status = str(draft_result.get("review_status") or "").strip() or None
+                awaiting_review = bool(draft_result.get("awaiting_review"))
+                submitted = bool(draft_result.get("submitted"))
+                state, state_label = _review_status_to_state(review_status, awaiting_review)
+                can_review = draft_task is not None and not submitted and state in {"awaiting_review", "draft_ready"}
+            elif any(status in {"queued", "running"} for status in (prepare_status, resume_status, draft_status)):
+                state = "draft_in_progress"
+                state_label = "Draft in progress"
+            elif any(status in {"failed", "failed_permanent", "blocked_budget"} for status in (prepare_status, resume_status, draft_status)):
+                state = "failed"
+                state_label = "Draft failed"
+            else:
+                state = "draft_in_progress"
+                state_label = "Draft in progress"
+
+        output.append(
+            {
+                "job_id": str(job.get("job_id") or "").strip() or None,
+                "title": str(job.get("title") or "").strip() or None,
+                "company": job.get("company"),
+                "job_url": job.get("job_url"),
+                "idempotency_key": idempotency_key,
+                "state": state,
+                "state_label": state_label,
+                "review_status": review_status,
+                "awaiting_review": awaiting_review,
+                "can_create": prepare_task is None,
+                "can_review": can_review,
+                "prepare_task_id": prepare_task.id if prepare_task is not None else None,
+                "resume_task_id": resume_task.id if resume_task is not None else None,
+                "draft_task_id": draft_task.id if draft_task is not None else None,
+                "pipeline_id": pipeline_id,
+                "current_task_type": current_task_type,
+                "current_task_status": current_task_status,
+                "submitted": submitted,
+            }
+        )
+    return output
 
 
 def _coerce_notification_behavior(value: Any) -> dict[str, Any] | None:
