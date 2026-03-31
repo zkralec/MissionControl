@@ -68,6 +68,7 @@ def _normalize_screenshot_reference(row: Any) -> dict[str, Any] | None:
         "page_url": str(row.get("page_url") or "").strip() or None,
         "mime_type": str(row.get("mime_type") or "").strip() or None,
         "kind": str(row.get("kind") or "screenshot").strip() or "screenshot",
+        "size_bytes": int(row.get("size_bytes") or 0) or None,
     }
 
 
@@ -107,8 +108,20 @@ def _normalize_status(value: Any, *, fields_filled_count: int) -> str:
         "unsupported_form",
         "upstream_failure",
         "skipped",
+        "draft_ready",
+        "partial_draft",
+        "not_started",
+        "login_required",
+        "captcha_or_bot_challenge",
+        "navigation_failed",
+        "upload_failed",
+        "timed_out",
+        "manual_review_required",
+        "unavailable",
     }:
-        return "awaiting_review" if normalized == "success" else normalized
+        if normalized in {"success", "draft_ready", "partial_draft"}:
+            return "awaiting_review"
+        return normalized
     if normalized in {"auth", "login_required", "login_blocked"}:
         return "auth_blocked"
     if normalized in {"anti_bot", "blocked_by_bot"}:
@@ -124,20 +137,46 @@ def _normalize_failure_category(value: Any, *, status: str) -> str | None:
     normalized = str(value or "").strip().lower()
     if normalized:
         aliases = {
-            "login_required": "auth_blocked",
-            "login_blocked": "auth_blocked",
-            "auth": "auth_blocked",
-            "anti_bot": "anti_bot_blocked",
-            "blocked_by_bot": "anti_bot_blocked",
-            "selector_mismatch": "layout_mismatch",
-            "layout_error": "layout_mismatch",
+            "login_blocked": "login_required",
+            "auth": "login_required",
+            "anti_bot": "captcha_or_bot_challenge",
+            "blocked_by_bot": "captcha_or_bot_challenge",
+            "selector_mismatch": "unsupported_form",
+            "layout_error": "unsupported_form",
             "empty_output": "upstream_failure",
             "invalid_json": "invalid_response",
         }
         return aliases.get(normalized, normalized)
-    if status in {"auth_blocked", "anti_bot_blocked", "layout_mismatch", "unsupported_form"}:
+    if status in {
+        "auth_blocked",
+        "anti_bot_blocked",
+        "layout_mismatch",
+        "unsupported_form",
+        "login_required",
+        "captcha_or_bot_challenge",
+        "upload_failed",
+        "navigation_failed",
+        "timed_out",
+        "manual_review_required",
+        "unavailable",
+    }:
         return status
     return None
+
+
+def _normalize_notify_decision(value: Any, *, awaiting_review: bool, status: str) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    channels = []
+    raw_channels = payload.get("channels")
+    if isinstance(raw_channels, list):
+        channels = [str(item).strip() for item in raw_channels if str(item).strip()]
+    should_notify = awaiting_review and bool(payload.get("should_notify", True))
+    reason = str(payload.get("reason") or "").strip() or ("draft_ready_for_review" if should_notify else status)
+    return {
+        "should_notify": should_notify,
+        "reason": reason,
+        "channels": channels if should_notify else [],
+    }
 
 
 def _build_command_payload(
@@ -147,6 +186,7 @@ def _build_command_payload(
     request: dict[str, Any],
     *,
     cover_letter_text: str,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     capture_screenshots = _as_bool(request.get("openclaw_apply_capture_screenshots"))
     if capture_screenshots is None:
@@ -174,6 +214,7 @@ def _build_command_payload(
         "max_screenshots": max_screenshots,
         "create_account_if_needed": bool(request.get("openclaw_allow_account_creation", False)),
         "profile_mode": str(request.get("profile_mode") or "").strip() or None,
+        "lineage": lineage or {},
     }
 
 
@@ -241,6 +282,7 @@ def run_openclaw_apply_draft(
     answer_drafts: list[dict[str, Any]],
     request: dict[str, Any],
     cover_letter_text: str,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     command = _command_parts()
     if not command:
@@ -268,8 +310,28 @@ def run_openclaw_apply_draft(
         answer_drafts,
         request,
         cover_letter_text=cover_letter_text,
+        lineage=lineage,
     )
-    response, runtime_ms = _invoke_openclaw(command, payload, timeout_seconds=timeout_seconds)
+    try:
+        response, runtime_ms = _invoke_openclaw(command, payload, timeout_seconds=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        response = {
+            "draft_status": "not_started",
+            "source_status": "timed_out",
+            "awaiting_review": False,
+            "review_status": "blocked",
+            "submitted": False,
+            "failure_category": "timed_out",
+            "warnings": [],
+            "errors": ["openclaw_apply_timed_out"],
+            "fields_filled_manifest": [],
+            "screenshot_metadata_references": [],
+            "checkpoint_urls": [str(application_target.get("application_url") or application_target.get("source_url") or "").strip()],
+            "blocking_reason": "OpenClaw draft command timed out before reaching a safe review checkpoint.",
+            "page_title": None,
+            "notify_decision": {"should_notify": False, "reason": "timed_out", "channels": []},
+        }
+        runtime_ms = timeout_seconds * 1000
 
     fields_filled_manifest = []
     for row in response.get("fields_filled_manifest") if isinstance(response.get("fields_filled_manifest"), list) else []:
@@ -278,15 +340,40 @@ def run_openclaw_apply_draft(
             fields_filled_manifest.append(normalized)
 
     screenshots = []
-    for row in response.get("screenshots") if isinstance(response.get("screenshots"), list) else []:
+    screenshot_rows = (
+        response.get("screenshot_metadata_references")
+        if isinstance(response.get("screenshot_metadata_references"), list)
+        else response.get("screenshots")
+    )
+    for row in screenshot_rows if isinstance(screenshot_rows, list) else []:
         normalized = _normalize_screenshot_reference(row)
         if normalized is not None:
             screenshots.append(normalized)
 
-    status = _normalize_status(response.get("status"), fields_filled_count=len(fields_filled_manifest))
+    awaiting_review = bool(response.get("awaiting_review", False))
+    draft_status = str(response.get("draft_status") or "").strip() or None
+    source_status = str(response.get("source_status") or response.get("status") or "").strip() or None
+    review_status = str(response.get("review_status") or "").strip() or None
+    status = _normalize_status(
+        response.get("status") or review_status or draft_status or source_status,
+        fields_filled_count=len(fields_filled_manifest),
+    )
+    if awaiting_review:
+        status = "awaiting_review"
     failure_category = _normalize_failure_category(response.get("failure_category"), status=status)
     if failure_category is None and status == "upstream_failure":
         failure_category = "openclaw_apply_upstream_failure"
+    if source_status is None:
+        source_status = failure_category or ("success" if awaiting_review else status)
+    if draft_status is None:
+        draft_status = "draft_ready" if awaiting_review and len(fields_filled_manifest) > 0 else ("partial_draft" if len(fields_filled_manifest) > 0 else "not_started")
+    if review_status is None:
+        review_status = "awaiting_review" if awaiting_review else status
+    notify_decision = _normalize_notify_decision(
+        response.get("notify_decision"),
+        awaiting_review=awaiting_review or status == "awaiting_review",
+        status=review_status or status,
+    )
 
     return {
         "status": status,
@@ -296,7 +383,10 @@ def run_openclaw_apply_draft(
             "runtime_ms": runtime_ms,
             "failure_category": failure_category,
             "safe_to_retry": bool(response.get("safe_to_retry", status == "upstream_failure")),
-            "awaiting_review": status == "awaiting_review",
+            "draft_status": draft_status,
+            "source_status": source_status,
+            "awaiting_review": bool(awaiting_review or status == "awaiting_review"),
+            "review_status": review_status,
             "submitted": False,
             "account_created": bool(response.get("account_created", False)),
             "fields_filled_manifest": fields_filled_manifest,
@@ -304,5 +394,6 @@ def run_openclaw_apply_draft(
             "checkpoint_urls": response.get("checkpoint_urls") if isinstance(response.get("checkpoint_urls"), list) else [],
             "blocking_reason": str(response.get("blocking_reason") or "").strip() or None,
             "page_title": str(response.get("page_title") or "").strip() or None,
+            "notify_decision": notify_decision,
         },
     }

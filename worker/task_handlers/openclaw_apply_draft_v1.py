@@ -125,21 +125,35 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         answer_drafts=application_answers_artifact.get("items") if isinstance(application_answers_artifact.get("items"), list) else [],
         request=request,
         cover_letter_text=str(cover_letter_artifact.get("text") or "").strip(),
+        lineage={
+            "pipeline_id": pipeline_id,
+            "task_id": str(getattr(task, "id", "") or ""),
+            "run_id": str(getattr(task, "_run_id", "") or ""),
+            "upstream": upstream,
+        },
     )
 
     status = str(result.get("status") or "upstream_failure").strip() or "upstream_failure"
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    draft_status = str(meta.get("draft_status") or status).strip() or status
+    source_status = str(meta.get("source_status") or draft_status or status).strip() or status
     fields_filled_manifest = meta.get("fields_filled_manifest") if isinstance(meta.get("fields_filled_manifest"), list) else []
     screenshots = meta.get("screenshots") if isinstance(meta.get("screenshots"), list) else []
     awaiting_review = bool(meta.get("awaiting_review", status == "awaiting_review"))
+    review_status = str(meta.get("review_status") or ("awaiting_review" if awaiting_review else draft_status)).strip() or (
+        "awaiting_review" if awaiting_review else draft_status
+    )
     blocking_reason = str(meta.get("blocking_reason") or "").strip() or None
     failure_category = str(meta.get("failure_category") or "").strip() or None
+    submitted = bool(meta.get("submitted", False))
+    meta_notify_decision = meta.get("notify_decision") if isinstance(meta.get("notify_decision"), dict) else {}
 
     notify_channels = _as_text_list(draft_policy.get("notify_channels")) or _as_text_list(request.get("notify_channels")) or ["discord"]
     next_tasks: list[dict[str, Any]] = []
     notify_decision = {
-        "should_notify": awaiting_review,
-        "reason": "draft_ready_for_review" if awaiting_review else status,
+        "should_notify": awaiting_review and bool(meta_notify_decision.get("should_notify", True)),
+        "reason": str(meta_notify_decision.get("reason") or ("draft_ready_for_review" if awaiting_review else review_status)).strip()
+        or ("draft_ready_for_review" if awaiting_review else review_status),
         "channels": notify_channels if awaiting_review else [],
     }
     if awaiting_review:
@@ -150,7 +164,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
                     pipeline_id=pipeline_id,
                     task=task,
                     application_target=application_target,
-                    status=status,
+                    status=draft_status,
                     fields_filled_count=len(fields_filled_manifest),
                     screenshots_count=len(screenshots),
                     channels=notify_channels,
@@ -166,13 +180,13 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "request": request,
         "draft_policy": draft_policy,
         "application_target_metadata": application_target,
-        "draft_status": status,
-        "source_status": status,
+        "draft_status": draft_status,
+        "source_status": source_status,
         "failure_category": failure_category,
         "blocking_reason": blocking_reason,
         "awaiting_review": awaiting_review,
-        "review_status": "awaiting_review" if awaiting_review else status,
-        "submitted": False,
+        "review_status": review_status,
+        "submitted": submitted,
         "account_created_flag": bool(meta.get("account_created", False)),
         "fields_filled_manifest": fields_filled_manifest,
         "screenshot_metadata_references": screenshots,
@@ -197,10 +211,11 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "content_json": artifact,
         "next_tasks": next_tasks,
         "debug_json": {
-            "draft_status": status,
+            "draft_status": draft_status,
+            "source_status": source_status,
             "failure_category": failure_category,
             "awaiting_review": awaiting_review,
-            "submitted": False,
+            "submitted": submitted,
             "fields_filled_count": len(fields_filled_manifest),
             "screenshots_count": len(screenshots),
             "notify_decision": notify_decision,

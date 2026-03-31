@@ -374,6 +374,52 @@ Important behavior:
 - recently notified jobs can be cooled down to reduce spam
 - Runs and Alerts now expose jobs-specific observability and next actions
 
+### OpenClaw Draft Runner
+
+Mission Control invokes the browser draft stage through `worker/task_handlers/openclaw_apply_draft_v1.py`, which calls `integrations/openclaw_apply_draft.py`, which shells out to `scripts/openclaw_apply_draft.py` using `OPENCLAW_APPLY_DRAFT_COMMAND`.
+
+Required env vars:
+- `OPENCLAW_APPLY_DRAFT_ENABLED=true`
+- `OPENCLAW_APPLY_DRAFT_COMMAND="python3 scripts/openclaw_apply_draft.py"`
+- One adapter path:
+- `OPENCLAW_APPLY_TOOL_COMMAND="<your OpenClaw draft CLI command>"`
+- or `OPENCLAW_APPLY_PYTHON_ENTRYPOINT="openclaw:run_apply_draft"`
+
+Optional runner env vars:
+- `OPENCLAW_APPLY_ADAPTER=auto|command|python`
+- `OPENCLAW_APPLY_HEADLESS=true|false`
+- `OPENCLAW_APPLY_SCREENSHOT_DIR=./data/openclaw_apply_drafts/screenshots`
+- `OPENCLAW_APPLY_RECEIPT_DIR=./data/openclaw_apply_drafts/receipts`
+- `OPENCLAW_APPLY_RESUME_DIR=./data/openclaw_apply_drafts/resume_uploads`
+- `OPENCLAW_APPLY_TIMEOUT_SECONDS=240`
+- `OPENCLAW_APPLY_MAX_STEPS=24`
+- `OPENCLAW_APPLY_LOG_LEVEL=INFO`
+- `OPENCLAW_APPLY_AUTH_STRATEGY=storage_state|existing_session|browser_profile`
+- `OPENCLAW_APPLY_STORAGE_STATE_PATH=/absolute/path/to/storage-state.json`
+- `OPENCLAW_APPLY_BROWSER_PROFILE_PATH=/absolute/path/to/browser-profile`
+
+Safety rules enforced by the runner:
+- it always sends `submit=false` and `stop_before_submit=true`
+- it never returns `submitted=true`
+- it only reports `awaiting_review=true` when the draft has meaningful progress for a human reviewer
+- it returns structured non-submit diagnostics such as `login_required`, `captcha_or_bot_challenge`, `unsupported_form`, `upload_failed`, `navigation_failed`, `timed_out`, and `manual_review_required`
+
+Example local invocation:
+
+```bash
+export OPENCLAW_APPLY_DRAFT_ENABLED=true
+export OPENCLAW_APPLY_DRAFT_COMMAND="python3 scripts/openclaw_apply_draft.py"
+export OPENCLAW_APPLY_TOOL_COMMAND="/absolute/path/to/openclaw-cli apply-draft"
+python3 scripts/openclaw_apply_draft.py --input-json-file /tmp/openclaw-apply-payload.json
+```
+
+Local test commands:
+
+```bash
+pytest worker/tests/test_openclaw_apply_draft_runner.py
+pytest worker/tests/test_job_application_phase2.py -k openclaw_apply_draft
+```
+
 ## Data and Observability Storage
 
 Mission Control uses both Postgres and SQLite-backed operational stores.

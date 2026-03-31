@@ -202,7 +202,10 @@ def test_openclaw_apply_draft_persists_review_artifact_and_notify_followup(monke
             "warnings": [],
             "errors": [],
             "meta": {
+                "draft_status": "draft_ready",
+                "source_status": "success",
                 "awaiting_review": True,
+                "review_status": "awaiting_review",
                 "submitted": False,
                 "account_created": True,
                 "failure_category": None,
@@ -215,6 +218,7 @@ def test_openclaw_apply_draft_persists_review_artifact_and_notify_followup(monke
                 ],
                 "checkpoint_urls": ["https://linkedin.example/jobs/view/1"],
                 "page_title": "Apply - Senior ML Engineer",
+                "notify_decision": {"should_notify": True, "reason": "draft_ready_for_review", "channels": ["discord"]},
             },
         },
     )
@@ -230,7 +234,10 @@ def test_openclaw_apply_draft_persists_review_artifact_and_notify_followup(monke
     notify_payload = result["next_tasks"][0]["payload_json"]
 
     assert artifact["artifact_type"] == "openclaw.apply.draft.v1"
+    assert artifact["draft_status"] == "draft_ready"
+    assert artifact["source_status"] == "success"
     assert artifact["awaiting_review"] is True
+    assert artifact["review_status"] == "awaiting_review"
     assert artifact["submitted"] is False
     assert artifact["account_created_flag"] is True
     assert len(artifact["fields_filled_manifest"]) == 2
