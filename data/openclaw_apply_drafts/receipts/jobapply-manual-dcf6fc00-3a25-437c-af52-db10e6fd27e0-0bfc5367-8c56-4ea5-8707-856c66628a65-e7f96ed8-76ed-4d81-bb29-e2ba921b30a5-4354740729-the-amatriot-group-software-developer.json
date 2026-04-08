@@ -1,0 +1,66 @@
+{
+  "request": {
+    "recorded_at": "2026-04-08T15:07:54Z",
+    "action": "apply_draft",
+    "stop_before_submit": true,
+    "application_target": {
+      "job_id": "4354740729",
+      "title": "Software Developer",
+      "company": "The Amatriot Group",
+      "source": "linkedin",
+      "application_url": "https://www.linkedin.com/jobs/view/4354740729/apply/?openSDUIApplyFlow=true",
+      "application_host": "www.linkedin.com"
+    },
+    "resume_variant": {
+      "resume_variant_name": "Tailored Resume - The Amatriot Group",
+      "resume_file_name": "Zachary Kralec Resume 04_01_26.pdf",
+      "resume_upload_path": "/home/zkralec/VSCode/mission-control/resumes/Zachary Kralec Resume 04_01_26.pdf",
+      "resume_text_present": true
+    },
+    "candidate_profile": {
+      "resume_source": null,
+      "resume_name": null,
+      "contact_profile_fields": []
+    },
+    "answer_count": 3,
+    "cover_letter_present": true,
+    "capture_screenshots": true,
+    "max_screenshots": 8,
+    "inspect_only": false,
+    "browser": {
+      "run_on_host": true,
+      "attach_mode": false,
+      "skip_browser_start": false,
+      "allow_browser_start": true,
+      "gateway_url": "ws://127.0.0.1:18789",
+      "cdp_url": "http://127.0.0.1:18800",
+      "host_gateway_alias": null
+    },
+    "profile_mode": "resume_profile",
+    "lineage": {
+      "pipeline_id": "jobapply-manual-dcf6fc00-3a25-437c-af52-db10e6fd27e0",
+      "task_id": "0bfc5367-8c56-4ea5-8707-856c66628a65",
+      "run_id": "e7f96ed8-76ed-4d81-bb29-e2ba921b30a5"
+    }
+  },
+  "result_summary": {
+    "recorded_at": "2026-04-08T15:11:05Z",
+    "draft_status": "draft_ready",
+    "source_status": "success",
+    "awaiting_review": true,
+    "review_status": "awaiting_review",
+    "submitted": false,
+    "failure_category": null,
+    "blocking_reason": null,
+    "fields_filled_count": 9,
+    "screenshots_count": 1,
+    "checkpoint_urls": [
+      "https://www.linkedin.com/jobs/view/4354740729/apply/?openSDUIApplyFlow=true",
+      "https://www.linkedin.com/jobs/view/4354740729/"
+    ],
+    "warnings": [
+      "networkidle_wait_skipped"
+    ],
+    "errors": []
+  }
+}

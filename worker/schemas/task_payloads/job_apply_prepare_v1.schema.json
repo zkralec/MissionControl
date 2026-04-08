@@ -24,6 +24,20 @@
       },
       "additionalProperties": true
     },
+    "selected_job": {
+      "type": "object",
+      "properties": {
+        "job_id": {"type": "string"},
+        "normalized_job_id": {"type": "string"},
+        "title": {"type": "string"},
+        "company": {"type": "string"},
+        "source": {"type": "string"},
+        "source_url": {"type": "string"},
+        "application_url": {"type": "string"},
+        "url": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
     "prepare_policy": {
       "type": "object",
       "properties": {

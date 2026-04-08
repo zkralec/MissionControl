@@ -470,6 +470,40 @@ class TestApplicationDraftEndpoints:
         assert payload_json["upstream"]["task_id"] == shortlist_task_id
         assert payload_json["upstream"]["run_id"] == shortlist_run_id
 
+    def test_create_manual_application_draft_creates_manual_seed_task(self):
+        payload = {
+            "title": "Software Engineer, AI",
+            "company": "Manual Labs",
+            "source": "linkedin",
+            "source_url": "https://www.linkedin.com/jobs/view/1234567890?utm_source=test",
+            "application_url": "https://www.linkedin.com/jobs/view/1234567890?utm_source=test",
+            "job_id": "1234567890",
+            "normalized_job_id": "linkedin-1234567890",
+            "request": {
+                "profile_mode": "resume_profile",
+                "notify_channels": ["discord"],
+                "openclaw_apply_enabled": True,
+            },
+        }
+
+        first = client.post("/applications/manual-drafts", json=payload)
+        second = client.post("/applications/manual-drafts", json=payload)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_task = first.json()
+        second_task = second.json()
+        assert first_task["id"] == second_task["id"]
+        assert first_task["task_type"] == "job_apply_manual_seed_v1"
+        assert first_task["idempotency_key"].startswith("jobapply:manual-labs:")
+
+        payload_json = json.loads(first_task["payload_json"])
+        assert payload_json["manual_job"]["company"] == "Manual Labs"
+        assert payload_json["manual_job"]["job_id"] == "1234567890"
+        assert payload_json["lineage"]["source"] == "manual_api"
+        assert payload_json["lineage"]["seed_kind"] == "manual_seed"
+        assert payload_json["lineage"]["path"] == "manual_api/manual_seed"
+
     def test_review_application_draft_persists_review_status(self):
         draft_task_id = str(uuid.uuid4())
         draft_run_id = str(uuid.uuid4())

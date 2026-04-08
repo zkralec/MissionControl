@@ -87,6 +87,7 @@ services:
       CANDIDATE_PROFILE_DB_PATH: /data/task_run_history.sqlite3
       DAILY_OPS_REPORT_DB_PATH: /data/task_run_history.sqlite3
       DEAL_ALERT_STATE_DB_PATH: /data/task_run_history.sqlite3
+      APPLICATION_DRAFT_STATE_DB_PATH: /data/task_run_history.sqlite3
     command: ["python", "worker/heartbeat_supervisor.py"]
     depends_on:
       postgres:
@@ -95,6 +96,10 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data
+      - ${HOME}/.npm-global:/opt/openclaw/npm-global:ro
+      - ${HOME}/.openclaw:/root/.openclaw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "python", "api/runtime_healthcheck.py", "heartbeat", "--agent", "worker"]
       interval: 30s

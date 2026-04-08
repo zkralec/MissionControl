@@ -6,7 +6,6 @@ from typing import Any
 from task_handlers.errors import NonRetryableTaskError
 from task_handlers.jobs_pipeline_common import (
     build_upstream_ref,
-    expect_artifact_type,
     fetch_upstream_result_content_json,
     new_pipeline_id,
     payload_object,
@@ -56,6 +55,24 @@ def _extract_shortlist_jobs(upstream_result: dict[str, Any]) -> list[dict[str, A
     )
 
 
+def _payload_selected_job(payload: dict[str, Any]) -> dict[str, Any] | None:
+    selected_job = payload.get("selected_job")
+    if isinstance(selected_job, dict) and selected_job:
+        return dict(selected_job)
+    return None
+
+
+def _manual_seed_selected_job(upstream_result: dict[str, Any]) -> dict[str, Any] | None:
+    artifact_type = str(upstream_result.get("artifact_type") or "").strip()
+    if artifact_type != "job.apply.manual_seed.v1":
+        return None
+    for key in ("selected_job", "manual_job"):
+        value = upstream_result.get(key)
+        if isinstance(value, dict) and value:
+            return dict(value)
+    raise NonRetryableTaskError("job_apply_prepare_v1 manual seed upstream is missing selected_job")
+
+
 def _selected_job(jobs: list[dict[str, Any]], selection: dict[str, Any]) -> dict[str, Any]:
     if not jobs:
         raise NonRetryableTaskError("job_apply_prepare_v1 requires at least one shortlisted job")
@@ -78,6 +95,23 @@ def _selected_job(jobs: list[dict[str, Any]], selection: dict[str, Any]) -> dict
         return dict(jobs[index])
 
     return dict(jobs[0])
+
+
+def _resolve_selected_job(
+    payload: dict[str, Any],
+    upstream_result: dict[str, Any],
+    selection: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    payload_job = _payload_selected_job(payload)
+    if payload_job is not None:
+        return payload_job, "payload_selected_job"
+
+    manual_job = _manual_seed_selected_job(upstream_result)
+    if manual_job is not None:
+        return manual_job, "manual_seed_artifact"
+
+    shortlist_jobs = _extract_shortlist_jobs(upstream_result)
+    return _selected_job(shortlist_jobs, selection), "shortlist_artifact"
 
 
 def _text_lines(*values: Any) -> list[str]:
@@ -177,8 +211,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     pipeline_id = new_pipeline_id(payload.get("pipeline_id"))
 
     upstream_result = fetch_upstream_result_content_json(db, upstream)
-    shortlist_jobs = _extract_shortlist_jobs(upstream_result)
-    job = _selected_job(shortlist_jobs, selection)
+    job, selected_job_source = _resolve_selected_job(payload, upstream_result, selection)
 
     request_with_profile = dict(request)
     request_with_profile["profile_mode"] = "resume_profile"
@@ -198,7 +231,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "location_normalized": job.get("location_normalized"),
         "source": job.get("source"),
         "source_url": job.get("source_url"),
-        "application_url": job.get("url") or job.get("source_url"),
+        "application_url": job.get("application_url") or job.get("url") or job.get("source_url"),
         "work_mode": job.get("work_mode"),
         "posted_at_normalized": job.get("posted_at_normalized") or job.get("posted_at"),
         "posted_age_days": job.get("posted_age_days"),
@@ -218,12 +251,16 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "prepare_policy": {
             "include_cover_letter": include_cover_letter,
         },
+        "selected_job": job,
+        "selected_job_source": selected_job_source,
         "application_target": application_target,
         "candidate_profile": {
             "resume_source": profile_context.get("source"),
             "resume_name": profile_context.get("resume_name"),
             "resume_sha256": profile_context.get("resume_sha256"),
             "resume_char_count": profile_context.get("resume_char_count"),
+            "metadata_json": profile_context.get("metadata_json"),
+            "contact_profile": profile_context.get("contact_profile"),
         },
         "extracted_requirements": requirements,
         "common_questions": common_questions,
@@ -231,6 +268,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "awaiting_review": False,
         "review_status": "preparing_materials",
         "upstream": upstream,
+        "lineage": payload.get("lineage") if isinstance(payload.get("lineage"), dict) else {},
     }
 
     next_payload = {
@@ -260,6 +298,7 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
         "next_tasks": [next_task],
         "debug_json": {
             "selected_job_id": application_target.get("job_id"),
+            "selected_job_source": selected_job_source,
             "requirements_count": len(requirements),
             "common_questions_count": len(common_questions),
             "resume_profile_loaded": True,

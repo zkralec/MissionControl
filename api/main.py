@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, List
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from croniter import croniter
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -784,6 +785,19 @@ class ApplicationDraftCreateIn(BaseModel):
     max_attempts: int = Field(default=3, ge=1, le=10)
 
 
+class ManualApplicationDraftCreateIn(BaseModel):
+    title: str = Field(..., min_length=1)
+    company: str = Field(..., min_length=1)
+    source: str = Field(..., min_length=1)
+    source_url: str = Field(..., min_length=1)
+    application_url: str = Field(..., min_length=1)
+    job_id: Optional[str] = Field(default=None, min_length=1)
+    normalized_job_id: Optional[str] = Field(default=None, min_length=1)
+    request: Optional[dict[str, Any]] = None
+    prepare_policy: Optional[dict[str, Any]] = None
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+
 class ApplicationDraftReviewIn(BaseModel):
     action: str = Field(..., min_length=1)
     reviewer: Optional[str] = Field(default=None, max_length=120)
@@ -1341,6 +1355,50 @@ def create_application_draft(req: ApplicationDraftCreateIn, request: Request):
         task_type="job_apply_prepare_v1",
         payload_json=json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
         idempotency_key=_application_draft_idempotency_key(selected_job),
+        max_attempts=req.max_attempts,
+    )
+    return create_task(task_req, request)
+
+
+@app.post("/applications/manual-drafts", response_model=TaskOut)
+def create_manual_application_draft(req: ManualApplicationDraftCreateIn, request: Request):
+    manual_job: dict[str, Any] = {
+        "title": req.title.strip(),
+        "company": req.company.strip(),
+        "source": req.source.strip(),
+        "source_url": req.source_url.strip(),
+        "application_url": req.application_url.strip(),
+    }
+    if req.job_id:
+        manual_job["job_id"] = req.job_id.strip()
+    if req.normalized_job_id:
+        manual_job["normalized_job_id"] = req.normalized_job_id.strip()
+
+    request_payload = dict(req.request or {})
+    request_payload.setdefault("profile_mode", "resume_profile")
+    request_payload.setdefault("notify_channels", ["discord"])
+    request_payload.setdefault("openclaw_apply_enabled", True)
+
+    prepare_policy = dict(req.prepare_policy or {})
+    prepare_policy.setdefault("include_cover_letter", True)
+    prepare_policy.setdefault("enqueue_openclaw_apply", True)
+
+    payload = {
+        "pipeline_id": f"jobapply-manual-{uuid.uuid4()}",
+        "manual_job": manual_job,
+        "request": request_payload,
+        "prepare_policy": prepare_policy,
+        "lineage": {
+            "source": "manual_api",
+            "entrypoint": "manual_api",
+            "seed_kind": "manual_seed",
+            "path": "manual_api/manual_seed",
+        },
+    }
+    task_req = TaskCreate(
+        task_type="job_apply_manual_seed_v1",
+        payload_json=json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+        idempotency_key=_application_draft_idempotency_key(manual_job),
         max_attempts=req.max_attempts,
     )
     return create_task(task_req, request)
@@ -2020,7 +2078,7 @@ def _normalize_metadata_obj(metadata_json: Any) -> dict[str, Any]:
 
 
 def _application_job_url(job: dict[str, Any]) -> str:
-    for key in ("url", "source_url", "job_url"):
+    for key in ("application_url", "url", "source_url", "job_url"):
         value = job.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -2032,12 +2090,39 @@ def _application_company(job: dict[str, Any]) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _normalize_application_job_url(raw_url: str | None) -> str:
+    if not isinstance(raw_url, str):
+        return ""
+    value = raw_url.strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value.lower()
+    query_items = [
+        (key, val)
+        for key, val in parse_qsl(parts.query, keep_blank_values=True)
+        if key and not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid"}
+    ]
+    return urlunsplit(
+        (
+            (parts.scheme or "https").lower(),
+            parts.netloc.lower(),
+            parts.path.rstrip("/") or "/",
+            urlencode(sorted(query_items)),
+            "",
+        )
+    )
+
+
 def _application_draft_idempotency_key(job: dict[str, Any]) -> str:
     company = _application_company(job).lower()
-    job_url = _application_job_url(job).lower()
+    job_url = _normalize_application_job_url(_application_job_url(job))
+    job_id = str(job.get("job_id") or job.get("normalized_job_id") or "").strip().lower()
     if not company or not job_url:
         raise ValueError("Application drafts require both company and job URL.")
-    base = f"{job_url}|{company}"
+    base = f"{job_url}|{company}|{job_id or '-'}"
     digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
     company_slug = "".join(ch if ch.isalnum() else "-" for ch in company)[:32].strip("-") or "company"
     return f"jobapply:{company_slug}:{digest}"

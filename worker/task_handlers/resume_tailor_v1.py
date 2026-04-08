@@ -229,6 +229,8 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
             "resume_name": profile_context.get("resume_name"),
             "resume_sha256": profile_context.get("resume_sha256"),
             "resume_char_count": profile_context.get("resume_char_count"),
+            "metadata_json": profile_context.get("metadata_json"),
+            "contact_profile": profile_context.get("contact_profile"),
         },
         "extracted_requirements": requirements,
         "requirements_alignment": output.get("requirements_alignment"),

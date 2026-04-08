@@ -37,6 +37,7 @@ def test_registry_contains_required_handlers(worker_module) -> None:
     assert "jobs_rank_v1" in worker_module.HANDLERS
     assert "jobs_shortlist_v1" in worker_module.HANDLERS
     assert "jobs_digest_v2" in worker_module.HANDLERS
+    assert "job_apply_manual_seed_v1" in worker_module.HANDLERS
     assert "job_apply_prepare_v1" in worker_module.HANDLERS
     assert "resume_tailor_v1" in worker_module.HANDLERS
     assert "openclaw_apply_draft_v1" in worker_module.HANDLERS

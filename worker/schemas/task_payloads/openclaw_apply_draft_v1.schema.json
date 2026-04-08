@@ -23,16 +23,21 @@
         "openclaw_apply_max_screenshots": {"type": "integer", "minimum": 0, "maximum": 20},
         "openclaw_apply_timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 1200},
         "openclaw_allow_account_creation": {"type": "boolean"},
+        "openclaw_apply_inspect_only": {"type": "boolean"},
+        "force_redraft": {"type": "boolean"},
         "notify_channels": {"type": "array", "items": {"type": "string"}},
         "resume_upload_path": {"type": "string"},
-        "profile_mode": {"type": "string"}
+        "profile_mode": {"type": "string"},
+        "contact_profile": {"type": "object", "additionalProperties": true},
+        "metadata_json": {"type": "object", "additionalProperties": true}
       },
       "additionalProperties": true
     },
     "draft_policy": {
       "type": "object",
       "properties": {
-        "notify_channels": {"type": "array", "items": {"type": "string"}}
+        "notify_channels": {"type": "array", "items": {"type": "string"}},
+        "force_redraft": {"type": "boolean"}
       },
       "additionalProperties": true
     },

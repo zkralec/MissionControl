@@ -13,3 +13,5 @@ __pycache__/
 *.sqlite3-wal
 *.tar.gz
 personal-startup-notes.md
+*resumes
+google-chrome-stable_current_amd64.deb

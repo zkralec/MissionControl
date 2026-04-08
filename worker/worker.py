@@ -48,6 +48,7 @@ from task_handlers.errors import NonRetryableTaskError
 from task_handlers.jobs_collect_v1 import execute as jobs_collect_execute
 from task_handlers.jobs_digest_v1 import execute as jobs_digest_execute
 from task_handlers.jobs_digest_v2 import execute as jobs_digest_v2_execute
+from task_handlers.job_apply_manual_seed_v1 import execute as job_apply_manual_seed_execute
 from task_handlers.jobs_normalize_v1 import execute as jobs_normalize_execute
 from task_handlers.job_apply_prepare_v1 import execute as job_apply_prepare_execute
 from task_handlers.jobs_rank_v1 import execute as jobs_rank_execute
@@ -97,6 +98,7 @@ HANDLERS = {
     "jobs_rank_v1": jobs_rank_execute,
     "jobs_shortlist_v1": jobs_shortlist_execute,
     "jobs_digest_v2": jobs_digest_v2_execute,
+    "job_apply_manual_seed_v1": job_apply_manual_seed_execute,
     "job_apply_prepare_v1": job_apply_prepare_execute,
     "resume_tailor_v1": resume_tailor_execute,
     "openclaw_apply_draft_v1": openclaw_apply_draft_execute,

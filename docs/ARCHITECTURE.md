@@ -35,6 +35,7 @@ Responsibilities:
 | `jobs_rank_v1` | Deterministically score + LLM-rank jobs | Jobs rank artifact |
 | `jobs_shortlist_v1` | Apply shortlist policy and future-action seeds | Jobs shortlist artifact |
 | `jobs_digest_v2` | Build digest output and notify decision | Jobs digest artifact |
+| `job_apply_manual_seed_v1` | Seed a one-off manual application without shortlist artifacts | Manual application seed artifact |
 | `job_apply_prepare_v1` | Extract shortlisted job requirements and prep application inputs | Job apply prep artifact |
 | `resume_tailor_v1` | Tailor resume/application drafts from stored profile | Resume tailoring artifact |
 | `openclaw_apply_draft_v1` | Fill application in browser and stop at review checkpoint | Draft review artifact |

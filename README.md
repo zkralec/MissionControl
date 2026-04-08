@@ -358,6 +358,7 @@ Jobs v2 is now a full pipeline:
 
 Application-prep phase 2 layers onto shortlisted jobs without replacing the pipeline:
 
+0. optional `job_apply_manual_seed_v1` for one-off manual application seeds
 1. `job_apply_prepare_v1`
 2. `resume_tailor_v1`
 3. `openclaw_apply_draft_v1`
@@ -367,6 +368,7 @@ Important behavior:
 - collection is intentionally broad and can run multiple queries per source
 - OpenClaw is an optional bounded collect stage for `handshake` and `glassdoor`; it is off by default and requires `OPENCLAW_ENABLED=true` plus `OPENCLAW_COLLECTOR_COMMAND`
 - OpenClaw application handling is draft-only in phase 2; it requires `OPENCLAW_APPLY_DRAFT_ENABLED=true` plus `OPENCLAW_APPLY_DRAFT_COMMAND`
+- `job_apply_manual_seed_v1` creates a first-class manual entry path for one-off application testing and preserves lineage as `manual_api/manual_seed`
 - `openclaw_apply_draft_v1` stops before final submission, records review artifacts, and queues review notification only when a draft is ready
 - the planner and watcher presets do not auto-submit applications
 - dedupe happens within a run, not as permanent cross-run suppression
@@ -382,43 +384,223 @@ Required env vars:
 - `OPENCLAW_APPLY_DRAFT_ENABLED=true`
 - `OPENCLAW_APPLY_DRAFT_COMMAND="python3 scripts/openclaw_apply_draft.py"`
 - One adapter path:
-- `OPENCLAW_APPLY_TOOL_COMMAND="<your OpenClaw draft CLI command>"`
+- `OPENCLAW_APPLY_TOOL_COMMAND="python3 /app/scripts/openclaw_apply_tool_bridge.py"`
+- and `OPENCLAW_APPLY_BROWSER_COMMAND="python /app/scripts/openclaw_apply_browser_backend.py"`
 - or `OPENCLAW_APPLY_PYTHON_ENTRYPOINT="openclaw:run_apply_draft"`
 
 Optional runner env vars:
 - `OPENCLAW_APPLY_ADAPTER=auto|command|python`
 - `OPENCLAW_APPLY_HEADLESS=true|false`
+- `OPENCLAW_APPLY_INSPECT_ONLY=true|false`
+- `OPENCLAW_APPLY_BROWSER_ATTACH_MODE=true|false`
+- `OPENCLAW_APPLY_SKIP_BROWSER_START=true|false`
+- `OPENCLAW_APPLY_ALLOW_BROWSER_START=true|false`
+- `OPENCLAW_APPLY_RUN_ON_HOST=true|false`
+- `OPENCLAW_APPLY_GATEWAY_URL=ws://host.docker.internal:18789`
+- `OPENCLAW_APPLY_GATEWAY_TOKEN=<gateway-token>`
+- `OPENCLAW_APPLY_CDP_URL=http://host.docker.internal:9222`
+- `OPENCLAW_APPLY_HOST_GATEWAY_URL=ws://127.0.0.1:18789`
+- `OPENCLAW_APPLY_HOST_CDP_URL=http://127.0.0.1:18800`
+- `OPENCLAW_APPLY_HOST_GATEWAY_ALIAS=host.docker.internal`
 - `OPENCLAW_APPLY_SCREENSHOT_DIR=./data/openclaw_apply_drafts/screenshots`
 - `OPENCLAW_APPLY_RECEIPT_DIR=./data/openclaw_apply_drafts/receipts`
 - `OPENCLAW_APPLY_RESUME_DIR=./data/openclaw_apply_drafts/resume_uploads`
+- `OPENCLAW_APPLY_ALLOWED_RESUME_EXTENSIONS=.pdf,.doc,.docx,.txt,.rtf`
 - `OPENCLAW_APPLY_TIMEOUT_SECONDS=240`
 - `OPENCLAW_APPLY_MAX_STEPS=24`
 - `OPENCLAW_APPLY_LOG_LEVEL=INFO`
 - `OPENCLAW_APPLY_AUTH_STRATEGY=storage_state|existing_session|browser_profile`
 - `OPENCLAW_APPLY_STORAGE_STATE_PATH=/absolute/path/to/storage-state.json`
 - `OPENCLAW_APPLY_BROWSER_PROFILE_PATH=/absolute/path/to/browser-profile`
+- `APPLICATION_DRAFT_STATE_DB_PATH=./data/task_run_history.sqlite3`
+- `OPENCLAW_BROWSER_BASE_COMMAND="/opt/openclaw/npm-global/bin/openclaw browser --url ws://host.docker.internal:18789 --token <gateway-token>"`
+
+Docker/local wiring in this repo:
+- the `worker` container now includes a Node runtime
+- the `worker` container mounts `${HOME}/.npm-global` at `/opt/openclaw/npm-global`
+- the `worker` container mounts `${HOME}/.openclaw` at `/root/.openclaw`
+- the `worker` container maps `host.docker.internal` to the Docker host so it can reach a host-run OpenClaw gateway
+
+### Manual Application Draft API
+
+Use `POST /applications/manual-drafts` to seed a one-off application without any shortlist upstream artifact. The API creates a `job_apply_manual_seed_v1` task, preserves lineage as `manual_api/manual_seed`, and then chains:
+
+1. `job_apply_prepare_v1`
+2. `resume_tailor_v1`
+3. `openclaw_apply_draft_v1`
+
+Exact `curl` example for a LinkedIn Easy Apply draft:
+
+```bash
+curl -X POST "http://localhost:8000/applications/manual-drafts" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Software Engineer, AI",
+    "company": "Example AI",
+    "source": "linkedin",
+    "source_url": "https://www.linkedin.com/jobs/view/1234567890/",
+    "application_url": "https://www.linkedin.com/jobs/view/1234567890/",
+    "job_id": "1234567890",
+    "normalized_job_id": "linkedin-1234567890",
+    "request": {
+      "profile_mode": "resume_profile",
+      "notify_channels": ["discord"],
+      "openclaw_apply_enabled": true
+    }
+  }'
+```
+
+Why the older manual workaround reused the wrong shortlist job:
+- `POST /applications/drafts` stores a `selected_job` copy in the payload, but `job_apply_prepare_v1` historically resolved the actual job from the upstream shortlist artifact instead of trusting that payload copy.
+- If the injected manual job was not present in the shortlist artifact, the prepare stage could fall back to the shortlisted job selected by `job_id`, `shortlist_index`, or the first shortlist row.
+- That wrong `application_target` then flowed into downstream draft dedupe, so duplicate protection could fire for the shortlist job instead of the manual one.
+- the bridge command in `OPENCLAW_APPLY_TOOL_COMMAND` gives Mission Control a stable invocation path even if the exact OpenClaw browser command changes
+- `OPENCLAW_APPLY_BROWSER_COMMAND` should point at the repo-local backend script, which translates Mission Control's draft payload into conservative `openclaw browser ...` operations
+- the repo-local backend is `scripts/openclaw_apply_browser_backend.py`
+- `OPENCLAW_APPLY_TOOL_COMMAND` is the apply-draft adapter command, not the raw browser CLI; in normal command mode it should be the repo-local bridge (`scripts/openclaw_apply_tool_bridge.py`)
+- if a host-run shell accidentally points `OPENCLAW_APPLY_TOOL_COMMAND` at `openclaw browser ...`, the runner now reinterprets that as `OPENCLAW_BROWSER_BASE_COMMAND`, routes execution through the bridge/backend, and still appends real browser subcommands stage by stage
+- `OPENCLAW_BROWSER_BASE_COMMAND` is how the backend reaches the host OpenClaw gateway from inside the worker container
+- `OPENCLAW_BROWSER_BASE_COMMAND` is only a base command prefix; the runner/backend appends browser subcommands like `status`, `tabs`, `open`, `snapshot`, and `screenshot`
+- `OPENCLAW_BROWSER_BASE_COMMAND` must keep browser-scoped flags after `browser`, for example `openclaw browser --url ... --token ... --browser-profile openclaw`
+- when `OPENCLAW_APPLY_BROWSER_ATTACH_MODE=true`, the backend probes the already-running browser with `status` and `tabs` before navigation and skips `browser start` unless `OPENCLAW_APPLY_ALLOW_BROWSER_START=true`
+- `OPENCLAW_APPLY_GATEWAY_URL` and `OPENCLAW_APPLY_CDP_URL` are normalized to `host.docker.internal` when the worker is running in Docker and the configured host is `127.0.0.1` or `localhost`
+- `OPENCLAW_APPLY_RUN_ON_HOST=true` switches the runner payload to host-local OpenClaw URLs (`127.0.0.1`) and is intended for direct host execution of `scripts/openclaw_apply_draft.py`
+- if `OPENCLAW_APPLY_RUN_ON_HOST=true` is requested from the Docker worker, Mission Control now writes a host handoff payload plus the exact host command to run into `debug_json.host_handoff`
+- in successful host mode runs, `debug_json.openclaw_commands` lists each executed browser step with `stage`, full argv, exit code, stdout, and stderr
 
 Safety rules enforced by the runner:
 - it always sends `submit=false` and `stop_before_submit=true`
+- it blocks any adapter submit signal as `unsafe_submit_attempted`
 - it never returns `submitted=true`
-- it only reports `awaiting_review=true` when the draft has meaningful progress for a human reviewer
-- it returns structured non-submit diagnostics such as `login_required`, `captcha_or_bot_challenge`, `unsupported_form`, `upload_failed`, `navigation_failed`, `timed_out`, and `manual_review_required`
+- it only reports `awaiting_review=true` when `draft_status` shows meaningful draft progress and `fields_filled_manifest`, `screenshot_metadata_references`, and `checkpoint_urls` are all non-empty
+- it suppresses notifications unless `awaiting_review=true`, `submitted=false`, and screenshots are present
+- it prevents repeat drafting of the same application identity unless `request.force_redraft=true` or `draft_policy.force_redraft=true`
+
+Expected success criteria:
+- `draft_status` is `draft_ready` or `partial_draft`
+- `awaiting_review=true`
+- `submitted=false`
+- `fields_filled_manifest` is non-empty
+- `screenshot_metadata_references` is non-empty
+- `checkpoint_urls` is non-empty
+- `notify_decision.should_notify=true`
+
+Deterministic failure modes include:
+- `login_required`
+- `captcha_or_bot_challenge`
+- `anti_bot_blocked`
+- `session_expired`
+- `unsupported_form`
+- `upload_failed`
+- `redirected_off_target`
+- `timed_out`
+- `manual_review_required`
+- `unsafe_submit_attempted`
+
+Inspect-only mode:
+- set `OPENCLAW_APPLY_INSPECT_ONLY=true` for a debugging run that opens the page, captures screenshots, and returns page/form diagnostics without filling fields
+- or pass `request.openclaw_apply_inspect_only=true` in the `openclaw_apply_draft_v1` task payload
+- inspect-only runs are intentionally not review-ready and should not notify
 
 Example local invocation:
 
 ```bash
 export OPENCLAW_APPLY_DRAFT_ENABLED=true
 export OPENCLAW_APPLY_DRAFT_COMMAND="python3 scripts/openclaw_apply_draft.py"
-export OPENCLAW_APPLY_TOOL_COMMAND="/absolute/path/to/openclaw-cli apply-draft"
+export OPENCLAW_APPLY_TOOL_COMMAND="python3 scripts/openclaw_apply_tool_bridge.py"
+export OPENCLAW_APPLY_BROWSER_COMMAND="python /app/scripts/openclaw_apply_browser_backend.py"
+export OPENCLAW_APPLY_BROWSER_ATTACH_MODE=true
+export OPENCLAW_APPLY_SKIP_BROWSER_START=true
+export OPENCLAW_APPLY_ALLOW_BROWSER_START=false
+export OPENCLAW_APPLY_RUN_ON_HOST=false
+export OPENCLAW_APPLY_GATEWAY_URL="ws://host.docker.internal:18789"
+export OPENCLAW_APPLY_GATEWAY_TOKEN="<gateway-token>"
+export OPENCLAW_APPLY_CDP_URL="http://host.docker.internal:9222"
+export OPENCLAW_BROWSER_BASE_COMMAND="/opt/openclaw/npm-global/bin/openclaw browser --url ws://host.docker.internal:18789 --token <gateway-token> --browser-profile openclaw"
+python3 scripts/openclaw_apply_draft.py --input-json-file /tmp/openclaw-apply-payload.json
+```
+
+Inspect-only local invocation:
+
+```bash
+export OPENCLAW_APPLY_DRAFT_ENABLED=true
+export OPENCLAW_APPLY_DRAFT_COMMAND="python3 scripts/openclaw_apply_draft.py"
+export OPENCLAW_APPLY_TOOL_COMMAND="python3 scripts/openclaw_apply_tool_bridge.py"
+export OPENCLAW_APPLY_BROWSER_COMMAND="python /app/scripts/openclaw_apply_browser_backend.py"
+export OPENCLAW_APPLY_BROWSER_ATTACH_MODE=true
+export OPENCLAW_APPLY_SKIP_BROWSER_START=true
+export OPENCLAW_APPLY_ALLOW_BROWSER_START=false
+export OPENCLAW_APPLY_RUN_ON_HOST=false
+export OPENCLAW_APPLY_GATEWAY_URL="ws://host.docker.internal:18789"
+export OPENCLAW_APPLY_GATEWAY_TOKEN="<gateway-token>"
+export OPENCLAW_APPLY_CDP_URL="http://host.docker.internal:9222"
+export OPENCLAW_BROWSER_BASE_COMMAND="/opt/openclaw/npm-global/bin/openclaw browser --url ws://host.docker.internal:18789 --token <gateway-token> --browser-profile openclaw"
+export OPENCLAW_APPLY_INSPECT_ONLY=true
 python3 scripts/openclaw_apply_draft.py --input-json-file /tmp/openclaw-apply-payload.json
 ```
 
 Local test commands:
 
 ```bash
+docker compose up -d --build worker
+docker compose exec worker python -c "import shutil; print(shutil.which('openclaw'))"
+printf '%s\n' '{"application_target":{"application_url":"https://jobs.example/apply/1"},"resume_variant":{},"artifacts":{"screenshot_dir":"/tmp/openclaw-smoke","run_key":"smoke-run"},"constraints":{"submit":false,"stop_before_submit":true,"timeout_seconds":5},"submit":false,"stop_before_submit":true}' | docker compose exec -T worker python /app/scripts/openclaw_apply_tool_bridge.py
+pytest worker/tests/test_openclaw_apply_browser_backend.py
 pytest worker/tests/test_openclaw_apply_draft_runner.py
 pytest worker/tests/test_job_application_phase2.py -k openclaw_apply_draft
 ```
+
+Expected worker smoke-check results:
+- if the CLI mount/runtime is healthy but the OpenClaw browser gateway is not ready, the bridge should return `failure_category=manual_review_required` with `blocking_reason` explaining that the gateway is not paired or reachable
+- once the gateway is ready, the same path should return either an inspect/draft result or a board-specific blocked result, but not `tool_unavailable`
+- `debug_json.runner_debug` now includes the exact stdout, stderr, exit code, stage, and failure kind for each `openclaw browser` subprocess invocation
+
+Host-run mode for loopback-only OpenClaw services:
+- use this when OpenClaw is bound only to `127.0.0.1` on the mini-PC host and the Docker worker cannot reach it
+- set `OPENCLAW_APPLY_RUN_ON_HOST=true`
+- set `OPENCLAW_APPLY_HOST_GATEWAY_URL=ws://127.0.0.1:18789`
+- set `OPENCLAW_APPLY_HOST_CDP_URL=http://127.0.0.1:18800`
+- if you want the Docker worker to emit host-visible handoff files, set `OPENCLAW_APPLY_RECEIPT_DIR=/data/openclaw_apply_drafts/receipts` in the worker env so those files land in the bind-mounted `./data` tree
+- set `OPENCLAW_BROWSER_BASE_COMMAND="openclaw browser --url ws://127.0.0.1:18789 --token <gateway-token> --browser-profile openclaw"` in the host shell that will run the draft runner
+- when the Docker worker receives a draft request in host mode, it writes a host handoff request under the receipt root and returns the exact host command in `debug_json.host_handoff.runner_command`
+- the host handoff payload carries `browser.run_on_host=true`, so the host-side `scripts/openclaw_apply_draft.py` path now normalizes host mode before adapter resolution and records every executed browser step under `debug_json.openclaw_commands`
+
+Exact host-run test commands:
+
+```bash
+export OPENCLAW_APPLY_RUN_ON_HOST=true
+export OPENCLAW_APPLY_HOST_GATEWAY_URL="ws://127.0.0.1:18789"
+export OPENCLAW_APPLY_HOST_CDP_URL="http://127.0.0.1:18800"
+export OPENCLAW_BROWSER_BASE_COMMAND="openclaw browser --url ws://127.0.0.1:18789 --token <gateway-token> --browser-profile openclaw"
+export OPENCLAW_APPLY_RECEIPT_DIR="$PWD/data/openclaw_apply_drafts/receipts"
+export OPENCLAW_APPLY_SCREENSHOT_DIR="$PWD/data/openclaw_apply_drafts/screenshots"
+export OPENCLAW_APPLY_RESUME_DIR="$PWD/data/openclaw_apply_drafts/resume_uploads"
+
+REQUEST_FILE="$(ls -t data/openclaw_apply_drafts/receipts/host_handoff/*.input.json | head -n1)"
+RESULT_FILE="data/openclaw_apply_drafts/receipts/host_handoff/$(basename "$REQUEST_FILE" .input.json).result.json"
+python3 scripts/openclaw_apply_draft.py --input-json-file "$REQUEST_FILE" > "$RESULT_FILE"
+python3 -m json.tool "$RESULT_FILE" | sed -n '1,120p'
+```
+
+To inspect the Docker-side handoff/debug artifact after triggering a task:
+
+```bash
+python3 -m json.tool "$(ls -t data/openclaw_apply_drafts/receipts/*.json | head -n1)" | sed -n '1,200p'
+```
+
+Host gateway setup for container access:
+1. stop any existing supervised gateway if you need to change its bind/auth mode
+2. run the host gateway with a non-loopback bind plus token auth, for example:
+   `openclaw gateway run --bind lan --auth token --token <gateway-token>`
+3. set `OPENCLAW_BROWSER_BASE_COMMAND` in Mission Control to use `openclaw browser --url ws://host.docker.internal:18789` with the same token and optional `--browser-profile openclaw`
+4. rebuild the worker so the updated host alias/env values are present
+
+How to verify a run in Mission Control:
+- open the `openclaw_apply_draft_v1` task result in Runs
+- confirm `submitted` is `false`
+- confirm `review_status` is `awaiting_review` only when screenshots, checkpoints, and filled fields are present
+- inspect `failure_category`, `blocking_reason`, `warnings`, and `errors` for blocked runs
+- use `page_diagnostics` and `form_diagnostics` when debugging inspect-only or unsupported boards
 
 ## Data and Observability Storage
 

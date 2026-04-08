@@ -118,6 +118,11 @@ def _normalize_status(value: Any, *, fields_filled_count: int) -> str:
         "timed_out",
         "manual_review_required",
         "unavailable",
+        "unsafe_submit_attempted",
+        "anti_bot_blocked",
+        "session_expired",
+        "redirected_off_target",
+        "inspect_only",
     }:
         if normalized in {"success", "draft_ready", "partial_draft"}:
             return "awaiting_review"
@@ -145,6 +150,7 @@ def _normalize_failure_category(value: Any, *, status: str) -> str | None:
             "layout_error": "unsupported_form",
             "empty_output": "upstream_failure",
             "invalid_json": "invalid_response",
+            "unsafe_submit_attempted": "unsafe_submit_attempted",
         }
         return aliases.get(normalized, normalized)
     if status in {
@@ -159,6 +165,10 @@ def _normalize_failure_category(value: Any, *, status: str) -> str | None:
         "timed_out",
         "manual_review_required",
         "unavailable",
+        "unsafe_submit_attempted",
+        "anti_bot_blocked",
+        "session_expired",
+        "redirected_off_target",
     }:
         return status
     return None
@@ -182,6 +192,7 @@ def _normalize_notify_decision(value: Any, *, awaiting_review: bool, status: str
 def _build_command_payload(
     application_target: dict[str, Any],
     resume_variant: dict[str, Any],
+    candidate_profile: dict[str, Any],
     answer_drafts: list[dict[str, Any]],
     request: dict[str, Any],
     *,
@@ -201,6 +212,7 @@ def _build_command_payload(
         "action": "apply_draft",
         "submit": False,
         "stop_before_submit": True,
+        "inspect_only": bool(request.get("openclaw_apply_inspect_only", request.get("inspect_only", False))),
         "application_target": application_target,
         "resume_variant": {
             "resume_variant_name": resume_variant.get("resume_variant_name"),
@@ -214,11 +226,17 @@ def _build_command_payload(
         "max_screenshots": max_screenshots,
         "create_account_if_needed": bool(request.get("openclaw_allow_account_creation", False)),
         "profile_mode": str(request.get("profile_mode") or "").strip() or None,
+        "candidate_profile": candidate_profile or {},
+        "contact_profile": (
+            request.get("contact_profile")
+            if isinstance(request.get("contact_profile"), dict)
+            else candidate_profile.get("contact_profile")
+        ),
         "lineage": lineage or {},
     }
 
 
-def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_seconds: int) -> tuple[dict[str, Any], int]:
+def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_seconds: int) -> tuple[dict[str, Any], int, dict[str, Any]]:
     started = time.monotonic()
     completed = subprocess.run(
         command,
@@ -229,6 +247,13 @@ def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_sec
         check=False,
     )
     runtime_ms = int((time.monotonic() - started) * 1000)
+    command_debug = {
+        "command": list(command),
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout.decode("utf-8", errors="replace").strip(),
+        "stderr": completed.stderr.decode("utf-8", errors="replace").strip(),
+        "runtime_ms": runtime_ms,
+    }
     if completed.returncode != 0:
         return (
             {
@@ -238,8 +263,9 @@ def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_sec
                 "errors": [f"openclaw_apply_command_failed_exit_{completed.returncode}"],
             },
             runtime_ms,
+            command_debug,
         )
-    stdout = completed.stdout.decode("utf-8", errors="replace").strip()
+    stdout = command_debug["stdout"]
     if not stdout:
         return (
             {
@@ -249,6 +275,7 @@ def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_sec
                 "errors": ["openclaw_apply_empty_output"],
             },
             runtime_ms,
+            command_debug,
         )
     try:
         parsed = json.loads(stdout)
@@ -261,6 +288,7 @@ def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_sec
                 "errors": ["openclaw_apply_invalid_json"],
             },
             runtime_ms,
+            command_debug,
         )
     if not isinstance(parsed, dict):
         return (
@@ -271,14 +299,18 @@ def _invoke_openclaw(command: list[str], payload: dict[str, Any], *, timeout_sec
                 "errors": ["openclaw_apply_invalid_response_shape"],
             },
             runtime_ms,
+            command_debug,
         )
-    return parsed, runtime_ms
+    debug_json = parsed.get("debug_json") if isinstance(parsed.get("debug_json"), dict) else {}
+    parsed["debug_json"] = {"draft_command": command_debug, **debug_json}
+    return parsed, runtime_ms, command_debug
 
 
 def run_openclaw_apply_draft(
     *,
     application_target: dict[str, Any],
     resume_variant: dict[str, Any],
+    candidate_profile: dict[str, Any],
     answer_drafts: list[dict[str, Any]],
     request: dict[str, Any],
     cover_letter_text: str,
@@ -307,13 +339,14 @@ def run_openclaw_apply_draft(
     payload = _build_command_payload(
         application_target,
         resume_variant,
+        candidate_profile,
         answer_drafts,
         request,
         cover_letter_text=cover_letter_text,
         lineage=lineage,
     )
     try:
-        response, runtime_ms = _invoke_openclaw(command, payload, timeout_seconds=timeout_seconds)
+        response, runtime_ms, command_debug = _invoke_openclaw(command, payload, timeout_seconds=timeout_seconds)
     except subprocess.TimeoutExpired:
         response = {
             "draft_status": "not_started",
@@ -330,8 +363,10 @@ def run_openclaw_apply_draft(
             "blocking_reason": "OpenClaw draft command timed out before reaching a safe review checkpoint.",
             "page_title": None,
             "notify_decision": {"should_notify": False, "reason": "timed_out", "channels": []},
+            "debug_json": {"draft_command": {"command": list(command), "exit_code": None, "stdout": "", "stderr": "", "runtime_ms": timeout_seconds * 1000, "timed_out": True}},
         }
         runtime_ms = timeout_seconds * 1000
+        command_debug = response["debug_json"]["draft_command"]
 
     fields_filled_manifest = []
     for row in response.get("fields_filled_manifest") if isinstance(response.get("fields_filled_manifest"), list) else []:
@@ -354,6 +389,7 @@ def run_openclaw_apply_draft(
     draft_status = str(response.get("draft_status") or "").strip() or None
     source_status = str(response.get("source_status") or response.get("status") or "").strip() or None
     review_status = str(response.get("review_status") or "").strip() or None
+    submitted_signal = bool(response.get("submitted")) or bool(response.get("submit_clicked")) or bool(response.get("final_submit_clicked"))
     status = _normalize_status(
         response.get("status") or review_status or draft_status or source_status,
         fields_filled_count=len(fields_filled_manifest),
@@ -361,6 +397,12 @@ def run_openclaw_apply_draft(
     if awaiting_review:
         status = "awaiting_review"
     failure_category = _normalize_failure_category(response.get("failure_category"), status=status)
+    if submitted_signal:
+        failure_category = "unsafe_submit_attempted"
+        awaiting_review = False
+        review_status = "blocked"
+        source_status = "unsafe_submit_attempted"
+        status = "unsafe_submit_attempted"
     if failure_category is None and status == "upstream_failure":
         failure_category = "openclaw_apply_upstream_failure"
     if source_status is None:
@@ -371,9 +413,11 @@ def run_openclaw_apply_draft(
         review_status = "awaiting_review" if awaiting_review else status
     notify_decision = _normalize_notify_decision(
         response.get("notify_decision"),
-        awaiting_review=awaiting_review or status == "awaiting_review",
+        awaiting_review=(awaiting_review or status == "awaiting_review") and not submitted_signal and len(screenshots) > 0,
         status=review_status or status,
     )
+    if submitted_signal:
+        notify_decision = {"should_notify": False, "reason": "unsafe_submit_attempted", "channels": []}
 
     return {
         "status": status,
@@ -395,5 +439,9 @@ def run_openclaw_apply_draft(
             "blocking_reason": str(response.get("blocking_reason") or "").strip() or None,
             "page_title": str(response.get("page_title") or "").strip() or None,
             "notify_decision": notify_decision,
+            "page_diagnostics": response.get("page_diagnostics") if isinstance(response.get("page_diagnostics"), dict) else {},
+            "form_diagnostics": response.get("form_diagnostics") if isinstance(response.get("form_diagnostics"), dict) else {},
+            "inspect_only": bool(response.get("inspect_only", False)),
+            "debug_json": response.get("debug_json") if isinstance(response.get("debug_json"), dict) else {"draft_command": command_debug},
         },
     }

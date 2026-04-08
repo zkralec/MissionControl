@@ -73,12 +73,48 @@ def test_openclaw_jobs_collect_v1_accepts_feature_gate_controls() -> None:
 
 def test_job_apply_prepare_resume_tailor_and_openclaw_apply_payloads_validate() -> None:
     validate_payload(
+        "job_apply_manual_seed_v1",
+        {
+            "pipeline_id": "pipe-manual-1",
+            "manual_job": {
+                "job_id": "manual-123",
+                "normalized_job_id": "linkedin-manual-123",
+                "title": "Machine Learning Engineer",
+                "company": "Manual Labs",
+                "source": "linkedin",
+                "source_url": "https://www.linkedin.com/jobs/view/manual-123",
+                "application_url": "https://www.linkedin.com/jobs/view/manual-123",
+            },
+            "request": {
+                "notify_channels": ["discord"],
+                "openclaw_apply_enabled": True,
+                "contact_profile": {
+                    "city": "Saint Mary's City",
+                    "state_or_province": "MD",
+                    "postal_code": "20686",
+                    "country": "United States",
+                    "primary_phone_number": "240-555-0101",
+                    "phone_type": "mobile"
+                }
+            },
+            "prepare_policy": {"include_cover_letter": True, "enqueue_openclaw_apply": True},
+        },
+    )
+    validate_payload(
         "job_apply_prepare_v1",
         {
             "pipeline_id": "pipe-apply-1",
             "upstream": {"task_id": "task-shortlist", "run_id": "run-shortlist", "task_type": "jobs_shortlist_v1"},
             "request": {"notify_channels": ["discord"]},
             "selection": {"job_id": "job-123"},
+            "selected_job": {
+                "job_id": "job-123",
+                "title": "Applied AI Engineer",
+                "company": "Acme AI",
+                "source": "linkedin",
+                "source_url": "https://www.linkedin.com/jobs/view/job-123",
+                "application_url": "https://www.linkedin.com/jobs/view/job-123",
+            },
             "prepare_policy": {"include_cover_letter": True, "enqueue_openclaw_apply": True},
         },
     )
@@ -102,6 +138,14 @@ def test_job_apply_prepare_resume_tailor_and_openclaw_apply_payloads_validate() 
                 "openclaw_apply_max_screenshots": 6,
                 "openclaw_apply_timeout_seconds": 300,
                 "notify_channels": ["discord"],
+                "contact_profile": {
+                    "city": "Saint Mary's City",
+                    "state_or_province": "MD",
+                    "postal_code": "20686",
+                    "country": "United States",
+                    "primary_phone_number": "240-555-0101",
+                    "phone_type": "mobile"
+                }
             },
         },
     )

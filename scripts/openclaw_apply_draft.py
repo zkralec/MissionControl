@@ -14,6 +14,8 @@ Example with file input:
 
 from __future__ import annotations
 
+import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -22,7 +24,43 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from integrations.openclaw_apply_runner import main
+from integrations.openclaw_apply_runner import execute_apply_draft, invalid_input_result, read_payload
+
+
+def _enforce_script_no_submit(result: dict) -> dict:
+    if not bool(result.get("submitted")):
+        return result
+    guarded = dict(result)
+    guarded["submitted"] = False
+    guarded["awaiting_review"] = False
+    guarded["review_status"] = "blocked"
+    guarded["source_status"] = "unsafe_submit_attempted"
+    guarded["failure_category"] = "unsafe_submit_attempted"
+    guarded["blocking_reason"] = "Script-level no-submit guard blocked an adapter submit signal."
+    warnings = list(guarded.get("warnings") or [])
+    warnings.append("script_level_unsafe_submit_guard_triggered")
+    guarded["warnings"] = warnings
+    guarded["notify_decision"] = {
+        "should_notify": False,
+        "reason": "unsafe_submit_attempted",
+        "channels": [],
+    }
+    return guarded
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Mission Control draft-only OpenClaw runner")
+    parser.add_argument("--input-json-file", dest="input_json_file", help="Path to an input JSON payload file.")
+    args = parser.parse_args(argv)
+
+    try:
+        payload = read_payload(args.input_json_file)
+        result = execute_apply_draft(payload)
+    except ValueError as exc:
+        result = invalid_input_result([str(exc)])
+    result = _enforce_script_no_submit(result)
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
 
 
 if __name__ == "__main__":

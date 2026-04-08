@@ -1207,6 +1207,32 @@ def resolve_profile_context(request: dict[str, Any]) -> dict[str, Any]:
 
     inline_resume_text = request.get("resume_text")
     inline_resume_name = request.get("resume_name")
+    request_metadata = request.get("metadata_json") if isinstance(request.get("metadata_json"), dict) else None
+
+    def _contact_profile_from(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        source = value.get("contact_profile") if isinstance(value.get("contact_profile"), dict) else value
+        if not isinstance(source, dict):
+            return None
+        normalized: dict[str, Any] = {}
+        for key in (
+            "first_name",
+            "last_name",
+            "email_address",
+            "city",
+            "state_or_province",
+            "postal_code",
+            "country",
+            "primary_phone_number",
+            "phone_type",
+        ):
+            raw = source.get(key)
+            if isinstance(raw, str) and raw.strip():
+                normalized[key] = raw.strip()
+        return normalized or None
+
+    request_contact_profile = _contact_profile_from(request.get("contact_profile")) or _contact_profile_from(request_metadata)
 
     if profile_mode == "none":
         return {
@@ -1219,6 +1245,8 @@ def resolve_profile_context(request: dict[str, Any]) -> dict[str, Any]:
             "resume_sent_char_count": 0,
             "resume_truncated": False,
             "resume_text": None,
+            "metadata_json": request_metadata,
+            "contact_profile": request_contact_profile,
         }
 
     if profile_mode == "inline_resume" and isinstance(inline_resume_text, str) and inline_resume_text.strip():
@@ -1234,6 +1262,8 @@ def resolve_profile_context(request: dict[str, Any]) -> dict[str, Any]:
             "resume_sent_char_count": len(truncated),
             "resume_truncated": len(normalized) > len(truncated),
             "resume_text": truncated,
+            "metadata_json": request_metadata,
+            "contact_profile": request_contact_profile,
         }
 
     try:
@@ -1246,6 +1276,7 @@ def resolve_profile_context(request: dict[str, Any]) -> dict[str, Any]:
         if isinstance(stored_text, str) and stored_text.strip():
             normalized = stored_text.replace("\r\n", "\n").strip()
             truncated = normalized[:MAX_RESUME_CHARS_FOR_LLM]
+            stored_metadata = stored.get("metadata_json") if isinstance(stored.get("metadata_json"), dict) else None
             return {
                 "enabled": True,
                 "applied": True,
@@ -1256,6 +1287,8 @@ def resolve_profile_context(request: dict[str, Any]) -> dict[str, Any]:
                 "resume_sent_char_count": len(truncated),
                 "resume_truncated": len(normalized) > len(truncated),
                 "resume_text": truncated,
+                "metadata_json": stored_metadata,
+                "contact_profile": request_contact_profile or _contact_profile_from(stored_metadata),
             }
 
     return {
@@ -1268,4 +1301,6 @@ def resolve_profile_context(request: dict[str, Any]) -> dict[str, Any]:
         "resume_sent_char_count": 0,
         "resume_truncated": False,
         "resume_text": None,
+        "metadata_json": request_metadata,
+        "contact_profile": request_contact_profile,
     }
