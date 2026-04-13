@@ -1,0 +1,270 @@
+{
+  "run_id": "run-8fe3876ca1a4",
+  "job_url": "https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com",
+  "site": "Workable",
+  "adapter_used": "workable",
+  "started_at": "2026-04-13T20:06:40.574409+00:00",
+  "completed_at": "2026-04-13T20:08:23.857676+00:00",
+  "status": "draft_ready",
+  "review_reached": true,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-8fe3876ca1a4/01-01-workable-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-8fe3876ca1a4/02-cookie-consent-detected.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-8fe3876ca1a4/03-cookie-consent-dismissed.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-8fe3876ca1a4/04-02-workable-form.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-8fe3876ca1a4/05-01-workable-filled.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-8fe3876ca1a4/06-01-workable-pre-submit.png"
+  ],
+  "failure_reason": null,
+  "llm_calls": 10,
+  "notes": [
+    "Workable submit button detected. Human review required before submitting."
+  ],
+  "fields_manifest": [
+    {
+      "label": "First name",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Zack",
+      "error": null
+    },
+    {
+      "label": "Last name",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Kralec",
+      "error": null
+    },
+    {
+      "label": "Email",
+      "type": "email",
+      "required": true,
+      "status": "filled",
+      "value_preview": "zkralec@icloud.com",
+      "error": null
+    },
+    {
+      "label": "Headline (Optional)",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "Phone +1",
+      "type": "phone",
+      "required": true,
+      "status": "filled",
+      "value_preview": "4104566443",
+      "error": null
+    },
+    {
+      "label": "Address",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "3233 Vance Rd, Monkton MD, 21111",
+      "error": null
+    },
+    {
+      "label": "city",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "covered by address autocomplete",
+      "error": null
+    },
+    {
+      "label": "postcode",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "covered by address autocomplete",
+      "error": null
+    },
+    {
+      "label": "country",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "covered by address autocomplete",
+      "error": null
+    },
+    {
+      "label": "Choose file or drag and drop here",
+      "type": "file",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "unsupported image upload target",
+      "error": null
+    },
+    {
+      "label": "Salary expectations",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "100000",
+      "error": null
+    },
+    {
+      "label": "Choose file or drag and drop here",
+      "type": "file",
+      "required": true,
+      "status": "filled",
+      "value_preview": "ZacharyKralecResume.pdf",
+      "error": null
+    },
+    {
+      "label": "Do you have a proven track record of building AI products, tools, projects, startups, or side projects that went live? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes \u2014 I built Mission Control, an AI-pow...",
+      "error": null
+    },
+    {
+      "label": "Do you have a strong working knowledge of AI and machine learning tools, large language models, and agent frameworks? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes \u2014 I\u2019ve integrated OpenAI LLMs into M...",
+      "error": null
+    },
+    {
+      "label": "Do you have the ability to go from zero to a functional AI prototype quickly? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes \u2014 I\u2019ve taken ideas to working AI pro...",
+      "error": null
+    },
+    {
+      "label": "Are you comfortable with ambiguity? You will often be defining the problem as much as the solution. Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes \u2014 I\u2019m comfortable with ambiguity and...",
+      "error": null
+    },
+    {
+      "label": "Are you biased toward action over planning? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "I\u2019m biased toward action: I prefer to st...",
+      "error": null
+    },
+    {
+      "label": "Do you have experience building AI agents, voice agents, or workflow automation? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes. I built Mission Control, an AI-powe...",
+      "error": null
+    },
+    {
+      "label": "Do you have a background in vertical SaaS or B2B product development? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "I haven\u2019t shipped a commercial vertical ...",
+      "error": null
+    },
+    {
+      "label": "Are you familiar with the security industry? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes \u2014 through my corporate IT and automa...",
+      "error": null
+    },
+    {
+      "label": "Are you a previous startup or founder with AI experience? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "I\u2019m not a previous startup founder, but ...",
+      "error": null
+    },
+    {
+      "label": "Are you experienced working across multiple product lines or business units? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Yes. As a Corporate IT Analyst and in pr...",
+      "error": null
+    },
+    {
+      "label": "YES",
+      "type": "radio",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "What are your salary expectations?",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "100000",
+      "error": null
+    },
+    {
+      "label": "Do you have at least a bachelor's degree in Artificial Intelligence, Software Engineering, Computer Science, Robotics, Mechanical Engineering or a similar discipline? Please describe.",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "Do you have experience in designing and building Workflow Automation? Please describe.",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "YES",
+      "type": "radio",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "Summary (Optional)",
+      "type": "textarea",
+      "required": false,
+      "status": "filled",
+      "value_preview": "I\u2019m an early-career software engineer wi...",
+      "error": null
+    },
+    {
+      "label": "Cover letter",
+      "type": "textarea",
+      "required": true,
+      "status": "filled",
+      "value_preview": "I\u2019m an early-career software engineer wi...",
+      "error": null
+    },
+    {
+      "label": "Telephone country code",
+      "type": "select",
+      "required": false,
+      "status": "filled",
+      "value_preview": "4104566443",
+      "error": null
+    }
+  ],
+  "steps": []
+}

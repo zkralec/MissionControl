@@ -1,0 +1,237 @@
+==============================================================================
+  FIELDS REPORT — run-be2e01f921fa
+==============================================================================
+  URL     : https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com
+  Adapter : workable
+  Status  : draft_ready
+  Total   : 30  filled=10  skipped=6  failed=14
+==============================================================================
+
+    #  REQ  TYPE        STATUS    LABEL                                VALUE
+  ---  ---  ----------  --------  -----------------------------------  ------------------------------
+
+  --- FILLED (10) ---
+    1  YES  text        filled    First name                           Zack
+    2  YES  text        filled    Last name                            Kralec
+    3  YES  email       filled    Email                                zkralec@icloud.com
+    4  YES  phone       filled    Phone +1                             4104566443
+    5  no   text        filled    (unlabeled)                          United States
+    6  YES  text        filled    Salary expectations                  100000
+    7  YES  text        filled    What are your salary expectations?   100000
+    8  no   textarea    filled    Summary (Optional)                   I’m an early-career software engineer wi...
+    9  YES  textarea    filled    Cover letter                         I’m an early-career software engineer wi...
+   10  no   select      filled    Telephone country code               4104566443
+
+  --- SKIPPED (6) ---
+   11  no   text        skipped   Headline (Optional)                  no answer
+   12  no   text        skipped   Address                              no answer
+   13  no   radio       skipped   YES                                  no answer
+   14  no   text        skipped   Do you have at least a bachelor's d  no answer
+   15  no   text        skipped   Do you have experience in designing  no answer
+   16  no   radio       skipped   YES                                  no answer
+
+  --- FAILED / NO VALUE (14) ---
+   17  no   text        failed    (unlabeled)                          Monkton  ERROR: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div>…</div> intercepts pointer events
+  - retrying click action
+    - waiting 20ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--1tBNa" data-role="illustrated-input">…</div> from <div class="styles--3IYUq">…</div> subtree intercepts pointer events
+  2 × retrying click action
+      - waiting 100ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  6 × retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div>…</div> intercepts pointer events
+    - retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--1tBNa" data-role="illustrated-input">…</div> from <div class="styles--3IYUq">…</div> subtree intercepts pointer events
+    - retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+    - retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div>…</div> intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--1tBNa" data-role="illustrated-input">…</div> from <div class="styles--3IYUq">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+
+   18  no   text        failed    (unlabeled)                          21111  ERROR: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div>…</div> intercepts pointer events
+  - retrying click action
+    - waiting 20ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--1tBNa" data-role="illustrated-input">…</div> from <div class="styles--3IYUq">…</div> subtree intercepts pointer events
+  2 × retrying click action
+      - waiting 100ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  6 × retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div>…</div> intercepts pointer events
+    - retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--1tBNa" data-role="illustrated-input">…</div> from <div class="styles--3IYUq">…</div> subtree intercepts pointer events
+    - retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+    - retrying click action
+      - waiting 500ms
+      - waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div>…</div> intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--1tBNa" data-role="illustrated-input">…</div> from <div class="styles--3IYUq">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+    - element is visible, enabled and stable
+    - scrolling into view if needed
+    - done scrolling
+    - <div class="styles--3aPac">…</div> from <div class="styles--2mJeY">…</div> subtree intercepts pointer events
+  - retrying click action
+    - waiting 500ms
+
+   19  no   file        no_value  SVGs not supported by this browser.  
+   20  YES  file        no_value  SVGs not supported by this browser.  
+   21  YES  text        failed    Do you have a proven track record o  Yes — I built Mission Control, an AI-pow...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes — I built Mission Control, an AI-powered automation platform (Python, FastAPI, Redis, OpenAI integrations, React/TypeScript) where I implemented orchestration, retry-safe execution, observability, budget awareness, and operator-facing controls so it was useful in practice. I also built a resumable PDQ inventory audit workflow that ran across 100+ endpoints to turn a repetitive manual process into a repeatable, auditable automation.")
+
+   22  YES  text        failed    Do you have a strong working knowle  Yes — I have hands-on experience integra...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes — I have hands-on experience integrating LLMs (OpenAI) and AI automation into production systems. In Mission Control I built the backend orchestration, retry-safe task execution, observability, budget awareness, and operator-facing controls that let models be used reliably as part of workflows. I’m familiar with agent patterns and multi-step orchestration needs, though I haven’t specialized in a specific third-party agent framework and can ramp up quickly on one if needed.")
+
+   23  YES  text        failed    Do you have the ability to go from   Yes — I can take an idea to a functional...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes — I can take an idea to a functional AI prototype. I built Mission Control, an AI-powered automation platform using Python, FastAPI, Redis, and OpenAI integrations, and delivered backend orchestration, retry-safe execution, observability, and operator controls so it worked beyond a demo. I learn quickly and prioritize practical scaffolding (APIs, retries, logging, budget-awareness) so prototypes are reliable and easy to evolve into production.")
+
+   24  YES  text        failed    Are you comfortable with ambiguity?  Yes — I’m comfortable with ambiguity. In...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes — I’m comfortable with ambiguity. In projects like Mission Control and the resumable PDQ inventory workflow I turned vague operational needs into concrete requirements by talking with operators, running small experiments, and iterating on observability and retry-safe execution. I focus on delivering pragmatic, testable pieces early and refining them with feedback so the problem and solution evolve together.")
+
+   25  YES  text        failed    Are you biased toward action over p  Yes — I favor moving to implementation q...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes — I favor moving to implementation quickly, but only after a short, practical plan that addresses operational risks. I start by understanding the real-world problem, sketch a minimal safe design, then iterate while adding reliability and observability. In Mission Control and the resumable PDQ audit I focused on retry-safe execution, operator controls, and monitoring so the work shipped fast and stayed useful in practice.")
+
+   26  YES  text        failed    Do you have experience building AI   Yes—I have experience building AI-powere...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes—I have experience building AI-powered agents and workflow automation. I built Mission Control, an AI automation platform that orchestrates scheduled and on-demand workflows and includes retry-safe task execution, observability, budget awareness, and operator-facing controls using Python, FastAPI, Redis, OpenAI integrations, React, and TypeScript. I also built a resumable PDQ inventory audit workflow to collect installed software and browser extension data across more than 100 endpoints to turn a manual audit into a repeatable, auditable process.")
+
+   27  YES  text        failed    Do you have a background in vertica  Yes. I’ve built B2B/internal automation ...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes. I’ve built B2B/internal automation and operations tooling—most notably Mission Control, an AI-powered orchestration platform where I implemented backend services, task execution flows, observability, and operator-facing UI to run scheduled and on-demand workflows. I also built a resumable PDQ inventory audit used across 100+ endpoints to turn a manual process into a repeatable, auditable workflow. These projects gave me practical experience designing reliable, backend-heavy systems for operational users.")
+
+   28  YES  text        failed    Are you familiar with the security   Yes. In my Corporate IT Analyst role and...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes. In my Corporate IT Analyst role and related projects I’ve built security-adjacent tooling like a resumable PDQ inventory audit that collected installed software and browser extension data across 100+ endpoints and Mission Control, an AI-driven orchestration platform with observability and operator-facing controls. Those experiences gave me practical familiarity with asset inventory, audit workflows, automation for repetitive security tasks, and building reliable, retry-safe systems that support security operations.")
+
+   29  YES  text        failed    Are you a previous startup or found  I haven't been a startup founder, but I ...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("I haven't been a startup founder, but I do have hands-on AI experience building production-focused systems. I built Mission Control, an AI-powered automation platform using Python, FastAPI, Redis, OpenAI integrations, React, and TypeScript, owning backend orchestration, retry-safe execution, observability, and operator-facing controls. That work focused on making AI useful and reliable in real operational workflows rather than one-off demos.")
+
+   30  YES  text        failed    Are you experienced working across   Yes. In my Corporate IT Analyst and engi...  ERROR: ElementHandle.type: Timeout 15000ms exceeded.
+Call log:
+  - elementHandle.type("Yes. In my Corporate IT Analyst and engineering work I’ve built internal tools and automation used by multiple operational teams and workflows, focusing on reliable backend services and operator-facing controls. For example, Mission Control and the resumable PDQ inventory audit involved collaborating with stakeholders to turn messy processes into production-ready automation that worked across many endpoints and use cases.")
+
+
+==============================================================================

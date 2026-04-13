@@ -1,0 +1,30 @@
+{
+  "run_id": "run-2370efb67ac3",
+  "job_url": "https://epic.avature.net/Careers/RegisterMethod?folderId=742&source=LinkedIn",
+  "site": "Avature",
+  "adapter_used": "avature",
+  "started_at": "2026-04-13T18:46:09.392666+00:00",
+  "completed_at": "2026-04-13T18:46:26.411435+00:00",
+  "status": "partial",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/01-01-avature-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/02-01-avature-register.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/03-avature-login-after-trigger.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/04-avature-login-credentials-entered.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/05-avature-post-login.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/06-02-avature-unknown.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/07-02-avature-unknown-filled.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-2370efb67ac3/08-02-avature-no-nav.png"
+  ],
+  "failure_reason": "Step 2 (unknown): No navigation control found. Scanned 31 candidate element(s) \u2014 check WARNING logs and the saved HTML snapshot for details.",
+  "llm_calls": 0,
+  "notes": [
+    "Step 1: Logged into Avature as zkralec@icloud.com."
+  ],
+  "steps": []
+}

@@ -189,6 +189,14 @@ def _normalize_notify_decision(value: Any, *, awaiting_review: bool, status: str
     }
 
 
+def _safe_auto_submit_signal(response: dict[str, Any]) -> bool:
+    page_diagnostics = response.get("page_diagnostics") if isinstance(response.get("page_diagnostics"), dict) else {}
+    form_diagnostics = response.get("form_diagnostics") if isinstance(response.get("form_diagnostics"), dict) else {}
+    auto_submit_allowed = bool(page_diagnostics.get("auto_submit_allowed") or form_diagnostics.get("auto_submit_allowed"))
+    auto_submit_succeeded = bool(page_diagnostics.get("auto_submit_succeeded") or form_diagnostics.get("auto_submit_succeeded"))
+    return bool(response.get("submitted")) and auto_submit_allowed and auto_submit_succeeded
+
+
 def _build_command_payload(
     application_target: dict[str, Any],
     resume_variant: dict[str, Any],
@@ -390,6 +398,7 @@ def run_openclaw_apply_draft(
     source_status = str(response.get("source_status") or response.get("status") or "").strip() or None
     review_status = str(response.get("review_status") or "").strip() or None
     submitted_signal = bool(response.get("submitted")) or bool(response.get("submit_clicked")) or bool(response.get("final_submit_clicked"))
+    safe_submitted = _safe_auto_submit_signal(response)
     status = _normalize_status(
         response.get("status") or review_status or draft_status or source_status,
         fields_filled_count=len(fields_filled_manifest),
@@ -397,7 +406,7 @@ def run_openclaw_apply_draft(
     if awaiting_review:
         status = "awaiting_review"
     failure_category = _normalize_failure_category(response.get("failure_category"), status=status)
-    if submitted_signal:
+    if submitted_signal and not safe_submitted:
         failure_category = "unsafe_submit_attempted"
         awaiting_review = False
         review_status = "blocked"
@@ -416,7 +425,12 @@ def run_openclaw_apply_draft(
         awaiting_review=(awaiting_review or status == "awaiting_review") and not submitted_signal and len(screenshots) > 0,
         status=review_status or status,
     )
-    if submitted_signal:
+    if safe_submitted:
+        notify_decision = {"should_notify": False, "reason": "application_submitted", "channels": []}
+        status = "success"
+        source_status = source_status or "success"
+        review_status = "submitted"
+    elif submitted_signal:
         notify_decision = {"should_notify": False, "reason": "unsafe_submit_attempted", "channels": []}
 
     return {
@@ -429,9 +443,9 @@ def run_openclaw_apply_draft(
             "safe_to_retry": bool(response.get("safe_to_retry", status == "upstream_failure")),
             "draft_status": draft_status,
             "source_status": source_status,
-            "awaiting_review": bool(awaiting_review or status == "awaiting_review"),
+            "awaiting_review": bool((awaiting_review or status == "awaiting_review") and not safe_submitted),
             "review_status": review_status,
-            "submitted": False,
+            "submitted": safe_submitted,
             "account_created": bool(response.get("account_created", False)),
             "fields_filled_manifest": fields_filled_manifest,
             "screenshots": screenshots,

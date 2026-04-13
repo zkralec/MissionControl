@@ -1,0 +1,22 @@
+{
+  "run_id": "run-21ddba65c8f9",
+  "job_url": "https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com",
+  "site": "LinkedIn",
+  "adapter_used": "linkedin",
+  "started_at": "2026-04-13T19:19:07.766597+00:00",
+  "completed_at": "2026-04-13T19:19:13.328846+00:00",
+  "status": "failed",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-21ddba65c8f9/01-01-job-listing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-21ddba65c8f9/02-fail-no-easy-apply-button.png"
+  ],
+  "failure_reason": "Easy Apply button not found. Job may not support Easy Apply, or requires login.",
+  "llm_calls": 0,
+  "notes": [],
+  "steps": []
+}

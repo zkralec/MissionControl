@@ -27,8 +27,17 @@ if str(ROOT) not in sys.path:
 from integrations.openclaw_apply_runner import execute_apply_draft, invalid_input_result, read_payload
 
 
+def _safe_auto_submit_signal(result: dict) -> bool:
+    page_diagnostics = result.get("page_diagnostics") if isinstance(result.get("page_diagnostics"), dict) else {}
+    form_diagnostics = result.get("form_diagnostics") if isinstance(result.get("form_diagnostics"), dict) else {}
+    return bool(result.get("submitted")) and bool(
+        (page_diagnostics.get("auto_submit_allowed") or form_diagnostics.get("auto_submit_allowed"))
+        and (page_diagnostics.get("auto_submit_succeeded") or form_diagnostics.get("auto_submit_succeeded"))
+    )
+
+
 def _enforce_script_no_submit(result: dict) -> dict:
-    if not bool(result.get("submitted")):
+    if not bool(result.get("submitted")) or _safe_auto_submit_signal(result):
         return result
     guarded = dict(result)
     guarded["submitted"] = False

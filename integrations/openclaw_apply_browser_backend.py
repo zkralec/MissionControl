@@ -34,12 +34,20 @@ DEFAULT_MAX_SNAPSHOT_CHARS = 12_000
 DEFAULT_HOST_GATEWAY_ALIAS = "host.docker.internal"
 DEFAULT_LINKEDIN_LATER_STEP_MAX_ACTIONS_PER_SIGNATURE = 12
 DEFAULT_LINKEDIN_LATER_STEP_MAX_REPEATED_SIGNATURES = 2
+DEFAULT_LINKEDIN_PRE_SUBMIT_TRANSITION_MAX_ATTEMPTS = 2
 UPLOAD_STAGING_DIR = Path("/tmp/openclaw/uploads")
 LINKEDIN_ALLOWED_RESUME_EXTENSIONS = (".pdf", ".docx", ".doc")
 LOGIN_HINTS = ("sign in", "log in", "login", "authenticate", "continue with", "create account")
 CAPTCHA_HINTS = ("captcha", "recaptcha", "hcaptcha", "i am human", "verify you are human")
 ANTI_BOT_HINTS = ("unusual traffic", "access denied", "bot detection", "blocked", "security check")
 SUBMIT_HINTS = ("submit", "apply now", "finish application", "send application")
+LINKEDIN_SUBMIT_STEP_HINTS = (
+    "submit application",
+    "submit your application",
+    "review and submit",
+    "finish application",
+    "send application",
+)
 LINKEDIN_LOGIN_PAGE_HINTS = (
     "sign in",
     "log in",
@@ -100,11 +108,29 @@ INFERRED_REQUIRED_CANONICAL_KEYS = {
     "primary_phone_number",
     "phone_type",
     "work_authorized_us",
+    "work_authorization_us",
     "sponsorship_required",
     "background_check_ok",
     "drug_screen_ok",
     "accommodation_capability",
 }
+RADIO_GROUP_CANONICAL_ALLOWLIST = {
+    "phone_type",
+    "work_authorization_us",
+    "work_authorized_us",
+    "sponsorship_required",
+    "veteran_status",
+    "disability_status",
+    "gender",
+    "gender_identity",
+    "sexual_orientation",
+    "race_ethnicity",
+    "ethnicity",
+    "pronouns",
+}
+RADIO_GROUP_DISALLOWED_FALLBACK_KEYS = {"state_or_province", "generic_text", "unknown_field"}
+UNCLASSIFIED_RADIO_GROUP_FIELD_NAME = "unclassified_radio_group"
+UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON = "unclassified_required_radio_group"
 SNAPSHOT_CONTROL_HINTS = (
     "textbox",
     "textarea",
@@ -172,12 +198,65 @@ def _current_form_date() -> str:
     return datetime.now().astimezone().strftime("%m/%d/%Y")
 
 
+def _answer_source_category(source: Any) -> str:
+    normalized = _text(source)
+    if normalized.startswith("linkedin_policy_") or normalized == "explicit_payload":
+        return "hard_policy_match"
+    if normalized in {"default_profile", "linkedin_personal_answer_fallback"}:
+        return "user_profile_fallback"
+    if normalized in {"linkedin_personal_answer_visible_neutral_option", "linkedin_safe_self_id_default"}:
+        return "neutral_disclosure_option"
+    return "heuristic_guess"
+
+
+def _confidence_bucket(confidence: Any) -> str:
+    try:
+        score = float(confidence)
+    except (TypeError, ValueError):
+        score = 0.0
+    if score >= 0.95:
+        return "high"
+    if score >= DEFAULT_FILL_MIN_CONFIDENCE:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "unresolved"
+
+
+def _submission_success_detected(snapshot_text: str, refs: list["SnapshotRef"], page_diagnostics: dict[str, Any]) -> bool:
+    excerpt = snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS].lower()
+    success_markers = (
+        "application submitted",
+        "application has been submitted",
+        "your application was sent",
+        "your application has been sent",
+        "thanks for applying",
+        "thank you for applying",
+        "you're all set",
+    )
+    if any(marker in excerpt for marker in success_markers):
+        return True
+    if "thank" in excerpt and "apply" in excerpt:
+        return True
+    submit_ref = _find_clickable_ref(
+        refs,
+        keywords=["submit", "finish application", "apply now", "send application"],
+        disallowed_keywords=["save", "dismiss", "cancel", "close"],
+    )
+    return bool(
+        not submit_ref
+        and not bool(page_diagnostics.get("easy_apply_dialog_exists"))
+        and ("submitted" in excerpt or "applied" in excerpt)
+    )
+
+
 def _result(
     *,
     draft_status: str,
     source_status: str,
     awaiting_review: bool,
     review_status: str,
+    submitted: bool = False,
     failure_category: str | None,
     blocking_reason: str | None,
     fields_filled_manifest: list[dict[str, Any]] | None = None,
@@ -202,7 +281,7 @@ def _result(
         "source_status": source_status,
         "awaiting_review": awaiting_review,
         "review_status": review_status,
-        "submitted": False,
+        "submitted": submitted,
         "failure_category": failure_category,
         "blocking_reason": blocking_reason,
         "fields_filled_manifest": fields_filled_manifest or [],
@@ -1050,6 +1129,161 @@ def _find_clickable_ref(
     return ranked[0] if ranked else None
 
 
+def _sanitize_submit_candidate(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict):
+        return None
+    label = _text(candidate.get("label"))
+    tag = _text(candidate.get("tag")).lower()
+    role = _text(candidate.get("role")).lower()
+    if not label and not tag:
+        return None
+    if tag != "button" and role != "button":
+        return None
+    attributes = candidate.get("attributes") if isinstance(candidate.get("attributes"), dict) else {}
+    filtered_attributes = {
+        _text(key): _text(value)
+        for key, value in attributes.items()
+        if _text(key) and (_text(key) == "aria-label" or _text(key).startswith("data-"))
+    }
+    submit_signal_type = _linkedin_submit_button_signal_type(
+        label=label,
+        aria_label=filtered_attributes.get("aria-label"),
+        attributes=filtered_attributes,
+    )
+    if submit_signal_type == "none":
+        return None
+    return {
+        "ref_hint": _text(candidate.get("refHint")) or None,
+        "label": label or None,
+        "tag": tag or None,
+        "role": role or None,
+        "score": int(candidate.get("score") or 0),
+        "in_footer": bool(candidate.get("inFooter")),
+        "attributes": filtered_attributes,
+        "submit_signal_type": submit_signal_type,
+    }
+
+
+def _choose_submit_candidate(candidates: list[dict[str, Any]], preferred: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    for candidate in candidates:
+        attributes = candidate.get("attributes") if isinstance(candidate.get("attributes"), dict) else {}
+        if "data-live-test-easy-apply-submit-button" in attributes:
+            return candidate
+    preferred_ref = _text(preferred.get("ref_hint")) if isinstance(preferred, dict) else None
+    if preferred_ref:
+        for candidate in candidates:
+            if _text(candidate.get("ref_hint")) == preferred_ref:
+                return candidate
+    return candidates[0]
+
+
+def _snapshot_submit_candidates(refs: list[SnapshotRef]) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    for ref in refs:
+        if ref.field_type != "button":
+            continue
+        label = _ref_prompt_label(ref)
+        normalized_label = _normalize_label_text(label)
+        submit_signal_type = _linkedin_submit_button_signal_type(label=label)
+        if (
+            not normalized_label
+            or "submitting this application won t" in normalized_label
+            or submit_signal_type == "none"
+        ):
+            continue
+        score = 0
+        if submit_signal_type == "text":
+            score += 10
+        if "submit application" in normalized_label:
+            score += 10
+        if "footer" in _normalize_label_text(ref.context_text):
+            score += 3
+        candidates.append(
+            {
+                "ref_hint": ref.ref,
+                "label": label,
+                "tag": "button",
+                "role": "button",
+                "score": score,
+                "in_footer": "footer" in _normalize_label_text(ref.context_text),
+                "attributes": {},
+                "submit_signal_type": submit_signal_type,
+            }
+        )
+    candidates.sort(key=lambda row: (int(row.get("score") or 0), 1 if row.get("tag") == "button" else 0), reverse=True)
+    return {"candidates": candidates, "chosen": dict(candidates[0]) if candidates else None, "source": "snapshot"}
+
+
+def _submit_candidate_diagnostics_payload(candidates: list[dict[str, Any]], chosen: dict[str, Any] | None) -> dict[str, Any]:
+    submit_signal_type = _strongest_submit_signal_type(candidates)
+    return {
+        "submit_candidate_refs": [_text(row.get("ref_hint")) or None for row in candidates],
+        "submit_candidate_labels": [_text(row.get("label")) or None for row in candidates],
+        "submit_candidate_tags": [_text(row.get("tag")) or None for row in candidates],
+        "submit_candidate_signal_types": [_text(row.get("submit_signal_type")) or "none" for row in candidates],
+        "chosen_submit_ref": _text(chosen.get("ref_hint")) or None if isinstance(chosen, dict) else None,
+        "chosen_submit_label": _text(chosen.get("label")) or None if isinstance(chosen, dict) else None,
+        "chosen_submit_tag": _text(chosen.get("tag")) or None if isinstance(chosen, dict) else None,
+        "chosen_submit_signal_type": _text(chosen.get("submit_signal_type")) or None if isinstance(chosen, dict) else None,
+        "submit_signal_type": submit_signal_type,
+        "chosen_submit_attributes": (
+            dict(chosen.get("attributes") or {})
+            if isinstance(chosen, dict) and isinstance(chosen.get("attributes"), dict)
+            else {}
+        ),
+    }
+
+
+def _linkedin_submit_candidates(
+    client: OpenClawBrowserClient | Any,
+    refs: list[SnapshotRef],
+) -> dict[str, Any]:
+    result = client.evaluate_json(_linkedin_submit_probe_script()) if hasattr(client, "evaluate_json") else None
+    if isinstance(result, dict) and _text(result.get("probeKind")) == "__openclaw_linkedin_submit_probe__":
+        candidates = [
+            row for row in (_sanitize_submit_candidate(candidate) for candidate in list(result.get("candidates") or [])) if row
+        ]
+        chosen = _choose_submit_candidate(candidates, _sanitize_submit_candidate(result.get("chosen")))
+        if candidates or chosen:
+            return {"candidates": candidates, "chosen": chosen, "source": "dom"}
+    return _snapshot_submit_candidates(refs)
+
+
+def _click_linkedin_submit_candidate(
+    client: OpenClawBrowserClient | Any,
+    refs: list[SnapshotRef],
+    chosen_candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    chosen_candidate = chosen_candidate if isinstance(chosen_candidate, dict) else None
+    if not chosen_candidate:
+        return {"clicked": False, "chosen": None, "source": "none"}
+    if _text(chosen_candidate.get("ref_hint")) and _text(chosen_candidate.get("ref_hint")) != "[data-live-test-easy-apply-submit-button]":
+        client.click(_text(chosen_candidate.get("ref_hint")))
+        return {"clicked": True, "chosen": chosen_candidate, "source": "snapshot"}
+    result = client.evaluate_json(_linkedin_submit_click_script()) if hasattr(client, "evaluate_json") else None
+    if isinstance(result, dict) and _text(result.get("probeKind")) == "__openclaw_linkedin_submit_click__":
+        result_candidates = [
+            row for row in (_sanitize_submit_candidate(candidate) for candidate in list(result.get("candidates") or [])) if row
+        ]
+        return {
+            "clicked": bool(result.get("clicked")),
+            "chosen": _choose_submit_candidate(
+                result_candidates,
+                _sanitize_submit_candidate(result.get("chosen")) or chosen_candidate,
+            )
+            or chosen_candidate,
+            "source": "dom",
+        }
+    fallback = _snapshot_submit_candidates(refs)
+    fallback_chosen = fallback.get("chosen") if isinstance(fallback, dict) else None
+    if isinstance(fallback_chosen, dict) and _text(fallback_chosen.get("ref_hint")):
+        client.click(_text(fallback_chosen.get("ref_hint")))
+        return {"clicked": True, "chosen": fallback_chosen, "source": "snapshot_fallback"}
+    return {"clicked": False, "chosen": chosen_candidate, "source": "dom"}
+
+
 def _resume_label_from_text(text: str) -> str | None:
     visible = _text(_extract_visible_label(text))
     if not visible:
@@ -1268,9 +1502,20 @@ def _mapping_for_ref(ref: SnapshotRef, *, application_target: dict[str, Any]) ->
     return normalize_canonical_key(ref.label, context_text=ref.context_text)
 
 
-def _linkedin_top_choice_optional_step(snapshot_text: str) -> bool:
-    combined = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", snapshot_text.lower())).strip()
-    return "top choice" in combined and "optional" in combined
+def _linkedin_top_choice_optional_step(
+    snapshot_text: str,
+    *,
+    active_step_signature: Any = None,
+    visible_labels: list[str] | None = None,
+) -> bool:
+    normalized_snapshot = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", snapshot_text.lower())).strip()
+    normalized_signature = _normalize_label_text(_text(active_step_signature))
+    normalized_visible_labels = [_normalize_label_text(_text(label)) for label in list(visible_labels or []) if _text(label)]
+    if "mark job as a top choice" in normalized_signature:
+        return True
+    if any("mark job as a top choice" in label for label in normalized_visible_labels):
+        return True
+    return "mark this job as a top choice optional" in normalized_snapshot
 
 
 def _linkedin_follow_company_optional_refs(refs: list[SnapshotRef]) -> list[SnapshotRef]:
@@ -1461,6 +1706,17 @@ def _linkedin_radio_groups_probe_script() -> str:
         "const probeKind = '__openclaw_linkedin_radio_groups_probe__';"
         "const norm = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLowerCase();"
         "const visible = (node) => !!node && typeof node.getClientRects === 'function' && node.getClientRects().length > 0;"
+        "const collectAttributes = (node) => {"
+        "  const out = {};"
+        "  if (!node || !node.getAttributeNames) return out;"
+        "  for (const name of node.getAttributeNames()) {"
+        "    if (name === 'aria-label' || name.startsWith('data-')) out[name] = String(node.getAttribute(name) || '');"
+        "  }"
+        "  return out;"
+        "};"
+        "const activeDialog = Array.from(document.querySelectorAll('[role=\"dialog\"], dialog, .artdeco-modal, .jobs-easy-apply-modal')).find((node) => visible(node) && (node.matches('[open]') || norm(node.getAttribute('aria-modal')) === 'true' || norm(node.className).includes('active') || norm(node.textContent).includes('continue to next step'))) || document.body;"
+        "const stepRoots = Array.from(activeDialog.querySelectorAll('section, form, fieldset, .jobs-easy-apply-content, .jobs-easy-apply-modal__content, .jobs-easy-apply-form-section, [data-test-modal]')).filter(visible);"
+        "const stepRoot = stepRoots.find((node) => norm(node.textContent).includes('continue to next step') || !!node.querySelector('[data-live-test-easy-apply-next-button],[data-test-easy-apply-next-button],button[aria-label=\"Continue to next step\"]')) || activeDialog;"
         "const optionLabel = (input) => {"
         "  if (!input) return '';"
         "  const push = [];"
@@ -1504,10 +1760,13 @@ def _linkedin_radio_groups_probe_script() -> str:
         "  if ((labelNorm.includes('type') || dashlane.includes('phone')) && optionNorms.some((value) => phoneTypeTokens.includes(value))) {"
         "    return 'phone_type';"
         "  }"
+        "  if (['authorized to work', 'sponsor visa', 'sponsorship', 'work authorization', 'require sponsorship'].some((token) => labelNorm.includes(token))) {"
+        "    return 'work_authorization_us';"
+        "  }"
         "  return '';"
         "};"
         "try {"
-        "  const groups = Array.from(document.querySelectorAll('fieldset')).map((fieldset) => {"
+        "  const groups = Array.from(stepRoot.querySelectorAll('fieldset')).map((fieldset) => {"
         "    const inputs = Array.from(fieldset.querySelectorAll('input[type=\"radio\"]')).filter(visible);"
         "    if (!inputs.length) return null;"
         "    const legend = fieldset.querySelector('legend');"
@@ -1530,13 +1789,125 @@ def _linkedin_radio_groups_probe_script() -> str:
         "      selected_option: selected ? selected.label : null,"
         "      selection_verified: !!selected && !!selected.checked,"
         "      chosen_option: selected ? selected.label : null,"
+        "      resolution_reason: fieldName === 'work_authorization_us' ? 'keyword_match_work_authorization' : (fieldName === 'phone_type' ? 'keyword_match_phone_type' : ''),"
+        "      used_input_click: false,"
+        "      used_label_click: false,"
+        "      verification_method: selected && selected.checked ? 'checked_state' : (selected ? 'selected_marker' : 'none'),"
         "      refs_involved: options.map((option) => option.inputId || option.inputName).filter(Boolean),"
-        "      option_details: options"
+        "      option_details: options,"
+        "      root_attributes: collectAttributes(fieldset)"
         "    };"
         "  }).filter(Boolean);"
         "  return { probeKind, groups };"
         "} catch (error) {"
         "  return { probeKind, error: String(error), groups: [] };"
+        "}"
+        "})())"
+    )
+
+
+def _linkedin_active_step_probe_script() -> str:
+    return (
+        "() => JSON.stringify((() => {"
+        "const probeKind = '__openclaw_linkedin_active_step_probe__';"
+        "const norm = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLowerCase();"
+        "const visible = (node) => !!node && typeof node.getClientRects === 'function' && node.getClientRects().length > 0;"
+        "const collectAttributes = (node) => {"
+        "  const out = {};"
+        "  if (!node || !node.getAttributeNames) return out;"
+        "  for (const name of node.getAttributeNames()) {"
+        "    if (name === 'aria-label' || name.startsWith('data-')) out[name] = String(node.getAttribute(name) || '');"
+        "  }"
+        "  return out;"
+        "};"
+        "const textOf = (node) => String((node && (node.innerText || node.textContent)) || '').replace(/\\s+/g, ' ').trim();"
+        "const activeDialog = Array.from(document.querySelectorAll('[role=\"dialog\"], dialog, .artdeco-modal, .jobs-easy-apply-modal')).find((node) => visible(node) && (node.matches('[open]') || norm(node.getAttribute('aria-modal')) === 'true' || norm(node.className).includes('active') || norm(node.textContent).includes('continue to next step'))) || document.body;"
+        "const stepRoots = Array.from(activeDialog.querySelectorAll('section, form, .jobs-easy-apply-content, .jobs-easy-apply-modal__content, .jobs-easy-apply-form-section, [data-test-modal], [data-live-test-easy-apply-form-section]')).filter(visible);"
+        "const stepRoot = stepRoots.find((node) => norm(node.textContent).includes('continue to next step') || !!node.querySelector('[data-live-test-easy-apply-next-button],[data-test-easy-apply-next-button],button[aria-label=\"Continue to next step\"]')) || activeDialog;"
+        "const headingNode = stepRoot.querySelector('h1, h2, h3, [role=\"heading\"], legend') || activeDialog.querySelector('h1, h2, h3, [role=\"heading\"], legend');"
+        "const heading = textOf(headingNode);"
+        "const progressText = textOf(stepRoot);"
+        "const progressMatch = progressText.match(/\\b([1-9]\\d?|100)\\s*%/);"
+        "const controls = Array.from(stepRoot.querySelectorAll('input, textarea, select, [role=\"radio\"], [role=\"checkbox\"], [role=\"combobox\"]')).filter(visible);"
+        "const labels = [];"
+        "for (const control of controls) {"
+        "  const pieces = [];"
+        "  const add = (value) => { const text = String(value || '').trim(); if (text) pieces.push(text); };"
+        "  if (control.id) {"
+        "    const explicit = stepRoot.querySelector(`label[for=\"${CSS.escape(control.id)}\"]`) || document.querySelector(`label[for=\"${CSS.escape(control.id)}\"]`);"
+        "    if (explicit) add(textOf(explicit));"
+        "  }"
+        "  const closestLabel = control.closest('label');"
+        "  if (closestLabel) add(textOf(closestLabel));"
+        "  const fieldset = control.closest('fieldset');"
+        "  if (fieldset) {"
+        "    const legend = fieldset.querySelector('legend');"
+        "    if (legend) add(textOf(legend));"
+        "  }"
+        "  add(control.getAttribute('aria-label'));"
+        "  add(control.getAttribute('placeholder'));"
+        "  const choice = pieces.find(Boolean) || '';"
+        "  if (choice) labels.push(choice);"
+        "}"
+        "const uniqueLabels = Array.from(new Set(labels.map((value) => textOf({innerText:value})).filter(Boolean)));"
+        "const requiredLabels = uniqueLabels.filter((label) => /(^|\\s)(required|\\*)($|\\s)/i.test(label) || norm(label).includes('required'));"
+        "const candidates = Array.from(stepRoot.querySelectorAll('[data-live-test-easy-apply-next-button], [data-test-easy-apply-next-button], button[aria-label=\"Continue to next step\"], button, [role=\"button\"]')).filter(visible).map((node, index) => ({"
+        "  refHint: node.hasAttribute('data-live-test-easy-apply-next-button') ? '[data-live-test-easy-apply-next-button]' : (node.hasAttribute('data-test-easy-apply-next-button') ? '[data-test-easy-apply-next-button]' : (`dom-next-${index + 1}`)),"
+        "  label: textOf(node),"
+        "  tag: String((node.tagName || '')).toLowerCase(),"
+        "  role: String(node.getAttribute('role') || '').toLowerCase(),"
+        "  attributes: collectAttributes(node),"
+        "  score: (node.hasAttribute('data-live-test-easy-apply-next-button') ? 1000 : 0) + (node.hasAttribute('data-test-easy-apply-next-button') ? 500 : 0) + (norm(node.getAttribute('aria-label')) === 'continue to next step' ? 100 : 0) + (norm(textOf(node)) === 'next' ? 10 : 0)"
+        "})).filter((candidate) => candidate.tag === 'button' || candidate.role === 'button').filter((candidate) => candidate.attributes['aria-label'] === 'Continue to next step' || candidate.attributes['data-live-test-easy-apply-next-button'] !== undefined || candidate.attributes['data-test-easy-apply-next-button'] !== undefined || norm(candidate.label) === 'next');"
+        "const chosen = candidates.sort((a, b) => b.score - a.score)[0] || null;"
+        "return {"
+        "  probeKind,"
+        "  activeStepHeading: heading || null,"
+        "  activeStepProgressPercent: progressMatch ? Number(progressMatch[1]) : null,"
+        "  activeStepRequiredLabels: requiredLabels,"
+        "  activeStepVisibleLabels: uniqueLabels.slice(0, 12),"
+        "  nextCandidates: candidates,"
+        "  chosenNext: chosen"
+        "};"
+        "})())"
+    )
+
+
+def _linkedin_next_click_script() -> str:
+    return (
+        "() => JSON.stringify((() => {"
+        "const probeKind = '__openclaw_linkedin_next_click__';"
+        "const norm = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLowerCase();"
+        "const visible = (node) => !!node && typeof node.getClientRects === 'function' && node.getClientRects().length > 0;"
+        "const collectAttributes = (node) => {"
+        "  const out = {};"
+        "  if (!node || !node.getAttributeNames) return out;"
+        "  for (const name of node.getAttributeNames()) {"
+        "    if (name === 'aria-label' || name.startsWith('data-')) out[name] = String(node.getAttribute(name) || '');"
+        "  }"
+        "  return out;"
+        "};"
+        "const textOf = (node) => String((node && (node.innerText || node.textContent)) || '').replace(/\\s+/g, ' ').trim();"
+        "const activeDialog = Array.from(document.querySelectorAll('[role=\"dialog\"], dialog, .artdeco-modal, .jobs-easy-apply-modal')).find((node) => visible(node) && (node.matches('[open]') || norm(node.getAttribute('aria-modal')) === 'true' || norm(node.className).includes('active') || norm(node.textContent).includes('continue to next step'))) || document.body;"
+        "const stepRoots = Array.from(activeDialog.querySelectorAll('section, form, .jobs-easy-apply-content, .jobs-easy-apply-modal__content, .jobs-easy-apply-form-section, [data-test-modal], [data-live-test-easy-apply-form-section]')).filter(visible);"
+        "const stepRoot = stepRoots.find((node) => norm(node.textContent).includes('continue to next step') || !!node.querySelector('[data-live-test-easy-apply-next-button],[data-test-easy-apply-next-button],button[aria-label=\"Continue to next step\"]')) || activeDialog;"
+        "const candidates = Array.from(stepRoot.querySelectorAll('[data-live-test-easy-apply-next-button], [data-test-easy-apply-next-button], button[aria-label=\"Continue to next step\"], button, [role=\"button\"]')).filter(visible).map((node, index) => ({"
+        "  node,"
+        "  refHint: node.hasAttribute('data-live-test-easy-apply-next-button') ? '[data-live-test-easy-apply-next-button]' : (node.hasAttribute('data-test-easy-apply-next-button') ? '[data-test-easy-apply-next-button]' : (`dom-next-${index + 1}`)),"
+        "  label: textOf(node),"
+        "  tag: String((node.tagName || '')).toLowerCase(),"
+        "  role: String(node.getAttribute('role') || '').toLowerCase(),"
+        "  attributes: collectAttributes(node),"
+        "  score: (node.hasAttribute('data-live-test-easy-apply-next-button') ? 1000 : 0) + (node.hasAttribute('data-test-easy-apply-next-button') ? 500 : 0) + (norm(node.getAttribute('aria-label')) === 'continue to next step' ? 100 : 0) + (norm(textOf(node)) === 'next' ? 10 : 0)"
+        "})).filter((candidate) => candidate.tag === 'button' || candidate.role === 'button').filter((candidate) => candidate.attributes['aria-label'] === 'Continue to next step' || candidate.attributes['data-live-test-easy-apply-next-button'] !== undefined || candidate.attributes['data-test-easy-apply-next-button'] !== undefined || norm(candidate.label) === 'next').sort((a, b) => b.score - a.score);"
+        "const chosen = candidates[0] || null;"
+        "if (!chosen || !chosen.node) return { probeKind, clicked: false, chosen: chosen ? { refHint: chosen.refHint, label: chosen.label, tag: chosen.tag, role: chosen.role, attributes: chosen.attributes, score: chosen.score } : null, candidates: candidates.map(({node, ...rest}) => rest), reason: 'next_button_not_found' };"
+        "try {"
+        "  if (typeof chosen.node.focus === 'function') chosen.node.focus();"
+        "  chosen.node.click();"
+        "  return { probeKind, clicked: true, chosen: { refHint: chosen.refHint, label: chosen.label, tag: chosen.tag, role: chosen.role, attributes: chosen.attributes, score: chosen.score }, candidates: candidates.map(({node, ...rest}) => rest) };"
+        "} catch (error) {"
+        "  return { probeKind, clicked: false, chosen: { refHint: chosen.refHint, label: chosen.label, tag: chosen.tag, role: chosen.role, attributes: chosen.attributes, score: chosen.score }, candidates: candidates.map(({node, ...rest}) => rest), reason: String(error) };"
         "}"
         "})())"
     )
@@ -1604,15 +1975,20 @@ def _linkedin_radio_group_select_script(field_name: str, option_label: str) -> s
         "const chosen = radios.find((input) => norm(optionLabel(input)) === norm(targetOption)) || null;"
         "if (!chosen) return { probeKind, found: true, selection_attempted: false, selection_verified: false };"
         "const chosenLabel = chosen.id ? document.querySelector(`label[for=\"${CSS.escape(chosen.id)}\"]`) : chosen.closest('label');"
+        "let usedInputClick = false;"
+        "let usedLabelClick = false;"
         "if (!chosen.checked) {"
+        "  usedInputClick = true;"
         "  chosen.click();"
         "  chosen.dispatchEvent(new Event('input', { bubbles: true }));"
         "  chosen.dispatchEvent(new Event('change', { bubbles: true }));"
         "}"
         "if (!chosen.checked && chosenLabel) {"
+        "  usedLabelClick = true;"
         "  chosenLabel.click();"
         "}"
         "const verified = !!chosen.checked || selectedMarker(chosen);"
+        "const verificationMethod = chosen.checked ? 'checked_state' : (selectedMarker(chosen) ? 'selected_marker' : 'none');"
         "const legend = matchFieldset.querySelector('legend');"
         "return {"
         "  probeKind,"
@@ -1623,6 +1999,9 @@ def _linkedin_radio_group_select_script(field_name: str, option_label: str) -> s
         "  selection_verified: verified,"
         "  chosen_option: optionLabel(chosen),"
         "  selected_option: verified ? optionLabel(chosen) : null,"
+        "  used_input_click: usedInputClick,"
+        "  used_label_click: usedLabelClick,"
+        "  verification_method: verificationMethod,"
         "  refs_involved: [String(chosen.id || ''), String(chosen.name || '')].filter(Boolean)"
         "};"
         "})())"
@@ -1691,6 +2070,174 @@ def _native_select_probe_script(field_label: str, desired_value: str) -> str:
         "  };"
         "} catch (error) {"
         "  return {probeKind, isNativeSelect:false, detectedFieldType:'combobox', error:String(error)};"
+        "}"
+        "})())"
+    )
+
+
+def _linkedin_submit_probe_script() -> str:
+    return (
+        "() => JSON.stringify((() => {"
+        "const probeKind = '__openclaw_linkedin_submit_probe__';"
+        "const norm = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLowerCase();"
+        "const visible = (node) => !!node && typeof node.getClientRects === 'function' && node.getClientRects().length > 0 && (() => {"
+        "  const style = window.getComputedStyle ? window.getComputedStyle(node) : null;"
+        "  return !style || (style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none');"
+        "})();"
+        "const enabled = (node) => !!node && !node.disabled && norm(node.getAttribute('aria-disabled')) !== 'true';"
+        "const clickable = (node) => {"
+        "  if (!node) return false;"
+        "  const tag = String((node.tagName || '')).toLowerCase();"
+        "  return tag === 'button' || typeof node.onclick === 'function' || node.hasAttribute('onclick');"
+        "};"
+        "const inFooter = (node) => !!node && !!node.closest('footer, .artdeco-modal__actionbar, .jobs-easy-apply-modal__footer, .jobs-easy-apply-modal__actions, .artdeco-modal__footer');"
+        "const textValue = (node) => String(node.innerText || node.textContent || '').trim().replace(/\\s+/g, ' ');"
+        "const attrs = (node) => {"
+        "  const out = {};"
+        "  if (!node || !node.attributes) return out;"
+        "  for (const attr of Array.from(node.attributes)) {"
+        "    if (!attr || !attr.name) continue;"
+        "    const name = String(attr.name);"
+        "    if (name === 'aria-label' || name.startsWith('data-')) out[name] = String(attr.value || '');"
+        "  }"
+        "  return out;"
+        "};"
+        "const submitSignal = (candidate) => {"
+        "  if (candidate.attributes['data-live-test-easy-apply-submit-button'] !== undefined) return true;"
+        "  if (candidate.ariaLabel.includes('submit')) return true;"
+        "  return candidate.text.includes('submit application');"
+        "};"
+        "const score = (candidate) => {"
+        "  if (candidate.attributes['data-live-test-easy-apply-submit-button'] !== undefined) return 1000;"
+        "  let value = 0;"
+        "  if (candidate.ariaLabel.includes('submit')) value += 10;"
+        "  if (candidate.text.includes('submit application')) value += 10;"
+        "  if (candidate.className.includes('artdeco-button--primary')) value += 5;"
+        "  if (candidate.inFooter) value += 3;"
+        "  return value;"
+        "};"
+        "try {"
+        "  const nodes = Array.from(document.querySelectorAll('[data-live-test-easy-apply-submit-button], button, [role=\"button\"]'));"
+        "  const candidates = nodes.map((node, index) => {"
+        "    const tag = String((node.tagName || '')).toLowerCase();"
+        "    const role = norm(node.getAttribute('role'));"
+        "    const text = norm(textValue(node));"
+        "    const ariaLabel = norm(node.getAttribute('aria-label'));"
+        "    const attributes = attrs(node);"
+        "    return {"
+        "      candidateIndex: index,"
+        "      refHint: attributes['data-live-test-easy-apply-submit-button'] !== undefined ? '[data-live-test-easy-apply-submit-button]' : null,"
+        "      label: textValue(node) || String(node.getAttribute('aria-label') || '').trim(),"
+        "      tag,"
+        "      role,"
+        "      text,"
+        "      ariaLabel,"
+        "      className: norm(node.className),"
+        "      inFooter: inFooter(node),"
+        "      visible: visible(node),"
+        "      enabled: enabled(node),"
+        "      clickable: clickable(node),"
+        "      attributes,"
+        "    };"
+        "  }).filter((candidate) => {"
+        "    const strictButton = candidate.tag === 'button' || candidate.role === 'button';"
+        "    if (!strictButton) return false;"
+        "    if (!candidate.visible || !candidate.enabled || !candidate.clickable) return false;"
+        "    if (candidate.text.includes('submitting this application won t')) return false;"
+        "    if (!submitSignal(candidate)) return false;"
+        "    return true;"
+        "  }).map((candidate) => ({ ...candidate, score: score(candidate) }));"
+        "  candidates.sort((a, b) => b.score - a.score || Number(b.inFooter) - Number(a.inFooter) || a.candidateIndex - b.candidateIndex);"
+        "  return { probeKind, candidates, chosen: candidates[0] || null };"
+        "} catch (error) {"
+        "  return { probeKind, error: String(error), candidates: [], chosen: null };"
+        "}"
+        "})())"
+    )
+
+
+def _linkedin_submit_click_script() -> str:
+    return (
+        "() => JSON.stringify((() => {"
+        "const probeKind = '__openclaw_linkedin_submit_click__';"
+        "const norm = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLowerCase();"
+        "const visible = (node) => !!node && typeof node.getClientRects === 'function' && node.getClientRects().length > 0 && (() => {"
+        "  const style = window.getComputedStyle ? window.getComputedStyle(node) : null;"
+        "  return !style || (style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none');"
+        "})();"
+        "const enabled = (node) => !!node && !node.disabled && norm(node.getAttribute('aria-disabled')) !== 'true';"
+        "const clickable = (node) => {"
+        "  if (!node) return false;"
+        "  const tag = String((node.tagName || '')).toLowerCase();"
+        "  return tag === 'button' || typeof node.onclick === 'function' || node.hasAttribute('onclick');"
+        "};"
+        "const inFooter = (node) => !!node && !!node.closest('footer, .artdeco-modal__actionbar, .jobs-easy-apply-modal__footer, .jobs-easy-apply-modal__actions, .artdeco-modal__footer');"
+        "const textValue = (node) => String(node.innerText || node.textContent || '').trim().replace(/\\s+/g, ' ');"
+        "const attrs = (node) => {"
+        "  const out = {};"
+        "  if (!node || !node.attributes) return out;"
+        "  for (const attr of Array.from(node.attributes)) {"
+        "    if (!attr || !attr.name) continue;"
+        "    const name = String(attr.name);"
+        "    if (name === 'aria-label' || name.startsWith('data-')) out[name] = String(attr.value || '');"
+        "  }"
+        "  return out;"
+        "};"
+        "const submitSignal = (candidate) => {"
+        "  if (candidate.attributes['data-live-test-easy-apply-submit-button'] !== undefined) return true;"
+        "  if (candidate.ariaLabel.includes('submit')) return true;"
+        "  return candidate.text.includes('submit application');"
+        "};"
+        "const score = (candidate) => {"
+        "  if (candidate.attributes['data-live-test-easy-apply-submit-button'] !== undefined) return 1000;"
+        "  let value = 0;"
+        "  if (candidate.ariaLabel.includes('submit')) value += 10;"
+        "  if (candidate.text.includes('submit application')) value += 10;"
+        "  if (candidate.className.includes('artdeco-button--primary')) value += 5;"
+        "  if (candidate.inFooter) value += 3;"
+        "  return value;"
+        "};"
+        "try {"
+        "  const nodes = Array.from(document.querySelectorAll('[data-live-test-easy-apply-submit-button], button, [role=\"button\"]'));"
+        "  const candidates = nodes.map((node, index) => {"
+        "    const tag = String((node.tagName || '')).toLowerCase();"
+        "    const role = norm(node.getAttribute('role'));"
+        "    const text = norm(textValue(node));"
+        "    const ariaLabel = norm(node.getAttribute('aria-label'));"
+        "    const attributes = attrs(node);"
+        "    return {"
+        "      node,"
+        "      candidateIndex: index,"
+        "      refHint: attributes['data-live-test-easy-apply-submit-button'] !== undefined ? '[data-live-test-easy-apply-submit-button]' : null,"
+        "      label: textValue(node) || String(node.getAttribute('aria-label') || '').trim(),"
+        "      tag,"
+        "      role,"
+        "      text,"
+        "      ariaLabel,"
+        "      className: norm(node.className),"
+        "      inFooter: inFooter(node),"
+        "      visible: visible(node),"
+        "      enabled: enabled(node),"
+        "      clickable: clickable(node),"
+        "      attributes,"
+        "    };"
+        "  }).filter((candidate) => {"
+        "    const strictButton = candidate.tag === 'button' || candidate.role === 'button';"
+        "    if (!strictButton) return false;"
+        "    if (!candidate.visible || !candidate.enabled || !candidate.clickable) return false;"
+        "    if (candidate.text.includes('submitting this application won t')) return false;"
+        "    if (!submitSignal(candidate)) return false;"
+        "    return true;"
+        "  }).map((candidate) => ({ ...candidate, score: score(candidate) }));"
+        "  candidates.sort((a, b) => b.score - a.score || Number(b.inFooter) - Number(a.inFooter) || a.candidateIndex - b.candidateIndex);"
+        "  const chosen = candidates[0] || null;"
+        "  if (!chosen) return { probeKind, clicked: false, chosen: null, candidates: candidates.map(({ node, ...rest }) => rest) };"
+        "  const node = chosen.node;"
+        "  node.click();"
+        "  node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));"
+        "  return { probeKind, clicked: true, chosen: (({ node, ...rest }) => rest)(chosen), candidates: candidates.map(({ node, ...rest }) => rest) };"
+        "} catch (error) {"
+        "  return { probeKind, clicked: false, error: String(error), chosen: null, candidates: [] };"
         "}"
         "})())"
     )
@@ -1875,7 +2422,20 @@ def _radio_matches_phone_type(candidate: ContactFieldCandidate, desired_value: s
     return normalized_option in aliases
 
 
-def _radio_group_field_name(group_label: str, option_labels: list[str], *, snapshot_text: str = "") -> str | None:
+def _canonical_key_variants(field_name: str | None) -> set[str]:
+    normalized = _text(field_name)
+    if not normalized:
+        return set()
+    variants = {normalized}
+    if normalized == "work_authorization_us":
+        variants.add("work_authorized_us")
+    elif normalized == "work_authorized_us":
+        variants.add("work_authorization_us")
+    return variants
+
+
+def _radio_group_resolution(group_label: str, option_labels: list[str], *, snapshot_text: str = "") -> dict[str, Any]:
+    original_label = _text(group_label) or " / ".join(_text(option) for option in option_labels if _text(option))
     normalized_group = _normalize_label_text(group_label)
     normalized_options = {_normalize_label_text(option) for option in option_labels if _normalize_label_text(option)}
     phone_type_aliases = set().union(*PHONE_TYPE_OPTIONS.values())
@@ -1889,8 +2449,69 @@ def _radio_group_field_name(group_label: str, option_labels: list[str], *, snaps
             or "primary phone number" in snapshot_text.lower()
         )
     ):
-        return "phone_type"
-    return None
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": "phone_type",
+            "resolution_reason": "keyword_match_phone_type",
+        }
+    work_auth_text = _normalize_label_text(" ".join([_text(group_label), *[_text(option) for option in option_labels]]))
+    if any(
+        phrase in work_auth_text
+        for phrase in (
+            "authorized to work",
+            "sponsor visa",
+            "sponsorship",
+            "work authorization",
+            "require sponsorship",
+        )
+    ):
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": "work_authorization_us",
+            "resolution_reason": "keyword_match_work_authorization",
+        }
+    if "veteran" in work_auth_text:
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": "veteran_status",
+            "resolution_reason": "keyword_match_veteran_status",
+        }
+    if "disability" in work_auth_text:
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": "disability_status",
+            "resolution_reason": "keyword_match_disability_status",
+        }
+    if "gender" in work_auth_text:
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": "gender",
+            "resolution_reason": "keyword_match_gender",
+        }
+    if "pronoun" in work_auth_text:
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": "pronouns",
+            "resolution_reason": "keyword_match_pronouns",
+        }
+    candidate_source = _text(group_label) or " ".join(_text(option) for option in option_labels if _text(option))
+    mapped = normalize_canonical_key(candidate_source, context_text="") if candidate_source else None
+    mapped_key = _text(mapped.get("canonical_key")) if isinstance(mapped, dict) else ""
+    if mapped_key and mapped_key in RADIO_GROUP_CANONICAL_ALLOWLIST and mapped_key not in RADIO_GROUP_DISALLOWED_FALLBACK_KEYS:
+        return {
+            "original_label": original_label or None,
+            "resolved_field_name": mapped_key,
+            "resolution_reason": f"normalize_canonical_key:{mapped_key}",
+        }
+    return {
+        "original_label": original_label or None,
+        "resolved_field_name": UNCLASSIFIED_RADIO_GROUP_FIELD_NAME,
+        "resolution_reason": "no_strong_radio_match",
+    }
+
+
+def _radio_group_field_name(group_label: str, option_labels: list[str], *, snapshot_text: str = "") -> str | None:
+    return _text(_radio_group_resolution(group_label, option_labels, snapshot_text=snapshot_text).get("resolved_field_name")) or None
 
 
 def _fallback_radio_group_label(field_name: str) -> str:
@@ -1941,11 +2562,8 @@ def _snapshot_radio_group_diagnostics(
             current_options = []
             return
         option_labels = [_text(row.get("label")) for row in current_options if _text(row.get("label"))]
-        field_name = _radio_group_field_name(_text(current_group_label), option_labels, snapshot_text=snapshot_text)
-        if not field_name:
-            current_group_label = None
-            current_options = []
-            return
+        resolution = _radio_group_resolution(_text(current_group_label), option_labels, snapshot_text=snapshot_text)
+        field_name = _text(resolution.get("resolved_field_name")) or UNCLASSIFIED_RADIO_GROUP_FIELD_NAME
         attempt = dict((selection_attempts or {}).get(field_name) or {})
         selected = next((row for row in current_options if bool(row.get("checked"))), None)
         refs_involved = [
@@ -1957,6 +2575,8 @@ def _snapshot_radio_group_diagnostics(
             {
                 "field_name": field_name,
                 "group_label": _text(current_group_label) or _fallback_radio_group_label(field_name),
+                "original_label": _text(resolution.get("original_label")) or _text(current_group_label) or None,
+                "resolution_reason": _text(resolution.get("resolution_reason")) or None,
                 "required": bool(
                     field_name == "phone_type"
                     or "*" in _text(current_group_label)
@@ -1967,6 +2587,9 @@ def _snapshot_radio_group_diagnostics(
                 "selection_attempted": bool(attempt.get("selection_attempted")),
                 "selection_verified": bool(selected),
                 "chosen_option": _text(attempt.get("chosen_option") or attempt.get("attempted_option")) or None,
+                "used_input_click": bool(attempt.get("used_input_click")),
+                "used_label_click": bool(attempt.get("used_label_click")),
+                "verification_method": _text(attempt.get("verification_method")) or ("checked_state" if selected else "none"),
                 "refs_involved": refs_involved,
             }
         )
@@ -2001,9 +2624,6 @@ def _snapshot_radio_group_diagnostics(
 
 
 def _linkedin_radio_groups_from_dom(client: OpenClawBrowserClient | Any, snapshot_text: str) -> list[dict[str, Any]]:
-    snapshot_lower = snapshot_text.lower()
-    if "contact info" not in snapshot_lower and "primary phone number" not in snapshot_lower:
-        return []
     try:
         result = client.evaluate_json(_linkedin_radio_groups_probe_script())
     except Exception:
@@ -2017,23 +2637,135 @@ def _linkedin_radio_groups_from_dom(client: OpenClawBrowserClient | Any, snapsho
         field_name = _text(row.get("field_name"))
         group_label = _text(row.get("group_label"))
         options = [_text(option) for option in list(row.get("options") or []) if _text(option)]
-        inferred_field_name = field_name or _radio_group_field_name(group_label, options, snapshot_text=snapshot_text) or ""
-        if not inferred_field_name:
-            continue
+        resolution = _radio_group_resolution(group_label, options, snapshot_text=snapshot_text)
+        inferred_field_name = (
+            field_name
+            if field_name in RADIO_GROUP_CANONICAL_ALLOWLIST or field_name == UNCLASSIFIED_RADIO_GROUP_FIELD_NAME
+            else _text(resolution.get("resolved_field_name"))
+        ) or UNCLASSIFIED_RADIO_GROUP_FIELD_NAME
         groups.append(
             {
                 "field_name": inferred_field_name,
                 "group_label": group_label or _fallback_radio_group_label(inferred_field_name),
+                "original_label": _text(resolution.get("original_label")) or group_label or None,
+                "resolution_reason": _text(row.get("resolution_reason")) or _text(resolution.get("resolution_reason")) or None,
                 "required": _as_bool(row.get("required"), default=(inferred_field_name == "phone_type")),
                 "options": options,
                 "selected_option": _text(row.get("selected_option")) or None,
                 "selection_attempted": False,
                 "selection_verified": _as_bool(row.get("selection_verified"), default=False),
                 "chosen_option": _text(row.get("chosen_option")) or None,
+                "used_input_click": bool(row.get("used_input_click")),
+                "used_label_click": bool(row.get("used_label_click")),
+                "verification_method": _text(row.get("verification_method")) or None,
                 "refs_involved": [_text(ref) for ref in list(row.get("refs_involved") or []) if _text(ref)],
             }
         )
     return groups
+
+
+def _linkedin_active_step_from_snapshot(
+    snapshot_text: str,
+    refs: list[SnapshotRef],
+    page_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    heading = _snapshot_heading_text(snapshot_text) or _text(page_diagnostics.get("linkedin_state")) or "unknown"
+    progress_percent = _extract_progress_percent(snapshot_text)
+    visible_labels = _linkedin_visible_step_labels(refs, limit=12)
+    required_labels = [label for label in visible_labels if "*" in label or "required" in _normalize_label_text(label)]
+    next_candidates = list(_snapshot_next_candidates(refs).get("candidates") or [])
+    chosen_next = _choose_next_candidate(next_candidates, next_candidates[0] if next_candidates else None)
+    return {
+        "heading": heading,
+        "progress_percent": progress_percent,
+        "required_labels": required_labels[:12],
+        "visible_labels": visible_labels[:12],
+        "next_candidates": next_candidates,
+        "chosen_next": chosen_next,
+        "source": "snapshot",
+    }
+
+
+def _linkedin_active_step_info(
+    client: OpenClawBrowserClient | Any,
+    snapshot_text: str,
+    refs: list[SnapshotRef],
+    page_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    fallback = _linkedin_active_step_from_snapshot(snapshot_text, refs, page_diagnostics)
+    try:
+        result = client.evaluate_json(_linkedin_active_step_probe_script())
+    except Exception:
+        result = None
+    if not isinstance(result, dict) or _text(result.get("probeKind")) != "__openclaw_linkedin_active_step_probe__":
+        return fallback
+    next_candidates = [
+        row for row in (_sanitize_next_candidate(candidate) for candidate in list(result.get("nextCandidates") or [])) if row
+    ]
+    chosen_next = _choose_next_candidate(next_candidates, _sanitize_next_candidate(result.get("chosenNext")))
+    heading = _text(result.get("activeStepHeading")) or _text(fallback.get("heading")) or "unknown"
+    progress_percent_raw = result.get("activeStepProgressPercent")
+    try:
+        progress_percent = int(progress_percent_raw) if progress_percent_raw is not None else fallback.get("progress_percent")
+    except (TypeError, ValueError):
+        progress_percent = fallback.get("progress_percent")
+    required_labels = [_text(label) for label in list(result.get("activeStepRequiredLabels") or []) if _text(label)]
+    visible_labels = [_text(label) for label in list(result.get("activeStepVisibleLabels") or []) if _text(label)]
+    return {
+        "heading": heading,
+        "progress_percent": progress_percent,
+        "required_labels": required_labels[:12] or list(fallback.get("required_labels") or []),
+        "visible_labels": visible_labels[:12] or list(fallback.get("visible_labels") or []),
+        "next_candidates": next_candidates or list(fallback.get("next_candidates") or []),
+        "chosen_next": chosen_next or fallback.get("chosen_next"),
+        "source": "dom",
+    }
+
+
+def _linkedin_active_step_signature(active_step_info: dict[str, Any], page_diagnostics: dict[str, Any]) -> str:
+    heading = _normalize_label_text(_text(active_step_info.get("heading")) or _text(page_diagnostics.get("linkedin_state")) or "unknown")
+    progress_percent = active_step_info.get("progress_percent")
+    required_labels = [_normalize_label_text(_text(label)) for label in list(active_step_info.get("required_labels") or []) if _text(label)]
+    visible_labels = [_normalize_label_text(_text(label)) for label in list(active_step_info.get("visible_labels") or []) if _text(label)]
+    chosen_next = active_step_info.get("chosen_next") if isinstance(active_step_info.get("chosen_next"), dict) else {}
+    next_label = _normalize_label_text(_text(chosen_next.get("label")))
+    signature_parts = [
+        heading,
+        str(progress_percent) if progress_percent is not None else "",
+        next_label,
+        *required_labels[:6],
+        *visible_labels[:3],
+    ]
+    return "|".join(part for part in signature_parts if part) or heading or "unknown-step"
+
+
+def _click_linkedin_next_candidate(
+    client: OpenClawBrowserClient | Any,
+    refs: list[SnapshotRef],
+    chosen_candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = client.evaluate_json(_linkedin_next_click_script()) if hasattr(client, "evaluate_json") else None
+    if isinstance(result, dict) and _text(result.get("probeKind")) == "__openclaw_linkedin_next_click__":
+        candidates = [
+            row for row in (_sanitize_next_candidate(candidate) for candidate in list(result.get("candidates") or [])) if row
+        ]
+        chosen = _choose_next_candidate(candidates, _sanitize_next_candidate(result.get("chosen")) or chosen_candidate)
+        return {
+            "clicked": bool(result.get("clicked")),
+            "chosen": chosen,
+            "candidates": candidates,
+            "source": "dom",
+            "reason": _text(result.get("reason")) or None,
+        }
+    fallback = _snapshot_next_candidates(refs)
+    chosen = _choose_next_candidate(list(fallback.get("candidates") or []), chosen_candidate or fallback.get("chosen"))
+    return {
+        "clicked": False,
+        "chosen": chosen,
+        "candidates": list(fallback.get("candidates") or []),
+        "source": "snapshot",
+        "reason": "dom_next_click_unavailable",
+    }
 
 
 def _merge_radio_group_diagnostics(
@@ -2053,14 +2785,21 @@ def _merge_radio_group_diagnostics(
         combined = {
             "field_name": field_name,
             "group_label": _text(row.get("group_label")) or _text(existing.get("group_label")) or _fallback_radio_group_label(field_name),
+            "original_label": _text(row.get("original_label")) or _text(existing.get("original_label")) or None,
+            "resolution_reason": _text(row.get("resolution_reason")) or _text(existing.get("resolution_reason")) or None,
             "required": bool(row.get("required") or existing.get("required")),
             "options": options,
             "selected_option": _text(row.get("selected_option")) or _text(existing.get("selected_option")) or None,
             "selection_attempted": bool(row.get("selection_attempted") or existing.get("selection_attempted")),
             "selection_verified": bool(row.get("selection_verified") or existing.get("selection_verified")),
             "chosen_option": _text(row.get("chosen_option")) or _text(existing.get("chosen_option")) or None,
+            "used_input_click": bool(row.get("used_input_click") or existing.get("used_input_click")),
+            "used_label_click": bool(row.get("used_label_click") or existing.get("used_label_click")),
+            "verification_method": _text(row.get("verification_method")) or _text(existing.get("verification_method")) or None,
             "refs_involved": refs_involved,
         }
+        if combined["selection_verified"] and not _text(combined.get("verification_method")):
+            combined["verification_method"] = "checked_state"
         merged[field_name] = combined
     for field_name, attempt in (selection_attempts or {}).items():
         current = merged.setdefault(
@@ -2074,18 +2813,32 @@ def _merge_radio_group_diagnostics(
                 "selection_attempted": False,
                 "selection_verified": False,
                 "chosen_option": None,
+                "original_label": None,
+                "resolution_reason": None,
+                "used_input_click": False,
+                "used_label_click": False,
+                "verification_method": None,
                 "refs_involved": [],
             },
         )
         current["selection_attempted"] = bool(attempt.get("selection_attempted")) or bool(current.get("selection_attempted"))
         current["selection_verified"] = bool(attempt.get("selection_verified")) or bool(current.get("selection_verified"))
         current["chosen_option"] = _text(attempt.get("chosen_option") or attempt.get("attempted_option")) or current.get("chosen_option")
+        current["used_input_click"] = bool(attempt.get("used_input_click")) or bool(current.get("used_input_click"))
+        current["used_label_click"] = bool(attempt.get("used_label_click")) or bool(current.get("used_label_click"))
+        current["verification_method"] = (
+            _text(attempt.get("verification_method"))
+            or _text(current.get("verification_method"))
+            or None
+        )
         attempted_ref = _text(attempt.get("attempted_ref"))
         if attempted_ref and attempted_ref not in current["refs_involved"]:
             current["refs_involved"].append(attempted_ref)
         verified_option = _text(attempt.get("verified_option"))
         if verified_option:
             current["selected_option"] = verified_option
+        if bool(current.get("selection_verified")) and not _text(current.get("verification_method")):
+            current["verification_method"] = "checked_state"
     return list(merged.values())
 
 
@@ -2112,6 +2865,8 @@ def _contact_radio_group_diagnostics(
             {
                 "field_name": _text(row.get("field_name")) or None,
                 "group_label": _text(row.get("group_label")) or None,
+                "original_label": _text(row.get("original_label")) or None,
+                "resolution_reason": _text(row.get("resolution_reason")) or None,
                 "required": bool(row.get("required")),
                 "options": list(row.get("options") or []),
                 "option_labels": list(row.get("options") or []),
@@ -2119,6 +2874,9 @@ def _contact_radio_group_diagnostics(
                 "selection_attempted": bool(row.get("selection_attempted")),
                 "selection_verified": bool(row.get("selection_verified")),
                 "chosen_option": _text(row.get("chosen_option")) or None,
+                "used_input_click": bool(row.get("used_input_click")),
+                "used_label_click": bool(row.get("used_label_click")),
+                "verification_method": _text(row.get("verification_method")) or None,
                 "refs_involved": list(row.get("refs_involved") or []),
             }
         )
@@ -2414,11 +3172,7 @@ def _linkedin_step_context(
 ) -> dict[str, Any]:
     excerpt = snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS].lower()
     easy_apply_ref = _find_clickable_ref(refs, keywords=["easy apply"])
-    next_ref = _find_clickable_ref(
-        refs,
-        keywords=["next", "continue"],
-        disallowed_keywords=["submit", "review", "dismiss", "close", "cancel", "save"],
-    )
+    next_ref = _linkedin_next_ref(refs)
     upload_button_ref = _find_clickable_ref(
         refs,
         keywords=["upload", "resume", "attach"],
@@ -2496,6 +3250,128 @@ def _linkedin_step_context(
 }
 
 
+def _linkedin_next_ref(refs: list[SnapshotRef]) -> SnapshotRef | None:
+    return _find_clickable_ref(
+        refs,
+        keywords=["next", "continue"],
+        disallowed_keywords=["submit", "review", "dismiss", "close", "cancel", "save"],
+    )
+
+
+def _linkedin_next_button_signal_type(
+    *,
+    label: Any = None,
+    aria_label: Any = None,
+    attributes: dict[str, Any] | None = None,
+) -> str:
+    filtered_attributes = attributes if isinstance(attributes, dict) else {}
+    normalized_label = _normalize_label_text(_text(label))
+    normalized_aria = _normalize_label_text(_text(aria_label or filtered_attributes.get("aria-label")))
+    if "data-live-test-easy-apply-next-button" in filtered_attributes:
+        return "data-live-test"
+    if "data-test-easy-apply-next-button" in filtered_attributes:
+        return "data-test"
+    if normalized_aria == "continue to next step":
+        return "aria"
+    if normalized_label in {"next", "continue to next step", "continue"}:
+        return "text"
+    return "none"
+
+
+def _sanitize_next_candidate(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict):
+        return None
+    label = _text(candidate.get("label"))
+    tag = _text(candidate.get("tag")).lower()
+    role = _text(candidate.get("role")).lower()
+    if not label and not tag:
+        return None
+    if tag != "button" and role != "button":
+        return None
+    attributes = candidate.get("attributes") if isinstance(candidate.get("attributes"), dict) else {}
+    filtered_attributes = {
+        _text(key): _text(value)
+        for key, value in attributes.items()
+        if _text(key) and (_text(key) == "aria-label" or _text(key).startswith("data-"))
+    }
+    next_signal_type = _linkedin_next_button_signal_type(
+        label=label,
+        aria_label=filtered_attributes.get("aria-label"),
+        attributes=filtered_attributes,
+    )
+    if next_signal_type == "none":
+        return None
+    return {
+        "ref_hint": _text(candidate.get("refHint")) or None,
+        "label": label or None,
+        "tag": tag or None,
+        "role": role or None,
+        "score": int(candidate.get("score") or 0),
+        "attributes": filtered_attributes,
+        "next_signal_type": next_signal_type,
+    }
+
+
+def _choose_next_candidate(candidates: list[dict[str, Any]], preferred: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    priority = {
+        "data-live-test": 4,
+        "data-test": 3,
+        "aria": 2,
+        "text": 1,
+    }
+    preferred_ref = _text(preferred.get("ref_hint")) if isinstance(preferred, dict) else None
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            priority.get(_text(candidate.get("next_signal_type")), 0),
+            1 if _text(candidate.get("ref_hint")) == preferred_ref and preferred_ref else 0,
+            int(candidate.get("score") or 0),
+        ),
+        reverse=True,
+    )
+    return dict(ranked[0]) if ranked else None
+
+
+def _snapshot_next_candidates(refs: list[SnapshotRef]) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    for ref in refs:
+        if ref.field_type != "button":
+            continue
+        label = _ref_prompt_label(ref)
+        next_signal_type = _linkedin_next_button_signal_type(label=label)
+        if next_signal_type == "none":
+            continue
+        candidates.append(
+            {
+                "ref_hint": ref.ref,
+                "label": label,
+                "tag": "button",
+                "role": "button",
+                "score": 10 if next_signal_type == "text" else 0,
+                "attributes": {},
+                "next_signal_type": next_signal_type,
+            }
+        )
+    chosen = _choose_next_candidate(candidates, candidates[0] if candidates else None)
+    return {"candidates": candidates, "chosen": chosen, "source": "snapshot"}
+
+
+def _next_candidate_diagnostics_payload(candidates: list[dict[str, Any]], chosen: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "chosen_next_ref": _text(chosen.get("ref_hint")) or None if isinstance(chosen, dict) else None,
+        "chosen_next_label": _text(chosen.get("label")) or None if isinstance(chosen, dict) else None,
+        "chosen_next_attributes": (
+            dict(chosen.get("attributes"))
+            if isinstance(chosen, dict) and isinstance(chosen.get("attributes"), dict)
+            else {}
+        ),
+        "next_candidate_refs": [_text(row.get("ref_hint")) or None for row in candidates],
+        "next_candidate_labels": [_text(row.get("label")) or None for row in candidates],
+    }
+
+
 def _extract_progress_percent(snapshot_text: str) -> int | None:
     match = re.search(r"\b([1-9]\d?|100)\s*%", snapshot_text)
     if match:
@@ -2557,27 +3433,122 @@ def _linkedin_review_like_step(snapshot_text: str, refs: list[SnapshotRef], page
     return bool(submit_ref)
 
 
-def _linkedin_step_signature(snapshot_text: str, refs: list[SnapshotRef], page_diagnostics: dict[str, Any]) -> dict[str, Any]:
-    heading = _snapshot_heading_text(snapshot_text) or _text(page_diagnostics.get("linkedin_state")) or "unknown"
-    progress_percent = _extract_progress_percent(snapshot_text)
-    visible_labels = _linkedin_visible_step_labels(refs)
-    next_label = _extract_visible_label(
+def _linkedin_submit_signal_text(value: Any) -> bool:
+    normalized = _normalize_label_text(_text(value))
+    if not normalized:
+        return False
+    if any(hint in normalized for hint in LINKEDIN_SUBMIT_STEP_HINTS):
+        return True
+    return "submit" in normalized and "application" in normalized
+
+
+def _linkedin_submit_button_signal_type(
+    *,
+    label: Any = None,
+    aria_label: Any = None,
+    attributes: dict[str, Any] | None = None,
+) -> str:
+    filtered_attributes = attributes if isinstance(attributes, dict) else {}
+    normalized_label = _normalize_label_text(_text(label))
+    normalized_aria = _normalize_label_text(_text(aria_label or filtered_attributes.get("aria-label")))
+    if "data-live-test-easy-apply-submit-button" in filtered_attributes:
+        return "data-test"
+    if "submit" in normalized_aria:
+        return "aria"
+    if "submit application" in normalized_label:
+        return "text"
+    return "none"
+
+
+def _strongest_submit_signal_type(candidates: list[dict[str, Any]]) -> str:
+    for signal_type in ("data-test", "aria", "text"):
+        if any(_text(candidate.get("submit_signal_type")) == signal_type for candidate in candidates):
+            return signal_type
+    return "none"
+
+
+def _linkedin_submit_heading_signal(snapshot_text: str) -> bool:
+    excerpt = snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS].lower()
+    return any(
+        token in excerpt
+        for token in (
+            'heading "review and submit"',
+            'heading "submit your application"',
+            "review and submit",
+            "submit your application",
+            "finish application",
+            "send application",
+        )
+    )
+
+
+def _linkedin_step_signal_flags(
+    snapshot_text: str,
+    refs: list[SnapshotRef],
+    page_diagnostics: dict[str, Any],
+    *,
+    submit_candidate_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    review_step_detected = bool(
+        str(page_diagnostics.get("linkedin_state") or "") == "easy_apply_review_step"
+        or _linkedin_review_like_step(snapshot_text, refs, page_diagnostics)
+    )
+    snapshot_submit_candidates = _snapshot_submit_candidates(refs)
+    live_submit_candidates = (
+        list(submit_candidate_info.get("candidates") or [])
+        if isinstance(submit_candidate_info, dict)
+        else []
+    )
+    all_submit_candidates = [
+        *live_submit_candidates,
+        *list(snapshot_submit_candidates.get("candidates") or []),
+    ]
+    submit_signal_type = _strongest_submit_signal_type(all_submit_candidates)
+    submit_button_present = submit_signal_type != "none"
+    submit_step_detected = bool(submit_button_present or _linkedin_submit_heading_signal(snapshot_text))
+    return {
+        "review_step_detected": review_step_detected,
+        "submit_step_detected": submit_step_detected,
+        "submit_button_present": submit_button_present,
+        "submit_signal_type": submit_signal_type,
+        "final_step_detected": submit_step_detected,
+    }
+
+
+def _linkedin_step_signature(
+    snapshot_text: str,
+    refs: list[SnapshotRef],
+    page_diagnostics: dict[str, Any],
+    *,
+    active_step_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    active_info = active_step_info if isinstance(active_step_info, dict) else _linkedin_active_step_from_snapshot(
+        snapshot_text,
+        refs,
+        page_diagnostics,
+    )
+    heading = _text(active_info.get("heading")) or _text(page_diagnostics.get("linkedin_state")) or "unknown"
+    progress_percent = active_info.get("progress_percent")
+    visible_labels = list(active_info.get("visible_labels") or _linkedin_visible_step_labels(refs))
+    required_labels = list(active_info.get("required_labels") or [])
+    next_label = _text((active_info.get("chosen_next") or {}).get("label")) or _extract_visible_label(
         _text(page_diagnostics.get("next_ref_label") or page_diagnostics.get("next_button_label"))
     )
-    signature_parts = [
-        _normalize_label_text(heading),
-        str(progress_percent) if progress_percent is not None else "",
-        _normalize_label_text(next_label),
-        *[_normalize_label_text(label) for label in visible_labels[:6]],
-    ]
-    signature = "|".join(part for part in signature_parts if part)
+    signature = _linkedin_active_step_signature(active_info, page_diagnostics)
+    signal_flags = _linkedin_step_signal_flags(snapshot_text, refs, page_diagnostics)
     return {
         "signature": signature or _normalize_label_text(snapshot_text[:240]) or "unknown-step",
         "heading": heading,
         "progress_percent": progress_percent,
         "visible_labels": visible_labels[:8],
+        "required_labels": required_labels[:8],
         "next_button_label": next_label or None,
         "review_like": _linkedin_review_like_step(snapshot_text, refs, page_diagnostics),
+        "review_step_detected": signal_flags["review_step_detected"],
+        "submit_step_detected": signal_flags["submit_step_detected"],
+        "submit_button_present": signal_flags["submit_button_present"],
+        "submit_signal_type": signal_flags["submit_signal_type"],
+        "final_step_detected": signal_flags["final_step_detected"],
     }
 
 
@@ -2727,6 +3698,184 @@ def _contact_step_can_advance(
             radio_group_diagnostics=radio_group_diagnostics,
         )["can_advance"]
     )
+
+
+def _later_step_progression_diagnostics(
+    *,
+    answer_mappings: list[dict[str, Any]],
+    missing_required_fields: list[dict[str, Any]],
+    unresolved_fields: list[dict[str, Any]],
+    radio_group_diagnostics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    statuses: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    answer_by_key = {
+        _text(row.get("canonical_key")): row
+        for row in answer_mappings
+        if _text(row.get("canonical_key"))
+    }
+    missing_by_key = {
+        _text(row.get("canonical_key")): row
+        for row in [*missing_required_fields, *unresolved_fields]
+        if _text(row.get("canonical_key"))
+    }
+    radio_by_field = {
+        _text(row.get("field_name")): row
+        for row in radio_group_diagnostics
+        if _text(row.get("field_name"))
+    }
+
+    canonical_key_resolution = [
+        {
+            "original_label": _text(row.get("original_label")) or _text(row.get("group_label")) or None,
+            "resolved_field_name": _text(row.get("field_name")) or None,
+            "resolution_reason": _text(row.get("resolution_reason")) or None,
+        }
+        for row in radio_group_diagnostics
+        if _text(row.get("field_name"))
+    ][:20]
+    radio_selection_strategy = [
+        {
+            "field_name": _text(row.get("field_name")) or None,
+            "used_input_click": bool(row.get("used_input_click")),
+            "used_label_click": bool(row.get("used_label_click")),
+            "verification_method": _text(row.get("verification_method")) or ("checked_state" if bool(row.get("selection_verified")) else "none"),
+        }
+        for row in radio_group_diagnostics
+        if _text(row.get("field_name"))
+    ][:20]
+    gate_reason = "all_required_later_step_fields_satisfied"
+
+    def _answer_row_for_field(field_name: str) -> dict[str, Any]:
+        for candidate_key in _canonical_key_variants(field_name):
+            if candidate_key in answer_by_key:
+                return dict(answer_by_key[candidate_key])
+        return {}
+
+    def _missing_row_for_field(field_name: str) -> dict[str, Any]:
+        for candidate_key in _canonical_key_variants(field_name):
+            if candidate_key in missing_by_key:
+                return dict(missing_by_key[candidate_key])
+        return {}
+
+    for canonical_key, row in answer_by_key.items():
+        if not bool(row.get("required")):
+            continue
+        radio_diag = next(
+            (
+                candidate
+                for candidate_key in _canonical_key_variants(canonical_key)
+                for candidate in [radio_by_field.get(candidate_key, {})]
+                if candidate
+            ),
+            {},
+        )
+        action = _text(row.get("action"))
+        radio_selected = bool(radio_diag.get("selection_verified"))
+        missing_row = _missing_row_for_field(canonical_key)
+        satisfied = radio_selected if radio_diag else action == "answer" and not missing_row
+        statuses.append(
+            {
+                "field_name": canonical_key,
+                "required": True,
+                "satisfied": satisfied,
+                "action": action or None,
+                "source": _text(row.get("source")) or None,
+                "confidence_bucket": _text(row.get("confidence_bucket")) or None,
+                "label": _text(row.get("label")) or None,
+                "group_label": _text(radio_diag.get("group_label")) or None,
+                "selected_option": _text(radio_diag.get("selected_option")) or None,
+                "selection_attempted": bool(radio_diag.get("selection_attempted")),
+                "selection_verified": radio_selected,
+                "reason": _text(missing_row.get("reason")) or None,
+            }
+        )
+        seen_keys.add(canonical_key)
+
+    for field_name, row in missing_by_key.items():
+        if field_name in seen_keys:
+            continue
+        radio_diag = next(
+            (
+                candidate
+                for candidate_key in _canonical_key_variants(field_name)
+                for candidate in [radio_by_field.get(candidate_key, {})]
+                if candidate
+            ),
+            {},
+        )
+        statuses.append(
+            {
+                "field_name": field_name,
+                "required": True,
+                "satisfied": False,
+                "action": _text(answer_by_key.get(field_name, {}).get("action")) or None,
+                "source": _text(row.get("source")) or None,
+                "confidence_bucket": _text(row.get("confidence_bucket")) or None,
+                "label": _text(row.get("label")) or None,
+                "group_label": _text(radio_diag.get("group_label")) or None,
+                "selected_option": _text(radio_diag.get("selected_option")) or None,
+                "selection_attempted": bool(radio_diag.get("selection_attempted")),
+                "selection_verified": bool(radio_diag.get("selection_verified")),
+                "reason": _text(row.get("reason")) or None,
+            }
+        )
+        seen_keys.add(field_name)
+
+    for field_name, radio_diag in radio_by_field.items():
+        if field_name in seen_keys or not bool(radio_diag.get("required")):
+            continue
+        matched_answer = _answer_row_for_field(field_name)
+        field_reason = (
+            UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON
+            if field_name == UNCLASSIFIED_RADIO_GROUP_FIELD_NAME or not matched_answer
+            else (
+                "radio_selection_attempted_but_not_verified"
+                if bool(radio_diag.get("selection_attempted"))
+                else "required_radio_group_unselected"
+            )
+        )
+        if field_reason == UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON:
+            gate_reason = UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON
+        statuses.append(
+            {
+                "field_name": field_name,
+                "required": True,
+                "satisfied": bool(radio_diag.get("selection_verified")),
+                "action": None,
+                "source": None,
+                "confidence_bucket": None,
+                "label": _text(radio_diag.get("group_label")) or None,
+                "group_label": _text(radio_diag.get("group_label")) or None,
+                "selected_option": _text(radio_diag.get("selected_option")) or None,
+                "selection_attempted": bool(radio_diag.get("selection_attempted")),
+                "selection_verified": bool(radio_diag.get("selection_verified")),
+                "reason": None if bool(radio_diag.get("selection_verified")) else field_reason,
+            }
+        )
+
+    if any(_text(row.get("reason")) == UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON for row in statuses):
+        gate_reason = UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON
+    can_continue = all(bool(row.get("satisfied")) for row in statuses if bool(row.get("required")))
+    return {
+        "required_field_statuses": statuses[:20],
+        "radio_group_diagnostics": radio_group_diagnostics[:20],
+        "canonical_key_resolution": canonical_key_resolution,
+        "radio_selection_strategy": radio_selection_strategy,
+        "can_continue": can_continue,
+        "continue_gate_reason": (
+            "all_required_later_step_fields_satisfied"
+            if can_continue
+            else (gate_reason if gate_reason != "all_required_later_step_fields_satisfied" else "blocking_required_later_step_fields")
+        ),
+    }
+
+
+def _later_step_required_fields_satisfied(required_field_statuses: list[dict[str, Any]] | None) -> bool:
+    statuses = [row for row in list(required_field_statuses or []) if isinstance(row, dict) and bool(row.get("required"))]
+    if not statuses:
+        return True
+    return all(bool(row.get("satisfied")) for row in statuses)
 
 
 def _contact_fill_work(
@@ -2919,6 +4068,7 @@ def _resolve_question_answer(
     if linkedin_target:
         linkedin_defaults: dict[str, dict[str, str]] = {
             "work_authorized_us": {"value": "Yes", "source": "linkedin_policy_work_authorized"},
+            "work_authorization_us": {"value": "Yes", "source": "linkedin_policy_work_authorized"},
             "sponsorship_required": {"value": "No", "source": "linkedin_policy_sponsorship"},
             "worked_with_company_recruiter_before": {
                 "value": "I have not worked with a recruiter",
@@ -3008,10 +4158,12 @@ def _build_generic_answer_actions(
     answer_profile: dict[str, Any],
     application_target: dict[str, Any],
     answers: list[dict[str, Any]],
+    radio_group_diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     explicit_answers = _explicit_answer_entries(answers)
     grouped_refs: dict[str, list[tuple[SnapshotRef, dict[str, Any]]]] = {}
     mapped_ref_ids: set[str] = set()
+    ref_lookup = {ref.ref: ref for ref in refs if _text(ref.ref)}
     policy_matches: list[dict[str, Any]] = []
     answers_applied: list[dict[str, Any]] = []
     safe_skips: list[dict[str, Any]] = []
@@ -3026,6 +4178,36 @@ def _build_generic_answer_actions(
         grouped_refs.setdefault(str(mapping["canonical_key"]), []).append((ref, mapping))
         mapped_ref_ids.add(ref.ref)
 
+    for row in list(radio_group_diagnostics or []):
+        field_name = _text(row.get("field_name"))
+        if not field_name or field_name == UNCLASSIFIED_RADIO_GROUP_FIELD_NAME or field_name in grouped_refs:
+            continue
+        refs_involved = [
+            ref_lookup[ref_id]
+            for ref_id in list(row.get("refs_involved") or [])
+            if _text(ref_id) in ref_lookup
+        ]
+        option_refs = [
+            ref
+            for ref in refs_involved
+            if ref.field_type == "radio"
+        ]
+        if not option_refs:
+            option_refs = [
+                ref
+                for ref in refs
+                if ref.field_type == "radio" and _text(_extract_visible_label(ref.label)) in set(row.get("options") or [])
+            ]
+        if not option_refs:
+            continue
+        mapping = {
+            "canonical_key": field_name,
+            "matched_phrase": _text(row.get("group_label")) or None,
+            "normalized_label": _normalize_label_text(_text(row.get("group_label"))),
+        }
+        grouped_refs[field_name] = [(ref, mapping) for ref in option_refs]
+        mapped_ref_ids.update(ref.ref for ref in option_refs if _text(ref.ref))
+
     fill_payloads: list[dict[str, Any]] = []
     select_actions: list[dict[str, Any]] = []
     execution_actions: list[dict[str, Any]] = []
@@ -3035,7 +4217,44 @@ def _build_generic_answer_actions(
     required_fields_filled: list[str] = []
     answer_confidences: list[float] = []
     self_id_handling_modes: list[str] = []
+    high_confidence_answered_fields: list[dict[str, Any]] = []
+    medium_confidence_answered_fields: list[dict[str, Any]] = []
+    low_confidence_answered_fields: list[dict[str, Any]] = []
+    unresolved_fields: list[dict[str, Any]] = []
+    fallback_answers_used: list[dict[str, Any]] = []
     covered_explicit_canonical_keys: set[str] = set()
+
+    for row in list(radio_group_diagnostics or []):
+        field_name = _text(row.get("field_name"))
+        if field_name != UNCLASSIFIED_RADIO_GROUP_FIELD_NAME or not bool(row.get("required")):
+            continue
+        unresolved_field = {
+            "canonical_key": field_name,
+            "label": _text(row.get("group_label")) or _text(row.get("original_label")) or "Unclassified radio group",
+            "required": True,
+            "reason": UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON,
+            "source": "radio_group_classification",
+            "source_category": "heuristic_guess",
+            "confidence": 0.0,
+            "confidence_bucket": "unresolved",
+        }
+        missing_required_fields.append(dict(unresolved_field))
+        unresolved_fields.append(dict(unresolved_field))
+        answer_mappings.append(
+            {
+                "canonical_key": field_name,
+                "label": unresolved_field["label"],
+                "required": True,
+                "source": "radio_group_classification",
+                "source_category": "heuristic_guess",
+                "action": "review",
+                "confidence": 0.0,
+                "confidence_bucket": "unresolved",
+                "matched_phrase": _text(row.get("original_label")) or None,
+                "normalized_label": _normalize_label_text(_text(row.get("original_label"))),
+                "value_preview": None,
+            }
+        )
 
     for canonical_key, grouped in grouped_refs.items():
         covered_explicit_canonical_keys.add(canonical_key)
@@ -3097,6 +4316,9 @@ def _build_generic_answer_actions(
                     "self_id_handling_mode": "skip_optional",
                 }
         confidence = float(resolution.get("confidence") or 0.0)
+        source = _text(resolution.get("source"))
+        source_category = _answer_source_category(source)
+        confidence_bucket = _confidence_bucket(confidence)
         chosen_ref: SnapshotRef | None = None
         desired_value = _text(resolution.get("value"))
         if resolution.get("action") == "answer" and confidence >= DEFAULT_FILL_MIN_CONFIDENCE:
@@ -3158,8 +4380,10 @@ def _build_generic_answer_actions(
                     "value_preview": None,
                     "value_redacted": True,
                     "canonical_key": canonical_key,
-                    "answer_source": resolution.get("source"),
+                    "answer_source": source,
+                    "answer_source_category": source_category,
                     "confidence": round(confidence, 4),
+                    "confidence_bucket": confidence_bucket,
                 }
             )
             manifest_rows.append(manifest_row)
@@ -3173,62 +4397,79 @@ def _build_generic_answer_actions(
                     "label": _ref_prompt_label(chosen_ref),
                     "normalized_label": _normalize_label_text(_ref_search_text(chosen_ref)),
                     "matched_phrase": representative_mapping.get("matched_phrase"),
-                    "source": resolution.get("source"),
+                    "source": source,
                     "manifest_row": manifest_row,
                 }
             )
-            if _text(resolution.get("source")) == "linkedin_personal_answer_fallback":
+            if source == "linkedin_personal_answer_fallback":
                 personal_answer_fallbacks_used.append(
                     {
                         "canonical_key": canonical_key,
                         "label": _ref_prompt_label(chosen_ref),
                         "value": desired_value,
                         "reason": "required_no_visible_neutral_option",
+                        "source_category": source_category,
+                        "confidence_bucket": confidence_bucket,
                     }
                 )
-            answers_applied.append(
-                {
-                    "canonical_key": canonical_key,
-                    "label": _ref_prompt_label(chosen_ref),
-                    "field_type": chosen_ref.field_type,
-                    "source": resolution.get("source"),
-                    "confidence": round(confidence, 4),
-                }
-            )
+            answered_field = {
+                "canonical_key": canonical_key,
+                "label": _ref_prompt_label(chosen_ref),
+                "field_type": chosen_ref.field_type,
+                "required": required,
+                "source": source,
+                "source_category": source_category,
+                "confidence": round(confidence, 4),
+                "confidence_bucket": confidence_bucket,
+            }
+            answers_applied.append(dict(answered_field))
+            if confidence_bucket == "high":
+                high_confidence_answered_fields.append(dict(answered_field))
+            elif confidence_bucket == "medium":
+                medium_confidence_answered_fields.append(dict(answered_field))
+            else:
+                low_confidence_answered_fields.append(dict(answered_field))
+            if source_category != "hard_policy_match":
+                fallback_answers_used.append(dict(answered_field))
             answer_confidences.append(confidence)
             if required:
                 required_fields_filled.append(canonical_key)
         elif required:
-            missing_reason = _text(resolution.get("reason") or resolution.get("source") or "unmapped_required_field")
-            if _text(resolution.get("source")) == "linkedin_safe_self_id_default":
+            missing_reason = _text(resolution.get("reason") or source or "unmapped_required_field")
+            if source == "linkedin_safe_self_id_default":
                 missing_reason = "no_safe_neutral_option_available"
-            missing_required_fields.append(
-                {
-                    "canonical_key": canonical_key,
-                    "label": _ref_prompt_label(representative_ref),
-                    "reason": (
-                        "required_personal_answer_fallback_unmatched"
-                        if _text(resolution.get("source")) == "linkedin_personal_answer_fallback"
-                        else missing_reason
-                    ),
-                    "confidence": round(confidence, 4),
-                }
-            )
+            unresolved_field = {
+                "canonical_key": canonical_key,
+                "label": _ref_prompt_label(representative_ref),
+                "required": True,
+                "reason": (
+                    "required_personal_answer_fallback_unmatched"
+                    if source == "linkedin_personal_answer_fallback"
+                    else missing_reason
+                ),
+                "source": source or None,
+                "source_category": source_category,
+                "confidence": round(confidence, 4),
+                "confidence_bucket": confidence_bucket,
+            }
+            missing_required_fields.append(dict(unresolved_field))
+            unresolved_fields.append(dict(unresolved_field))
         elif resolution.get("action") == "skip":
             safe_skips.append(
                 {
                     "canonical_key": canonical_key,
                     "label": _ref_prompt_label(representative_ref),
-                    "reason": _text(resolution.get("source") or "safe_skip"),
+                    "reason": _text(source or "safe_skip"),
                 }
             )
         self_id_handling_modes.append(_text(resolution.get("self_id_handling_mode")) or ("review" if is_self_id_key(canonical_key) else "standard"))
-        if _text(resolution.get("source")).startswith("linkedin_"):
+        if source.startswith("linkedin_"):
             policy_matches.append(
                 {
                     "canonical_key": canonical_key,
                     "label": _ref_prompt_label(representative_ref),
-                    "source": resolution.get("source"),
+                    "source": source,
+                    "source_category": source_category,
                 }
             )
         answer_mappings.append(
@@ -3236,9 +4477,11 @@ def _build_generic_answer_actions(
                 "canonical_key": canonical_key,
                 "label": _ref_prompt_label(representative_ref),
                 "required": required,
-                "source": resolution.get("source"),
+                "source": source,
+                "source_category": source_category,
                 "action": resolution.get("action"),
                 "confidence": round(confidence, 4),
+                "confidence_bucket": confidence_bucket,
                 "matched_phrase": representative_mapping.get("matched_phrase"),
                 "normalized_label": representative_mapping.get("normalized_label"),
                 "value_preview": None if resolution.get("action") == "answer" else None,
@@ -3260,10 +4503,15 @@ def _build_generic_answer_actions(
                     {
                         "canonical_key": "ambiguous_self_id",
                         "label": _ref_prompt_label(ref),
+                        "required": True,
                         "reason": "ambiguous_required_self_id_field",
+                        "source": "ambiguous_self_id",
+                        "source_category": "heuristic_guess",
                         "confidence": 0.0,
+                        "confidence_bucket": "unresolved",
                     }
                 )
+                unresolved_fields.append(dict(missing_required_fields[-1]))
                 self_id_handling_modes.append("review")
                 answer_mappings.append(
                     {
@@ -3271,8 +4519,10 @@ def _build_generic_answer_actions(
                         "label": _ref_prompt_label(ref),
                         "required": True,
                         "source": "ambiguous_self_id",
+                        "source_category": "heuristic_guess",
                         "action": "review",
                         "confidence": 0.0,
+                        "confidence_bucket": "unresolved",
                         "matched_phrase": None,
                         "normalized_label": _normalize_label_text(_ref_search_text(ref)),
                         "value_preview": None,
@@ -3286,8 +4536,10 @@ def _build_generic_answer_actions(
                         "label": _ref_prompt_label(ref),
                         "required": False,
                         "source": "unmapped_optional_self_id",
+                        "source_category": "heuristic_guess",
                         "action": "skip",
                         "confidence": 0.5,
+                        "confidence_bucket": "low",
                         "matched_phrase": None,
                         "normalized_label": _normalize_label_text(_ref_search_text(ref)),
                         "value_preview": None,
@@ -3299,18 +4551,25 @@ def _build_generic_answer_actions(
                 {
                     "canonical_key": "ambiguous_required_field",
                     "label": _ref_prompt_label(ref),
+                    "required": True,
                     "reason": "ambiguous_required_field",
+                    "source": "ambiguous_required_field",
+                    "source_category": "heuristic_guess",
                     "confidence": 0.0,
+                    "confidence_bucket": "unresolved",
                 }
             )
+            unresolved_fields.append(dict(missing_required_fields[-1]))
             answer_mappings.append(
                 {
                     "canonical_key": None,
                     "label": _ref_prompt_label(ref),
                     "required": True,
                     "source": "ambiguous_required_field",
+                    "source_category": "heuristic_guess",
                     "action": "review",
                     "confidence": 0.0,
+                    "confidence_bucket": "unresolved",
                     "matched_phrase": None,
                     "normalized_label": _normalize_label_text(_ref_search_text(ref)),
                     "value_preview": None,
@@ -3343,6 +4602,11 @@ def _build_generic_answer_actions(
         "required_fields_filled": required_fields_filled,
         "self_id_handling_mode": self_id_mode,
         "answer_confidences": answer_confidences,
+        "high_confidence_answered_fields": high_confidence_answered_fields,
+        "medium_confidence_answered_fields": medium_confidence_answered_fields,
+        "low_confidence_answered_fields": low_confidence_answered_fields,
+        "unresolved_fields": unresolved_fields,
+        "fallback_answers_used": fallback_answers_used,
         "covered_explicit_canonical_keys": sorted(covered_explicit_canonical_keys),
     }
 
@@ -3490,48 +4754,150 @@ def _resolve_live_action_ref(
     return None
 
 
-def _submit_decision(
+def _later_step_decision(
     *,
     answer_profile: dict[str, Any],
+    answer_mappings: list[dict[str, Any]],
     missing_required_fields: list[dict[str, Any]],
+    unresolved_fields: list[dict[str, Any]],
+    high_confidence_answered_fields: list[dict[str, Any]],
+    medium_confidence_answered_fields: list[dict[str, Any]],
+    low_confidence_answered_fields: list[dict[str, Any]],
     answer_confidences: list[float],
-    review_step_visible: bool,
+    review_step_detected: bool,
+    submit_step_detected: bool,
+    submit_button_present: bool,
+    final_step_detected: bool,
+    next_step_available: bool,
+    visible_question_count: int,
 ) -> dict[str, Any]:
     min_confidence = float(answer_profile.get("auto_submit_min_confidence") or DEFAULT_AUTO_SUBMIT_MIN_CONFIDENCE)
-    score = min(answer_confidences) if answer_confidences else 0.0
-    if not bool(answer_profile.get("auto_submit_allowed", True)):
-        return {
-            "should_auto_submit": False,
-            "confidence_score": round(score, 4),
-            "min_confidence": round(min_confidence, 4),
-            "reason": "auto_submit_disabled",
-        }
+    required_answer_mappings = [
+        row for row in answer_mappings if bool(row.get("required")) and _text(row.get("action")) == "answer"
+    ]
+    heuristic_answered_fields = [
+        row for row in answer_mappings if _text(row.get("action")) == "answer" and _text(row.get("source_category")) == "heuristic_guess"
+    ]
+    heuristic_required_answers = [row for row in heuristic_answered_fields if bool(row.get("required"))]
+    unsafe_personal_fallback_answers = [
+        row
+        for row in answer_mappings
+        if _text(row.get("action")) == "answer" and _text(row.get("source")) == "linkedin_personal_answer_fallback"
+    ]
+    required_fields_satisfied = not missing_required_fields and not unresolved_fields
+    no_low_confidence_answers = not low_confidence_answered_fields
+    no_heuristic_answers = not heuristic_answered_fields
+    no_unsafe_personal_fallbacks = not unsafe_personal_fallback_answers
+    auto_submit_enabled = bool(answer_profile.get("auto_submit_allowed", True))
+    has_high_confidence_submit_screen = bool(final_step_detected and submit_step_detected and submit_button_present)
+    calculated_confidence_score = min(answer_confidences) if answer_confidences else (1.0 if visible_question_count == 0 else 0.0)
+    confidence_is_high = calculated_confidence_score >= min_confidence
+    clearly_final_safe_step = bool(
+        has_high_confidence_submit_screen
+        and required_fields_satisfied
+        and no_low_confidence_answers
+        and no_heuristic_answers
+        and no_unsafe_personal_fallbacks
+        and confidence_is_high
+        and auto_submit_enabled
+    )
+    confidence_score = 1.0 if clearly_final_safe_step else calculated_confidence_score
+
+    positive_reasons: list[str] = []
+    negative_reasons: list[str] = []
+    submit_blocked_reason: str | None = None
+    if review_step_detected:
+        positive_reasons.append("review_step_detected")
+    if submit_step_detected:
+        positive_reasons.append("submit_step_detected")
+    if final_step_detected:
+        positive_reasons.append("final_step_detected")
+    if submit_button_present:
+        positive_reasons.append("submit_visible_and_ready")
+    if required_fields_satisfied:
+        positive_reasons.append("no_unresolved_fields")
+        positive_reasons.append("all_required_visible_fields_satisfied")
+    if no_low_confidence_answers:
+        positive_reasons.append("no_low_confidence_answers")
+    if no_heuristic_answers:
+        positive_reasons.append("no_heuristic_guesses")
+    if no_unsafe_personal_fallbacks:
+        positive_reasons.append("no_unsafe_personal_fallback_answers")
+    if required_answer_mappings and all(_text(row.get("confidence_bucket")) == "high" for row in required_answer_mappings):
+        positive_reasons.append("only_high_confidence_policy_matches")
+    elif clearly_final_safe_step:
+        positive_reasons.append("known_safe_final_step")
+
     if missing_required_fields:
-        return {
-            "should_auto_submit": False,
-            "confidence_score": round(score, 4),
-            "min_confidence": round(min_confidence, 4),
-            "reason": "missing_required_fields",
-        }
-    if not review_step_visible:
-        return {
-            "should_auto_submit": False,
-            "confidence_score": round(score, 4),
-            "min_confidence": round(min_confidence, 4),
-            "reason": "not_at_review_step",
-        }
-    if score < min_confidence:
-        return {
-            "should_auto_submit": False,
-            "confidence_score": round(score, 4),
-            "min_confidence": round(min_confidence, 4),
-            "reason": "confidence_below_threshold",
-        }
+        negative_reasons.append("missing_required_fields")
+    if unresolved_fields:
+        negative_reasons.append("unresolved_fields_present")
+    if heuristic_required_answers:
+        negative_reasons.append("required_disclosures_uncertain")
+    elif heuristic_answered_fields:
+        negative_reasons.append("heuristic_answers_present")
+    if low_confidence_answered_fields:
+        negative_reasons.append("low_confidence_answers_present")
+    if unsafe_personal_fallback_answers:
+        negative_reasons.append("unsafe_personal_fallback_answers_present")
+    if not next_step_available and not final_step_detected:
+        negative_reasons.append("no_safe_advance_action_visible")
+    if review_step_detected and not submit_step_detected:
+        negative_reasons.append("submit_step_not_detected")
+    if submit_step_detected and not submit_button_present:
+        negative_reasons.append("submit_button_not_present")
+        submit_blocked_reason = "submit_button_not_present"
+    if not auto_submit_enabled:
+        negative_reasons.append("auto_submit_disabled")
+        submit_blocked_reason = submit_blocked_reason or "auto_submit_disabled"
+    if final_step_detected and not clearly_final_safe_step and calculated_confidence_score < min_confidence:
+        negative_reasons.append("confidence_below_threshold")
+        submit_blocked_reason = submit_blocked_reason or "confidence_below_threshold"
+    if final_step_detected and submit_button_present and not confidence_is_high:
+        submit_blocked_reason = submit_blocked_reason or "confidence_below_threshold"
+
+    if missing_required_fields or unresolved_fields:
+        decision = "manual_review_required"
+    elif clearly_final_safe_step:
+        decision = "safe_auto_submit"
+    elif next_step_available and (review_step_detected or final_step_detected or submit_step_detected):
+        decision = "continue_flow"
+    elif review_step_detected and not submit_step_detected and next_step_available:
+        decision = "safe_auto_advance"
+    elif final_step_detected:
+        decision = "safe_review_only"
+    elif next_step_available and not low_confidence_answered_fields and not heuristic_answered_fields and not unsafe_personal_fallback_answers:
+        decision = "safe_auto_advance"
+    else:
+        decision = "safe_review_only"
+
+    if decision == "safe_auto_submit":
+        overall_submit_confidence = "high"
+    elif decision == "safe_review_only" and required_fields_satisfied:
+        overall_submit_confidence = "medium"
+    else:
+        overall_submit_confidence = "low"
+
+    reasons = positive_reasons + negative_reasons
+
     return {
-        "should_auto_submit": True,
-        "confidence_score": round(score, 4),
+        "later_step_decision": decision,
+        "should_auto_submit": decision == "safe_auto_submit",
+        "confidence_score": round(confidence_score, 4),
         "min_confidence": round(min_confidence, 4),
-        "reason": "confidence_threshold_met",
+        "reason": (
+            "known_safe_final_step"
+            if decision == "safe_auto_submit"
+            else (negative_reasons[0] if negative_reasons else (positive_reasons[0] if positive_reasons else decision))
+        ),
+        "submit_confidence": overall_submit_confidence,
+        "overall_submit_confidence": overall_submit_confidence,
+        "submit_confidence_reasons": reasons,
+        "auto_submit_allowed": bool(
+            decision == "safe_auto_submit"
+            and auto_submit_enabled
+        ),
+        "submit_blocked_reason": submit_blocked_reason,
     }
 
 
@@ -3594,6 +4960,11 @@ def run_backend(
     application_url = _text(target.get("application_url") or target.get("source_url"))
     screenshot_dir = Path(_text(artifacts.get("screenshot_dir")) or ".").resolve()
     screenshot_dir.mkdir(parents=True, exist_ok=True)
+    progress_snapshot_path = (
+        Path(_text(artifacts.get("progress_snapshot_path"))).resolve()
+        if _text(artifacts.get("progress_snapshot_path"))
+        else None
+    )
     run_key = _text(artifacts.get("run_key")) or "application-draft"
     capture_screenshots = _as_bool(payload.get("capture_screenshots"), default=True)
     max_screenshots = max(0, int(payload.get("max_screenshots") or 8))
@@ -3646,19 +5017,35 @@ def run_backend(
         "missing_required_fields": [],
         "required_fields_filled": [],
         "self_id_handling_mode": "standard",
+        "high_confidence_answered_fields": [],
+        "medium_confidence_answered_fields": [],
+        "low_confidence_answered_fields": [],
+        "unresolved_fields": [],
+        "fallback_answers_used": [],
         "submit_decision": {
+            "later_step_decision": "safe_review_only",
             "should_auto_submit": False,
             "confidence_score": 0.0,
             "min_confidence": round(float(answer_profile.get("auto_submit_min_confidence") or DEFAULT_AUTO_SUBMIT_MIN_CONFIDENCE), 4),
             "reason": "not_evaluated",
+            "submit_confidence": "low",
+            "overall_submit_confidence": "low",
+            "submit_confidence_reasons": ["not_evaluated"],
+            "auto_submit_allowed": False,
+            "submit_blocked_reason": None,
         },
     }
     page_diagnostics: dict[str, Any] = {}
     form_diagnostics: dict[str, Any] = {}
+    final_page_diagnostics: dict[str, Any] = {}
+    final_form_diagnostics: dict[str, Any] = {}
+    page_title: str | None = None
+    current_url = application_url
     attach_probe_succeeded = False
     start_attempted = False
     start_used = False
     last_error: BrowserCommandError | None = None
+    linkedin_pre_submit_transition_attempt_count = 0
     contact_values = _extract_contact_values(payload)
     for contact_key, profile_key in (
         ("first_name", "first_name"),
@@ -3684,6 +5071,49 @@ def run_backend(
             screenshot_failures=screenshot_failures,
             linkedin_progression=linkedin_progression,
         )
+
+    def persist_runtime_snapshot(
+        stage: str,
+        *,
+        current_page_diagnostics: dict[str, Any] | None = None,
+        current_form_diagnostics: dict[str, Any] | None = None,
+        current_page_title: str | None = None,
+        current_url_value: str | None = None,
+        blocking_reason: str | None = None,
+    ) -> None:
+        if progress_snapshot_path is None:
+            return
+        snapshot_page_diagnostics = dict(current_page_diagnostics or page_diagnostics or final_page_diagnostics or {})
+        snapshot_form_diagnostics = dict(current_form_diagnostics or form_diagnostics or final_form_diagnostics or {})
+        if not snapshot_page_diagnostics:
+            snapshot_page_diagnostics = {
+                "application_url": application_url,
+                "progress_stage": stage,
+            }
+        else:
+            snapshot_page_diagnostics["progress_stage"] = stage
+        payload = {
+            "progress_stage": stage,
+            "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "application_url": application_url,
+            "current_url": current_url_value if current_url_value is not None else current_url,
+            "page_title": current_page_title if current_page_title is not None else page_title,
+            "checkpoint_urls": list(checkpoint_urls),
+            "fields_filled_manifest": list(fields_filled_manifest),
+            "screenshot_metadata_references": list(screenshots),
+            "warnings": list(warnings),
+            "errors": list(errors),
+            "blocking_reason": blocking_reason,
+            "page_diagnostics": snapshot_page_diagnostics,
+            "form_diagnostics": snapshot_form_diagnostics,
+        }
+        temp_path = progress_snapshot_path.with_name(f"{progress_snapshot_path.name}.tmp")
+        try:
+            progress_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+            temp_path.replace(progress_snapshot_path)
+        except OSError:
+            pass
 
     def merge_contact_step_diagnostics(current_page_diagnostics: dict[str, Any]) -> None:
         if linkedin_contact_step_diagnostics:
@@ -3806,12 +5236,53 @@ def run_backend(
             seen.add(row_key)
         linkedin_later_step_diagnostics[target_key] = existing[-20:]
 
+    def _upsert_keyed_rows(target_key: str, rows: list[dict[str, Any]], *, identity_fields: tuple[str, ...]) -> None:
+        def _merge_keyed_row(existing_row: dict[str, Any], incoming_row: dict[str, Any]) -> dict[str, Any]:
+            merged_row = dict(existing_row)
+            for key, value in incoming_row.items():
+                if isinstance(value, bool):
+                    merged_row[key] = bool(merged_row.get(key)) or value
+                elif isinstance(value, list):
+                    merged_row[key] = value or list(merged_row.get(key) or [])
+                elif value in (None, ""):
+                    merged_row[key] = merged_row.get(key)
+                else:
+                    merged_row[key] = value
+            return merged_row
+
+        existing = [row for row in list(linkedin_later_step_diagnostics.get(target_key) or []) if isinstance(row, dict)]
+        ordered_rows: list[dict[str, Any]] = []
+        index_by_identity: dict[tuple[str, ...], int] = {}
+        for row in existing:
+            identity = tuple(_text(row.get(field)) or "" for field in identity_fields)
+            if any(identity):
+                index_by_identity[identity] = len(ordered_rows)
+            ordered_rows.append(row)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            identity = tuple(_text(row.get(field)) or "" for field in identity_fields)
+            if any(identity) and identity in index_by_identity:
+                ordered_rows[index_by_identity[identity]] = _merge_keyed_row(
+                    ordered_rows[index_by_identity[identity]],
+                    row,
+                )
+                continue
+            if any(identity):
+                index_by_identity[identity] = len(ordered_rows)
+            ordered_rows.append(row)
+        linkedin_later_step_diagnostics[target_key] = ordered_rows[-20:]
+
     def update_later_step_diagnostics(
         current_page_diagnostics: dict[str, Any],
         refs: list[SnapshotRef],
         *,
         policy_matches: list[dict[str, Any]] | None = None,
         answers_applied: list[dict[str, Any]] | None = None,
+        required_field_statuses: list[dict[str, Any]] | None = None,
+        radio_group_diagnostics: list[dict[str, Any]] | None = None,
+        canonical_key_resolution: list[dict[str, Any]] | None = None,
+        radio_selection_strategy: list[dict[str, Any]] | None = None,
         safe_skips: list[dict[str, Any]] | None = None,
         optional_steps_skipped: list[dict[str, Any]] | None = None,
         personal_answer_fallbacks: list[dict[str, Any]] | None = None,
@@ -3826,12 +5297,73 @@ def run_backend(
         last_progress_percent: int | None = None,
         repeated_state_detected: bool | None = None,
         repeated_state_reason: str | None = None,
+        active_step_heading: str | None = None,
+        active_step_progress_percent: int | None = None,
+        active_step_required_labels: list[str] | None = None,
+        active_step_signature: str | None = None,
+        chosen_next_ref: str | None = None,
+        chosen_next_label: str | None = None,
+        chosen_next_attributes: dict[str, Any] | None = None,
+        step_advance_attempted: bool | None = None,
+        step_advance_verified: bool | None = None,
+        step_advance_retry_attempted: bool | None = None,
+        step_advance_retry_verified: bool | None = None,
+        step_advance_blocking_reason: str | None = None,
+        top_choice_step_detected: bool | None = None,
+        top_choice_skip_attempted: bool | None = None,
+        top_choice_interaction_performed: bool | None = None,
+        review_step_detected: bool | None = None,
         review_like_step_detected: bool | None = None,
+        submit_step_detected: bool | None = None,
+        submit_button_present: bool | None = None,
+        submit_signal_type: str | None = None,
+        submit_probe_ran_on_step_signature: str | None = None,
+        pre_submit_transition_attempted: bool | None = None,
+        pre_submit_transition_succeeded: bool | None = None,
+        later_step_decision: str | None = None,
+        continue_gate_reason: str | None = None,
+        submit_confidence: str | None = None,
+        submit_confidence_reasons: list[str] | None = None,
+        submit_blocked_reason: str | None = None,
+        attempted_submit_without_button: bool | None = None,
+        auto_submit_allowed: bool | None = None,
+        auto_submit_attempted: bool | None = None,
+        auto_submit_succeeded: bool | None = None,
+        fallback_answers_used: list[dict[str, Any]] | None = None,
+        unresolved_fields: list[dict[str, Any]] | None = None,
+        final_step_detected: bool | None = None,
+        high_confidence_answered_fields: list[dict[str, Any]] | None = None,
+        medium_confidence_answered_fields: list[dict[str, Any]] | None = None,
+        low_confidence_answered_fields: list[dict[str, Any]] | None = None,
     ) -> None:
         if policy_matches:
             _extend_unique_rows("later_step_policy_matches", policy_matches)
         if answers_applied:
             _extend_unique_rows("later_step_answers_applied", answers_applied)
+        if required_field_statuses:
+            _upsert_keyed_rows(
+                "later_step_required_field_statuses",
+                required_field_statuses,
+                identity_fields=("field_name",),
+            )
+        if radio_group_diagnostics:
+            _upsert_keyed_rows(
+                "later_step_radio_group_diagnostics",
+                radio_group_diagnostics,
+                identity_fields=("field_name",),
+            )
+        if canonical_key_resolution:
+            _upsert_keyed_rows(
+                "later_step_canonical_key_resolution",
+                canonical_key_resolution,
+                identity_fields=("resolved_field_name", "original_label"),
+            )
+        if radio_selection_strategy:
+            _upsert_keyed_rows(
+                "later_step_radio_selection_strategy",
+                radio_selection_strategy,
+                identity_fields=("field_name",),
+            )
         if safe_skips:
             _extend_unique_rows("later_step_safe_skips", safe_skips)
         if optional_steps_skipped:
@@ -3840,17 +5372,74 @@ def run_backend(
             _extend_unique_rows("later_step_personal_answer_fallbacks_used", personal_answer_fallbacks)
         if action_diagnostics:
             _extend_unique_rows("later_step_action_diagnostics", action_diagnostics)
-        submit_ref = _find_clickable_ref(
-            refs,
-            keywords=["submit", "finish application", "apply now", "send application"],
-            disallowed_keywords=["save", "dismiss", "cancel", "close"],
+        if fallback_answers_used:
+            _extend_unique_rows("fallback_answers_used", fallback_answers_used)
+        if unresolved_fields:
+            _extend_unique_rows("unresolved_fields", unresolved_fields)
+        if high_confidence_answered_fields:
+            _extend_unique_rows("high_confidence_answered_fields", high_confidence_answered_fields)
+        if medium_confidence_answered_fields:
+            _extend_unique_rows("medium_confidence_answered_fields", medium_confidence_answered_fields)
+        if low_confidence_answered_fields:
+            _extend_unique_rows("low_confidence_answered_fields", low_confidence_answered_fields)
+        derived_radio_group_diagnostics = list(linkedin_later_step_diagnostics.get("later_step_radio_group_diagnostics") or [])
+        derived_canonical_key_resolution = [
+            {
+                "original_label": _text(row.get("original_label")) or _text(row.get("group_label")) or None,
+                "resolved_field_name": _text(row.get("field_name")) or None,
+                "resolution_reason": _text(row.get("resolution_reason")) or None,
+            }
+            for row in derived_radio_group_diagnostics
+            if _text(row.get("field_name"))
+        ][:20]
+        derived_radio_selection_strategy = [
+            {
+                "field_name": _text(row.get("field_name")) or None,
+                "used_input_click": bool(row.get("used_input_click")),
+                "used_label_click": bool(row.get("used_label_click")),
+                "verification_method": _text(row.get("verification_method")) or ("checked_state" if bool(row.get("selection_verified")) else "none"),
+            }
+            for row in derived_radio_group_diagnostics
+            if _text(row.get("field_name"))
+        ][:20]
+        snapshot_submit_candidates = _snapshot_submit_candidates(refs)
+        resolved_review_step_detected = (
+            bool(review_step_detected)
+            if review_step_detected is not None
+            else bool(current_page_diagnostics.get("linkedin_state") == "easy_apply_review_step")
         )
-        review_step_detected = bool(current_page_diagnostics.get("linkedin_state") == "easy_apply_review_step")
-        submit_visible = bool(submit_ref or current_page_diagnostics.get("submit_indicators_detected"))
+        resolved_submit_button_present = (
+            bool(submit_button_present)
+            if submit_button_present is not None
+            else bool(snapshot_submit_candidates.get("candidates"))
+        )
+        resolved_submit_signal_type = (
+            _text(submit_signal_type)
+            if _text(submit_signal_type)
+            else _strongest_submit_signal_type(list(snapshot_submit_candidates.get("candidates") or []))
+        )
+        resolved_submit_step_detected = (
+            bool(submit_step_detected)
+            if submit_step_detected is not None
+            else resolved_submit_button_present
+        )
+        resolved_final_step_detected = (
+            bool(final_step_detected)
+            if final_step_detected is not None
+            else bool(resolved_submit_step_detected)
+        )
         linkedin_later_step_diagnostics.update(
             {
                 "later_step_policy_matches": list(linkedin_later_step_diagnostics.get("later_step_policy_matches") or []),
                 "later_step_answers_applied": list(linkedin_later_step_diagnostics.get("later_step_answers_applied") or []),
+                "later_step_required_field_statuses": list(
+                    linkedin_later_step_diagnostics.get("later_step_required_field_statuses") or []
+                ),
+                "later_step_radio_group_diagnostics": list(
+                    linkedin_later_step_diagnostics.get("later_step_radio_group_diagnostics") or []
+                ),
+                "later_step_canonical_key_resolution": derived_canonical_key_resolution,
+                "later_step_radio_selection_strategy": derived_radio_selection_strategy,
                 "later_step_safe_skips": list(linkedin_later_step_diagnostics.get("later_step_safe_skips") or []),
                 "later_step_optional_steps_skipped": list(
                     linkedin_later_step_diagnostics.get("later_step_optional_steps_skipped") or []
@@ -3907,17 +5496,194 @@ def run_backend(
                     or _text(linkedin_later_step_diagnostics.get("repeated_state_reason"))
                     or None
                 ),
-                "review_step_detected": review_step_detected,
-                "submit_visible": submit_visible,
+                "active_step_heading": (
+                    _text(active_step_heading)
+                    or _text(linkedin_later_step_diagnostics.get("active_step_heading"))
+                    or None
+                ),
+                "active_step_progress_percent": (
+                    int(active_step_progress_percent)
+                    if active_step_progress_percent is not None
+                    else linkedin_later_step_diagnostics.get("active_step_progress_percent")
+                ),
+                "active_step_required_labels": (
+                    list(active_step_required_labels)
+                    if active_step_required_labels is not None
+                    else list(linkedin_later_step_diagnostics.get("active_step_required_labels") or [])
+                ),
+                "active_step_signature": (
+                    _text(active_step_signature)
+                    or _text(linkedin_later_step_diagnostics.get("active_step_signature"))
+                    or None
+                ),
+                "chosen_next_ref": (
+                    _text(chosen_next_ref)
+                    or _text(linkedin_later_step_diagnostics.get("chosen_next_ref"))
+                    or None
+                ),
+                "chosen_next_label": (
+                    _text(chosen_next_label)
+                    or _text(linkedin_later_step_diagnostics.get("chosen_next_label"))
+                    or None
+                ),
+                "chosen_next_attributes": (
+                    dict(chosen_next_attributes)
+                    if isinstance(chosen_next_attributes, dict)
+                    else dict(linkedin_later_step_diagnostics.get("chosen_next_attributes") or {})
+                ),
+                "step_advance_attempted": (
+                    bool(step_advance_attempted)
+                    if step_advance_attempted is not None
+                    else bool(linkedin_later_step_diagnostics.get("step_advance_attempted", False))
+                ),
+                "step_advance_verified": (
+                    bool(step_advance_verified)
+                    if step_advance_verified is not None
+                    else bool(linkedin_later_step_diagnostics.get("step_advance_verified", False))
+                ),
+                "step_advance_retry_attempted": (
+                    bool(step_advance_retry_attempted)
+                    if step_advance_retry_attempted is not None
+                    else bool(linkedin_later_step_diagnostics.get("step_advance_retry_attempted", False))
+                ),
+                "step_advance_retry_verified": (
+                    bool(step_advance_retry_verified)
+                    if step_advance_retry_verified is not None
+                    else bool(linkedin_later_step_diagnostics.get("step_advance_retry_verified", False))
+                ),
+                "step_advance_blocking_reason": (
+                    _text(step_advance_blocking_reason)
+                    if step_advance_blocking_reason is not None
+                    else (_text(linkedin_later_step_diagnostics.get("step_advance_blocking_reason")) or None)
+                ),
+                "top_choice_step_detected": (
+                    bool(
+                        (bool(top_choice_step_detected) if top_choice_step_detected is not None else False)
+                        or linkedin_later_step_diagnostics.get("top_choice_step_detected", False)
+                    )
+                    if top_choice_step_detected is not None
+                    else bool(linkedin_later_step_diagnostics.get("top_choice_step_detected", False))
+                ),
+                "top_choice_skip_attempted": (
+                    bool(
+                        (bool(top_choice_skip_attempted) if top_choice_skip_attempted is not None else False)
+                        or linkedin_later_step_diagnostics.get("top_choice_skip_attempted", False)
+                    )
+                    if top_choice_skip_attempted is not None
+                    else bool(linkedin_later_step_diagnostics.get("top_choice_skip_attempted", False))
+                ),
+                "top_choice_interaction_performed": (
+                    bool(
+                        (bool(top_choice_interaction_performed) if top_choice_interaction_performed is not None else False)
+                        or linkedin_later_step_diagnostics.get("top_choice_interaction_performed", False)
+                    )
+                    if top_choice_interaction_performed is not None
+                    else bool(linkedin_later_step_diagnostics.get("top_choice_interaction_performed", False))
+                ),
+                "review_step_detected": resolved_review_step_detected,
+                "submit_step_detected": resolved_submit_step_detected,
+                "submit_button_present": resolved_submit_button_present,
+                "submit_signal_type": resolved_submit_signal_type,
+                "submit_visible": resolved_submit_button_present,
                 "review_like_step_detected": (
                     bool(review_like_step_detected)
                     if review_like_step_detected is not None
                     else bool(linkedin_later_step_diagnostics.get("review_like_step_detected", False))
                 ),
-                "submit_ready_without_autosubmit": bool((review_step_detected or review_like_step_detected) and submit_visible),
+                "submit_probe_ran_on_step_signature": (
+                    _text(submit_probe_ran_on_step_signature)
+                    or _text(linkedin_later_step_diagnostics.get("submit_probe_ran_on_step_signature"))
+                    or None
+                ),
+                "pre_submit_transition_attempted": (
+                    bool(pre_submit_transition_attempted)
+                    if pre_submit_transition_attempted is not None
+                    else bool(
+                        linkedin_later_step_diagnostics.get("pre_submit_transition_attempted", False)
+                        or linkedin_pre_submit_transition_attempted
+                    )
+                ),
+                "pre_submit_transition_succeeded": (
+                    bool(pre_submit_transition_succeeded)
+                    if pre_submit_transition_succeeded is not None
+                    else bool(
+                        linkedin_later_step_diagnostics.get("pre_submit_transition_succeeded", False)
+                        or linkedin_pre_submit_transition_succeeded
+                    )
+                ),
+                "submit_ready_without_autosubmit": bool(
+                    resolved_submit_step_detected and resolved_submit_button_present
+                ),
+                "later_step_decision": (
+                    _text(later_step_decision)
+                    or _text(linkedin_later_step_diagnostics.get("later_step_decision"))
+                    or None
+                ),
+                "later_step_continue_gate_reason": (
+                    _text(continue_gate_reason)
+                    or _text(linkedin_later_step_diagnostics.get("later_step_continue_gate_reason"))
+                    or None
+                ),
+                "submit_confidence": (
+                    _text(submit_confidence)
+                    or _text(linkedin_later_step_diagnostics.get("submit_confidence"))
+                    or None
+                ),
+                "overall_submit_confidence": (
+                    _text(submit_confidence)
+                    or _text(linkedin_later_step_diagnostics.get("overall_submit_confidence"))
+                    or None
+                ),
+                "submit_confidence_reasons": (
+                    list(submit_confidence_reasons)
+                    if submit_confidence_reasons is not None
+                    else list(linkedin_later_step_diagnostics.get("submit_confidence_reasons") or [])
+                ),
+                "submit_blocked_reason": (
+                    _text(submit_blocked_reason)
+                    if submit_blocked_reason is not None
+                    else (_text(linkedin_later_step_diagnostics.get("submit_blocked_reason")) or None)
+                ),
+                "attempted_submit_without_button": (
+                    bool(attempted_submit_without_button)
+                    if attempted_submit_without_button is not None
+                    else bool(linkedin_later_step_diagnostics.get("attempted_submit_without_button", False))
+                ),
+                "auto_submit_allowed": (
+                    bool(auto_submit_allowed)
+                    if auto_submit_allowed is not None
+                    else bool(linkedin_later_step_diagnostics.get("auto_submit_allowed", False))
+                ),
+                "auto_submit_attempted": (
+                    bool(auto_submit_attempted)
+                    if auto_submit_attempted is not None
+                    else bool(linkedin_later_step_diagnostics.get("auto_submit_attempted", False))
+                ),
+                "auto_submit_succeeded": (
+                    bool(auto_submit_succeeded)
+                    if auto_submit_succeeded is not None
+                    else bool(linkedin_later_step_diagnostics.get("auto_submit_succeeded", False))
+                ),
+                "fallback_answers_used": list(linkedin_later_step_diagnostics.get("fallback_answers_used") or []),
+                "unresolved_fields": list(linkedin_later_step_diagnostics.get("unresolved_fields") or []),
+                "high_confidence_answered_fields": list(
+                    linkedin_later_step_diagnostics.get("high_confidence_answered_fields") or []
+                ),
+                "medium_confidence_answered_fields": list(
+                    linkedin_later_step_diagnostics.get("medium_confidence_answered_fields") or []
+                ),
+                "low_confidence_answered_fields": list(
+                    linkedin_later_step_diagnostics.get("low_confidence_answered_fields") or []
+                ),
+                "final_step_detected": resolved_final_step_detected,
             }
         )
         current_page_diagnostics.update(linkedin_later_step_diagnostics)
+        persist_runtime_snapshot(
+            "later_step_diagnostics",
+            current_page_diagnostics=current_page_diagnostics,
+            current_form_diagnostics=form_diagnostics,
+        )
 
     def sync_later_step_runtime_diagnostics(
         current_page_diagnostics: dict[str, Any],
@@ -3925,12 +5691,14 @@ def run_backend(
         *,
         signature_info: dict[str, Any] | None = None,
         snapshot_text_value: str | None = None,
+        active_step_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         nonlocal linkedin_last_visible_labels, linkedin_last_progress_percent
         signature_info = signature_info or _linkedin_step_signature(
             snapshot_text_value if snapshot_text_value is not None else snapshot_text,
             refs,
             current_page_diagnostics,
+            active_step_info=active_step_info,
         )
         linkedin_last_visible_labels = list(signature_info.get("visible_labels") or [])
         linkedin_last_progress_percent = signature_info.get("progress_percent")
@@ -3947,7 +5715,15 @@ def run_backend(
             last_progress_percent=linkedin_last_progress_percent,
             repeated_state_detected=linkedin_repeated_state_detected,
             repeated_state_reason=linkedin_repeated_state_reason,
+            active_step_heading=_text(signature_info.get("heading")) or None,
+            active_step_progress_percent=signature_info.get("progress_percent"),
+            active_step_required_labels=list(signature_info.get("required_labels") or []),
+            active_step_signature=_text(signature_info.get("signature")) or None,
+            review_step_detected=bool(signature_info.get("review_step_detected")),
             review_like_step_detected=bool(signature_info.get("review_like")),
+            submit_step_detected=bool(signature_info.get("submit_step_detected")),
+            submit_button_present=bool(signature_info.get("submit_button_present")),
+            submit_signal_type=_text(signature_info.get("submit_signal_type")) or "none",
         )
         return signature_info
 
@@ -3975,11 +5751,25 @@ def run_backend(
         live_page_diagnostics["linkedin_state"] = live_linkedin_context["state"]
         merge_linkedin_step_diagnostics(live_page_diagnostics)
         if _is_linkedin_easy_apply_target(payload):
+            live_active_step_info = _linkedin_active_step_info(
+                client,
+                live_snapshot_text,
+                live_refs,
+                live_page_diagnostics,
+            )
             sync_later_step_runtime_diagnostics(
                 live_page_diagnostics,
                 live_refs,
                 snapshot_text_value=live_snapshot_text,
+                active_step_info=live_active_step_info,
             )
+        persist_runtime_snapshot(
+            "capture_live_state",
+            current_page_diagnostics=live_page_diagnostics,
+            current_form_diagnostics=live_form_diagnostics,
+            current_page_title=live_page_title,
+            current_url_value=live_current_url,
+        )
         return {
             "page_title": live_page_title,
             "current_url": live_current_url,
@@ -4054,6 +5844,21 @@ def run_backend(
             if action_type == "click":
                 client.click(target_ref.ref)
                 return
+            if field_type == "radio":
+                current_radio_group = next(
+                    (
+                        row
+                        for row in list(form_diagnostics.get("radio_group_diagnostics") or [])
+                        if _text(row.get("field_name")) == (_text(descriptor.get("canonical_key")) or _text(descriptor.get("field_name")))
+                    ),
+                    {
+                        "field_name": _text(descriptor.get("canonical_key")) or _text(descriptor.get("field_name")),
+                        "group_label": _text(descriptor.get("label")) or None,
+                        "options": [_text(target_ref.label)],
+                    },
+                )
+                attempt_linkedin_radio_group_selection(current_radio_group, fallback_ref=target_ref.ref)
+                return
             client.fill([{"ref": target_ref.ref, "value": descriptor.get("value"), "type": field_type}])
 
         live_state = current_state or capture_live_state()
@@ -4109,6 +5914,223 @@ def run_backend(
         remember_state(final_state)
         update_later_step_diagnostics(final_state["page_diagnostics"], final_state["refs"], action_diagnostics=[action_diag])
         return final_state
+
+    def linkedin_active_step_info_for_state(current_state: dict[str, Any]) -> dict[str, Any]:
+        info = _linkedin_active_step_info(
+            client,
+            current_state["snapshot_text"],
+            current_state["refs"],
+            current_state["page_diagnostics"],
+        )
+        signature = _linkedin_active_step_signature(info, current_state["page_diagnostics"])
+        return {
+            **info,
+            "signature": signature,
+        }
+
+    def linkedin_step_advance_verification(
+        before_info: dict[str, Any],
+        after_info: dict[str, Any],
+        after_page_diagnostics: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        before_progress = before_info.get("progress_percent")
+        after_progress = after_info.get("progress_percent")
+        before_heading = _normalize_label_text(_text(before_info.get("heading")))
+        after_heading = _normalize_label_text(_text(after_info.get("heading")))
+        before_required = {_normalize_label_text(_text(label)) for label in list(before_info.get("required_labels") or []) if _text(label)}
+        after_required = {_normalize_label_text(_text(label)) for label in list(after_info.get("required_labels") or []) if _text(label)}
+        if before_progress != after_progress and after_progress is not None:
+            return True, "progress_percent_changed"
+        if before_heading and after_heading and before_heading != after_heading:
+            return True, "active_heading_changed"
+        if before_required != after_required:
+            return True, "required_question_set_changed"
+        if bool(after_page_diagnostics.get("submit_step_detected")) or bool(after_page_diagnostics.get("review_step_detected")):
+            return True, "submit_or_review_step_detected"
+        return False, "active_step_signature_unchanged_after_next_click"
+
+    def advance_linkedin_later_step(
+        *,
+        current_state: dict[str, Any],
+        reason: str,
+        pre_submit_transition: bool,
+    ) -> tuple[dict[str, Any], bool, str | None]:
+        before_info = linkedin_active_step_info_for_state(current_state)
+        before_signature_info = _linkedin_step_signature(
+            current_state["snapshot_text"],
+            current_state["refs"],
+            current_state["page_diagnostics"],
+            active_step_info=before_info,
+        )
+        chosen_candidate = before_info.get("chosen_next") if isinstance(before_info.get("chosen_next"), dict) else None
+        next_payload = _next_candidate_diagnostics_payload(list(before_info.get("next_candidates") or []), chosen_candidate)
+        update_later_step_diagnostics(
+            current_state["page_diagnostics"],
+            current_state["refs"],
+            active_step_heading=_text(before_info.get("heading")) or None,
+            active_step_progress_percent=before_info.get("progress_percent"),
+            active_step_required_labels=list(before_info.get("required_labels") or []),
+            active_step_signature=_text(before_signature_info.get("signature")) or None,
+            chosen_next_ref=_text(next_payload.get("chosen_next_ref")) or None,
+            chosen_next_label=_text(next_payload.get("chosen_next_label")) or None,
+            chosen_next_attributes=dict(next_payload.get("chosen_next_attributes") or {}),
+            step_advance_attempted=False,
+            step_advance_verified=False,
+            step_advance_retry_attempted=False,
+            step_advance_retry_verified=False,
+            step_advance_blocking_reason=None,
+        )
+        if not isinstance(chosen_candidate, dict):
+            blocking_reason = "next_button_not_found_in_active_step"
+            update_later_step_diagnostics(
+                current_state["page_diagnostics"],
+                current_state["refs"],
+                step_advance_attempted=True,
+                step_advance_verified=False,
+                step_advance_blocking_reason=blocking_reason,
+            )
+            return current_state, False, blocking_reason
+
+        previous_state = str(current_state["page_diagnostics"].get("linkedin_state") or "")
+        click_result = _click_linkedin_next_candidate(client, current_state["refs"], chosen_candidate)
+        chosen_after_click = click_result.get("chosen") if isinstance(click_result.get("chosen"), dict) else chosen_candidate
+        chosen_ref = _text((chosen_after_click or {}).get("ref_hint")) or _text(next_payload.get("chosen_next_ref")) or None
+        chosen_label = _text((chosen_after_click or {}).get("label")) or _text(next_payload.get("chosen_next_label")) or None
+
+        def fallback_click(state: dict[str, Any], ref_value: str | None, label_value: str | None) -> dict[str, Any]:
+            if not ref_value:
+                return state
+            return execute_linkedin_live_action(
+                {
+                    "action_type": "click",
+                    "field_type": "button",
+                    "original_ref": ref_value,
+                    "label": label_value,
+                    "normalized_label": _normalize_label_text(label_value),
+                },
+                current_state=state,
+            )
+
+        if bool(click_result.get("clicked")):
+            next_state = capture_live_state()
+        else:
+            next_state = fallback_click(current_state, chosen_ref, chosen_label)
+
+        after_info = linkedin_active_step_info_for_state(next_state)
+        after_signature_info = _linkedin_step_signature(
+            next_state["snapshot_text"],
+            next_state["refs"],
+            next_state["page_diagnostics"],
+            active_step_info=after_info,
+        )
+        verified, verification_reason = linkedin_step_advance_verification(
+            before_info,
+            after_info,
+            next_state["page_diagnostics"],
+        )
+        record_linkedin_action(
+            state=previous_state,
+            action="click_next",
+            reason=reason,
+            chosen_ref=chosen_ref,
+            chosen_label=chosen_label,
+            upload_ref_value=_text(next_state["page_diagnostics"].get("upload_ref")),
+            advanced=verified,
+        )
+        update_later_step_diagnostics(
+            next_state["page_diagnostics"],
+            next_state["refs"],
+            active_step_heading=_text(after_info.get("heading")) or None,
+            active_step_progress_percent=after_info.get("progress_percent"),
+            active_step_required_labels=list(after_info.get("required_labels") or []),
+            active_step_signature=_text(after_signature_info.get("signature")) or None,
+            chosen_next_ref=chosen_ref,
+            chosen_next_label=chosen_label,
+            chosen_next_attributes=dict((chosen_after_click or {}).get("attributes") or {}),
+            step_advance_attempted=True,
+            step_advance_verified=verified,
+            step_advance_retry_attempted=False,
+            step_advance_retry_verified=False,
+            step_advance_blocking_reason=None if verified else verification_reason,
+            pre_submit_transition_attempted=pre_submit_transition,
+            pre_submit_transition_succeeded=bool(pre_submit_transition and verified),
+        )
+        if verified:
+            return next_state, True, None
+
+        retry_state = capture_live_state()
+        retry_before_info = linkedin_active_step_info_for_state(retry_state)
+        retry_before_signature = _linkedin_step_signature(
+            retry_state["snapshot_text"],
+            retry_state["refs"],
+            retry_state["page_diagnostics"],
+            active_step_info=retry_before_info,
+        )
+        retry_candidate = retry_before_info.get("chosen_next") if isinstance(retry_before_info.get("chosen_next"), dict) else None
+        retry_payload = _next_candidate_diagnostics_payload(list(retry_before_info.get("next_candidates") or []), retry_candidate)
+        retry_chosen_ref = _text(retry_payload.get("chosen_next_ref")) or None
+        retry_chosen_label = _text(retry_payload.get("chosen_next_label")) or None
+        if not isinstance(retry_candidate, dict):
+            blocking_reason = "next_button_not_found_in_active_step_after_retry"
+            update_later_step_diagnostics(
+                retry_state["page_diagnostics"],
+                retry_state["refs"],
+                active_step_heading=_text(retry_before_info.get("heading")) or None,
+                active_step_progress_percent=retry_before_info.get("progress_percent"),
+                active_step_required_labels=list(retry_before_info.get("required_labels") or []),
+                active_step_signature=_text(retry_before_signature.get("signature")) or None,
+                chosen_next_ref=retry_chosen_ref,
+                chosen_next_label=retry_chosen_label,
+                chosen_next_attributes=dict(retry_payload.get("chosen_next_attributes") or {}),
+                step_advance_attempted=True,
+                step_advance_verified=False,
+                step_advance_retry_attempted=True,
+                step_advance_retry_verified=False,
+                step_advance_blocking_reason=blocking_reason,
+                pre_submit_transition_attempted=pre_submit_transition,
+                pre_submit_transition_succeeded=False,
+            )
+            return retry_state, False, blocking_reason
+
+        retry_click_result = _click_linkedin_next_candidate(client, retry_state["refs"], retry_candidate)
+        retry_chosen = retry_click_result.get("chosen") if isinstance(retry_click_result.get("chosen"), dict) else retry_candidate
+        retry_chosen_ref = _text((retry_chosen or {}).get("ref_hint")) or retry_chosen_ref
+        retry_chosen_label = _text((retry_chosen or {}).get("label")) or retry_chosen_label
+        if bool(retry_click_result.get("clicked")):
+            retry_after_state = capture_live_state()
+        else:
+            retry_after_state = fallback_click(retry_state, retry_chosen_ref, retry_chosen_label)
+        retry_after_info = linkedin_active_step_info_for_state(retry_after_state)
+        retry_after_signature = _linkedin_step_signature(
+            retry_after_state["snapshot_text"],
+            retry_after_state["refs"],
+            retry_after_state["page_diagnostics"],
+            active_step_info=retry_after_info,
+        )
+        retry_verified, retry_reason = linkedin_step_advance_verification(
+            retry_before_info,
+            retry_after_info,
+            retry_after_state["page_diagnostics"],
+        )
+        update_later_step_diagnostics(
+            retry_after_state["page_diagnostics"],
+            retry_after_state["refs"],
+            active_step_heading=_text(retry_after_info.get("heading")) or None,
+            active_step_progress_percent=retry_after_info.get("progress_percent"),
+            active_step_required_labels=list(retry_after_info.get("required_labels") or []),
+            active_step_signature=_text(retry_after_signature.get("signature")) or None,
+            chosen_next_ref=retry_chosen_ref,
+            chosen_next_label=retry_chosen_label,
+            chosen_next_attributes=dict((retry_chosen or {}).get("attributes") or {}),
+            step_advance_attempted=True,
+            step_advance_verified=False,
+            step_advance_retry_attempted=True,
+            step_advance_retry_verified=retry_verified,
+            step_advance_blocking_reason=None if retry_verified else retry_reason,
+            pre_submit_transition_attempted=pre_submit_transition,
+            pre_submit_transition_succeeded=bool(pre_submit_transition and retry_verified),
+        )
+        return retry_after_state, retry_verified, (None if retry_verified else retry_reason)
 
     def append_contact_manifest_rows(rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -4270,6 +6292,10 @@ def run_backend(
             for option in options:
                 if _normalize_label_text(option) == "mobile":
                     return option
+        if field_name in {"work_authorization_us", "work_authorized_us"}:
+            for option in options:
+                if _normalize_label_text(option) == "yes":
+                    return option
         if desired_value:
             desired_normalized = _normalize_label_text(desired_value)
             for option in options:
@@ -4292,11 +6318,15 @@ def run_backend(
             "chosen_option": chosen_option,
             "attempted_ref": fallback_ref,
             "selection_verified": False,
+            "used_input_click": False,
+            "used_label_click": False,
+            "verification_method": None,
         }
         dom_attempted = False
         dom_verified = False
         if _is_linkedin_easy_apply_target(payload):
-            result = client.evaluate_json(_linkedin_radio_group_select_script(field_name, chosen_option))
+            match_key = field_name if field_name == "phone_type" else (_text(group_diagnostics.get("group_label")) or field_name)
+            result = client.evaluate_json(_linkedin_radio_group_select_script(match_key, chosen_option))
             if isinstance(result, dict) and _text(result.get("probeKind")) == "__openclaw_linkedin_radio_group_select__":
                 dom_attempted = _as_bool(result.get("selection_attempted"), default=False)
                 dom_verified = _as_bool(result.get("selection_verified"), default=False)
@@ -4307,10 +6337,14 @@ def run_backend(
                         "chosen_option": _text(result.get("chosen_option")) or chosen_option,
                         "selection_verified": dom_verified,
                         "verified_option": _text(result.get("selected_option")) or None,
+                        "used_input_click": bool(result.get("used_input_click")),
+                        "used_label_click": bool(result.get("used_label_click")),
+                        "verification_method": _text(result.get("verification_method")) or None,
                     }
                 )
         if not dom_attempted and fallback_ref:
             client.click(fallback_ref)
+            selection_attempt["used_input_click"] = True
         radio_selection_attempts[field_name] = selection_attempt
         return (dom_attempted or bool(fallback_ref)), dom_verified
 
@@ -4335,6 +6369,8 @@ def run_backend(
                 "advanced_to_new_step": advanced,
             }
         )
+
+    persist_runtime_snapshot("initializing")
 
     try:
         if runtime_config.attach_mode or runtime_config.skip_browser_start:
@@ -4397,6 +6433,11 @@ def run_backend(
         page_diagnostics.update(linkedin_context)
         page_diagnostics["linkedin_state"] = linkedin_context["state"]
         merge_linkedin_step_diagnostics(page_diagnostics)
+        persist_runtime_snapshot(
+            "landing_snapshot",
+            current_page_diagnostics=page_diagnostics,
+            current_form_diagnostics=form_diagnostics,
+        )
 
         if page_diagnostics["captcha_indicators_detected"]:
             return _result(
@@ -5493,12 +7534,21 @@ def run_backend(
             "policy_matches": [],
             "answers_applied": [],
             "safe_skips": [],
+            "high_confidence_answered_fields": [],
+            "medium_confidence_answered_fields": [],
+            "low_confidence_answered_fields": [],
+            "unresolved_fields": [],
+            "fallback_answers_used": [],
         }
         fill_work_attempted = False
         linkedin_generic_iterations = 6 if _is_linkedin_easy_apply_target(payload) else 1
         linkedin_later_step_guard_triggered = False
         linkedin_later_step_guard_reason: str | None = None
         linkedin_later_step_review_handoff = False
+        linkedin_pre_submit_transition_attempted = False
+        linkedin_pre_submit_transition_succeeded = False
+        auto_submit_attempted = False
+        auto_submit_succeeded = False
         final_refs = refs
         final_upload_ref = upload_ref
         final_contact_actions = contact_field_actions
@@ -5513,7 +7563,25 @@ def run_backend(
                 "easy_apply_review_step",
             }:
                 linkedin_later_step_iteration_count += 1
-                iteration_signature_info = _linkedin_step_signature(snapshot_text, refs, page_diagnostics)
+                iteration_active_step_info = linkedin_active_step_info_for_state(
+                    {
+                        "page_title": page_title,
+                        "current_url": current_url,
+                        "checkpoint_urls": checkpoint_urls,
+                        "snapshot_text": snapshot_text,
+                        "refs": refs,
+                        "upload_ref": upload_ref,
+                        "contact_field_actions": contact_field_actions,
+                        "form_diagnostics": form_diagnostics,
+                        "page_diagnostics": page_diagnostics,
+                    }
+                )
+                iteration_signature_info = _linkedin_step_signature(
+                    snapshot_text,
+                    refs,
+                    page_diagnostics,
+                    active_step_info=iteration_active_step_info,
+                )
                 iteration_signature = _text(iteration_signature_info.get("signature")) or None
                 if iteration_signature and iteration_signature == linkedin_last_step_signature:
                     linkedin_repeated_signature_count += 1
@@ -5524,10 +7592,8 @@ def run_backend(
                     page_diagnostics,
                     refs,
                     signature_info=iteration_signature_info,
+                    active_step_info=iteration_active_step_info,
                 )
-                if iteration_signature_info.get("review_like"):
-                    linkedin_later_step_review_handoff = True
-                    break
                 if linkedin_repeated_signature_count > DEFAULT_LINKEDIN_LATER_STEP_MAX_REPEATED_SIGNATURES:
                     linkedin_repeated_state_detected = True
                     linkedin_repeated_state_reason = "repeated_later_step_signature_without_meaningful_progress"
@@ -5538,6 +7604,7 @@ def run_backend(
                         page_diagnostics,
                         refs,
                         signature_info=iteration_signature_info,
+                        active_step_info=iteration_active_step_info,
                     )
                     break
 
@@ -5582,6 +7649,7 @@ def run_backend(
                 answer_profile=answer_profile,
                 application_target=target,
                 answers=answers,
+                radio_group_diagnostics=list(form_diagnostics.get("radio_group_diagnostics") or []),
             )
             fill_payloads.extend(generic_plan["fill_payloads"])
             fill_manifest_rows.extend(generic_plan["manifest_rows"])
@@ -5678,11 +7746,27 @@ def run_backend(
 
             later_step_safe_skips = list(generic_plan.get("safe_skips") or [])
             later_step_optional_steps: list[dict[str, Any]] = []
+            current_top_choice_step_detected = False
+            later_step_progression = _later_step_progression_diagnostics(
+                answer_mappings=list(generic_plan.get("answer_mappings") or []),
+                missing_required_fields=list(generic_plan.get("missing_required_fields") or []),
+                unresolved_fields=list(generic_plan.get("unresolved_fields") or []),
+                radio_group_diagnostics=list(form_diagnostics.get("radio_group_diagnostics") or []),
+            )
             if _is_linkedin_easy_apply_target(payload) and str(page_diagnostics.get("linkedin_state") or "") in {
                 "easy_apply_later_step",
                 "easy_apply_review_step",
             }:
-                if _linkedin_top_choice_optional_step(snapshot_text):
+                current_top_choice_step_detected = _linkedin_top_choice_optional_step(
+                    snapshot_text,
+                    active_step_signature=(
+                        _text(iteration_signature_info.get("signature"))
+                        if isinstance(iteration_signature_info, dict)
+                        else _text(page_diagnostics.get("active_step_signature"))
+                    ),
+                    visible_labels=_linkedin_visible_step_labels(refs, limit=12),
+                )
+                if current_top_choice_step_detected:
                     later_step_optional_steps.append(
                         {
                             "step": "top_choice",
@@ -5712,9 +7796,22 @@ def run_backend(
                     refs,
                     policy_matches=list(generic_plan.get("policy_matches") or []),
                     answers_applied=list(generic_plan.get("answers_applied") or []),
+                    required_field_statuses=list(later_step_progression.get("required_field_statuses") or []),
+                    radio_group_diagnostics=list(later_step_progression.get("radio_group_diagnostics") or []),
+                    canonical_key_resolution=list(later_step_progression.get("canonical_key_resolution") or []),
+                    radio_selection_strategy=list(later_step_progression.get("radio_selection_strategy") or []),
                     safe_skips=later_step_safe_skips,
                     optional_steps_skipped=later_step_optional_steps,
                     personal_answer_fallbacks=list(generic_plan.get("personal_answer_fallbacks_used") or []),
+                    fallback_answers_used=list(generic_plan.get("fallback_answers_used") or []),
+                    unresolved_fields=list(generic_plan.get("unresolved_fields") or []),
+                    high_confidence_answered_fields=list(generic_plan.get("high_confidence_answered_fields") or []),
+                    medium_confidence_answered_fields=list(generic_plan.get("medium_confidence_answered_fields") or []),
+                    low_confidence_answered_fields=list(generic_plan.get("low_confidence_answered_fields") or []),
+                    continue_gate_reason=_text(later_step_progression.get("continue_gate_reason")) or None,
+                    top_choice_step_detected=current_top_choice_step_detected,
+                    top_choice_skip_attempted=current_top_choice_step_detected,
+                    top_choice_interaction_performed=False,
                 )
                 linkedin_last_policy_match = (
                     dict(generic_plan["policy_matches"][-1]) if list(generic_plan.get("policy_matches") or []) else linkedin_last_policy_match
@@ -5730,6 +7827,11 @@ def run_backend(
                 "missing_required_fields": list(generic_plan["missing_required_fields"]),
                 "required_fields_filled": list(generic_plan["required_fields_filled"]),
                 "self_id_handling_mode": generic_plan["self_id_handling_mode"],
+                "high_confidence_answered_fields": list(generic_plan.get("high_confidence_answered_fields") or []),
+                "medium_confidence_answered_fields": list(generic_plan.get("medium_confidence_answered_fields") or []),
+                "low_confidence_answered_fields": list(generic_plan.get("low_confidence_answered_fields") or []),
+                "unresolved_fields": list(generic_plan.get("unresolved_fields") or []),
+                "fallback_answers_used": list(generic_plan.get("fallback_answers_used") or []),
             }
             iteration_fill_work_attempted = bool(fill_payloads or select_actions)
             fill_work_attempted = fill_work_attempted or iteration_fill_work_attempted
@@ -5838,37 +7940,404 @@ def run_backend(
                 break
             if not _is_linkedin_easy_apply_target(payload):
                 break
-            if str(page_diagnostics.get("linkedin_state") or "") == "easy_apply_review_step":
-                break
-            post_iteration_signature_info = _linkedin_step_signature(snapshot_text, refs, page_diagnostics)
+            post_iteration_active_step_info = linkedin_active_step_info_for_state(live_state)
+            post_iteration_signature_info = _linkedin_step_signature(
+                snapshot_text,
+                refs,
+                page_diagnostics,
+                active_step_info=post_iteration_active_step_info,
+            )
             sync_later_step_runtime_diagnostics(
                 page_diagnostics,
                 refs,
                 signature_info=post_iteration_signature_info,
+                active_step_info=post_iteration_active_step_info,
             )
-            if post_iteration_signature_info.get("review_like"):
+            current_review_step_detected = bool(post_iteration_signature_info.get("review_step_detected"))
+            submit_candidate_info = (
+                _linkedin_submit_candidates(client, refs)
+                if current_review_step_detected or bool(post_iteration_signature_info.get("submit_step_detected"))
+                else {"candidates": [], "chosen": None, "source": "none"}
+            )
+            submit_candidate_payload = _submit_candidate_diagnostics_payload(
+                list(submit_candidate_info.get("candidates") or []),
+                submit_candidate_info.get("chosen") if isinstance(submit_candidate_info, dict) else None,
+            )
+            current_step_flags = _linkedin_step_signal_flags(
+                snapshot_text,
+                refs,
+                page_diagnostics,
+                submit_candidate_info=submit_candidate_info,
+            )
+            current_submit_step_detected = bool(current_step_flags.get("submit_step_detected"))
+            current_submit_button_present = bool(current_step_flags.get("submit_button_present"))
+            current_submit_signal_type = _text(current_step_flags.get("submit_signal_type")) or "none"
+            current_final_step_detected = bool(current_step_flags.get("final_step_detected"))
+            page_diagnostics.update(submit_candidate_payload)
+            current_next_candidate = (
+                post_iteration_active_step_info.get("chosen_next")
+                if isinstance(post_iteration_active_step_info.get("chosen_next"), dict)
+                else None
+            )
+            current_next_ref = _text((current_next_candidate or {}).get("ref_hint")) or None
+            current_next_label = _text((current_next_candidate or {}).get("label")) or None
+            page_diagnostics.update(
+                _next_candidate_diagnostics_payload(
+                    list(post_iteration_active_step_info.get("next_candidates") or []),
+                    current_next_candidate,
+                )
+            )
+            current_pre_submit_transition = bool(
+                current_review_step_detected and not current_submit_button_present and current_next_ref
+            )
+            current_visible_question_count = len(list(post_iteration_active_step_info.get("visible_labels") or []))
+            current_top_choice_step_detected = _linkedin_top_choice_optional_step(
+                snapshot_text,
+                active_step_signature=_text(post_iteration_signature_info.get("signature")) or None,
+                visible_labels=list(post_iteration_active_step_info.get("visible_labels") or []),
+            )
+            current_later_step_progression = _later_step_progression_diagnostics(
+                answer_mappings=list(generic_answer_diagnostics["answer_mappings"]),
+                missing_required_fields=list(generic_answer_diagnostics["missing_required_fields"]),
+                unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                radio_group_diagnostics=list(form_diagnostics.get("radio_group_diagnostics") or []),
+            )
+            current_submit_decision = _later_step_decision(
+                answer_profile=answer_profile,
+                answer_mappings=list(generic_answer_diagnostics["answer_mappings"]),
+                missing_required_fields=list(generic_answer_diagnostics["missing_required_fields"]),
+                unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                high_confidence_answered_fields=list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                medium_confidence_answered_fields=list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                low_confidence_answered_fields=list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
+                answer_confidences=list(generic_plan["answer_confidences"]),
+                review_step_detected=current_review_step_detected,
+                submit_step_detected=current_submit_step_detected,
+                submit_button_present=current_submit_button_present,
+                final_step_detected=current_final_step_detected,
+                next_step_available=bool(current_next_ref),
+                visible_question_count=current_visible_question_count,
+            )
+            generic_answer_diagnostics["submit_decision"] = current_submit_decision
+            update_later_step_diagnostics(
+                page_diagnostics,
+                refs,
+                review_step_detected=current_review_step_detected,
+                later_step_decision=current_submit_decision["later_step_decision"],
+                continue_gate_reason=_text(current_later_step_progression.get("continue_gate_reason")) or None,
+                submit_step_detected=current_submit_step_detected,
+                submit_button_present=current_submit_button_present,
+                submit_signal_type=current_submit_signal_type,
+                submit_probe_ran_on_step_signature=_text(post_iteration_signature_info.get("signature")),
+                active_step_heading=_text(post_iteration_signature_info.get("heading")) or None,
+                active_step_progress_percent=post_iteration_signature_info.get("progress_percent"),
+                active_step_required_labels=list(post_iteration_signature_info.get("required_labels") or []),
+                active_step_signature=_text(post_iteration_signature_info.get("signature")) or None,
+                chosen_next_ref=current_next_ref,
+                chosen_next_label=current_next_label,
+                chosen_next_attributes=dict(page_diagnostics.get("chosen_next_attributes") or {}),
+                top_choice_step_detected=current_top_choice_step_detected,
+                top_choice_skip_attempted=current_top_choice_step_detected,
+                top_choice_interaction_performed=False,
+                pre_submit_transition_attempted=current_pre_submit_transition,
+                pre_submit_transition_succeeded=False,
+                required_field_statuses=list(current_later_step_progression.get("required_field_statuses") or []),
+                radio_group_diagnostics=list(current_later_step_progression.get("radio_group_diagnostics") or []),
+                canonical_key_resolution=list(current_later_step_progression.get("canonical_key_resolution") or []),
+                radio_selection_strategy=list(current_later_step_progression.get("radio_selection_strategy") or []),
+                submit_confidence=current_submit_decision["submit_confidence"],
+                submit_confidence_reasons=list(current_submit_decision["submit_confidence_reasons"]),
+                submit_blocked_reason=_text(current_submit_decision.get("submit_blocked_reason")) or None,
+                attempted_submit_without_button=False,
+                auto_submit_allowed=bool(current_submit_decision["auto_submit_allowed"]),
+                auto_submit_attempted=auto_submit_attempted,
+                auto_submit_succeeded=auto_submit_succeeded,
+                fallback_answers_used=list(generic_answer_diagnostics.get("fallback_answers_used") or []),
+                unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                final_step_detected=current_final_step_detected,
+                high_confidence_answered_fields=list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                medium_confidence_answered_fields=list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                low_confidence_answered_fields=list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
+            )
+            if current_top_choice_step_detected:
+                live_state, advanced, blocking_reason = advance_linkedin_later_step(
+                    current_state={
+                        "page_title": page_title,
+                        "current_url": current_url,
+                        "checkpoint_urls": checkpoint_urls,
+                        "snapshot_text": snapshot_text,
+                        "refs": refs,
+                        "upload_ref": upload_ref,
+                        "contact_field_actions": contact_field_actions,
+                        "form_diagnostics": form_diagnostics,
+                        "page_diagnostics": page_diagnostics,
+                    },
+                    reason="top_choice_skip_next",
+                    pre_submit_transition=False,
+                )
+                page_title = live_state["page_title"]
+                current_url = live_state["current_url"]
+                checkpoint_urls = live_state["checkpoint_urls"]
+                snapshot_text = live_state["snapshot_text"]
+                refs = live_state["refs"]
+                upload_ref = live_state["upload_ref"]
+                contact_field_actions = live_state["contact_field_actions"]
+                form_diagnostics = live_state["form_diagnostics"]
+                page_diagnostics = live_state["page_diagnostics"]
+                final_refs = refs
+                final_upload_ref = upload_ref
+                final_contact_actions = contact_field_actions
+                final_form_diagnostics = form_diagnostics
+                final_page_diagnostics = page_diagnostics
+                update_later_step_diagnostics(
+                    page_diagnostics,
+                    refs,
+                    top_choice_step_detected=True,
+                    top_choice_skip_attempted=True,
+                    top_choice_interaction_performed=False,
+                )
+                if not advanced:
+                    linkedin_repeated_state_detected = True
+                    linkedin_repeated_state_reason = _text(blocking_reason) or "active_step_signature_unchanged_after_next_click"
+                    linkedin_later_step_guard_triggered = True
+                    linkedin_later_step_guard_reason = linkedin_repeated_state_reason
+                    warnings.append("linkedin_later_step_next_click_did_not_advance")
+                if linkedin_later_step_guard_triggered:
+                    break
+                continue
+            if current_submit_decision["later_step_decision"] == "safe_auto_submit":
+                chosen_submit_candidate = (
+                    submit_candidate_info.get("chosen") if isinstance(submit_candidate_info, dict) else None
+                )
+                submit_label = _text(chosen_submit_candidate.get("label")) if isinstance(chosen_submit_candidate, dict) else None
+                normalized_submit_label = _normalize_label_text(submit_label)
+                prior_pre_submit_transition_attempted = bool(
+                    page_diagnostics.get("pre_submit_transition_attempted") or linkedin_pre_submit_transition_attempted
+                )
+                prior_pre_submit_transition_succeeded = bool(
+                    page_diagnostics.get("pre_submit_transition_succeeded") or linkedin_pre_submit_transition_succeeded
+                )
+                blocked_submit_reason: str | None = None
+                attempted_submit_without_button = False
+                if normalized_submit_label == "next":
+                    blocked_submit_reason = "submit_blocked_next_button"
+                    attempted_submit_without_button = True
+                elif not current_submit_button_present:
+                    blocked_submit_reason = "submit_button_not_present"
+                    attempted_submit_without_button = True
+                elif not isinstance(chosen_submit_candidate, dict):
+                    blocked_submit_reason = "submit_button_not_present"
+                    attempted_submit_without_button = True
+                if blocked_submit_reason:
+                    warnings.append(blocked_submit_reason)
+                    current_submit_decision["later_step_decision"] = "continue_flow"
+                    current_submit_decision["should_auto_submit"] = False
+                    current_submit_decision["auto_submit_allowed"] = False
+                    current_submit_decision["reason"] = blocked_submit_reason
+                    current_submit_decision["submit_confidence"] = "low"
+                    current_submit_decision["overall_submit_confidence"] = "low"
+                    current_submit_decision["submit_blocked_reason"] = blocked_submit_reason
+                    current_submit_decision["submit_confidence_reasons"] = list(
+                        current_submit_decision.get("submit_confidence_reasons") or []
+                    ) + [blocked_submit_reason]
+                    update_later_step_diagnostics(
+                        page_diagnostics,
+                        refs,
+                        later_step_decision="continue_flow",
+                        submit_step_detected=current_submit_step_detected,
+                        submit_button_present=current_submit_button_present,
+                        submit_signal_type=current_submit_signal_type,
+                        pre_submit_transition_attempted=prior_pre_submit_transition_attempted,
+                        pre_submit_transition_succeeded=prior_pre_submit_transition_succeeded,
+                        submit_confidence=current_submit_decision["submit_confidence"],
+                        submit_confidence_reasons=list(current_submit_decision["submit_confidence_reasons"]),
+                        submit_blocked_reason=blocked_submit_reason,
+                        attempted_submit_without_button=attempted_submit_without_button,
+                        auto_submit_allowed=False,
+                        auto_submit_attempted=False,
+                        auto_submit_succeeded=False,
+                        fallback_answers_used=list(generic_answer_diagnostics.get("fallback_answers_used") or []),
+                        unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                        final_step_detected=current_final_step_detected,
+                        high_confidence_answered_fields=list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                        medium_confidence_answered_fields=list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                        low_confidence_answered_fields=list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
+                    )
+                if blocked_submit_reason:
+                    if blocked_submit_reason == "submit_blocked_next_button":
+                        record_linkedin_action(
+                            state=str(page_diagnostics.get("linkedin_state") or ""),
+                            action="submit_blocked",
+                            reason="submit_blocked_next_button",
+                            chosen_ref=_text(chosen_submit_candidate.get("ref_hint")) if isinstance(chosen_submit_candidate, dict) else None,
+                            chosen_label=submit_label,
+                            upload_ref_value=_text(page_diagnostics.get("upload_ref")),
+                            advanced=False,
+                        )
+                elif not isinstance(chosen_submit_candidate, dict):
+                    warnings.append("linkedin_submit_button_missing_at_final_step")
+                    break
+                if not blocked_submit_reason:
+                    auto_submit_attempted = True
+                    previous_state = str(page_diagnostics.get("linkedin_state") or "")
+                    previous_url = current_url
+                    previous_excerpt = snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS]
+                    previous_signature = _text(post_iteration_signature_info.get("signature") if post_iteration_signature_info else iteration_signature)
+                    submit_click_result = _click_linkedin_submit_candidate(client, refs, chosen_submit_candidate)
+                    if not bool(submit_click_result.get("clicked")):
+                        auto_submit_succeeded = False
+                        current_submit_decision["reason"] = "submit_click_no_effect"
+                        current_submit_decision["submit_confidence_reasons"] = list(
+                            current_submit_decision.get("submit_confidence_reasons") or []
+                        ) + ["submit_click_no_effect"]
+                        final_page_diagnostics = {
+                            **page_diagnostics,
+                            **submit_candidate_payload,
+                            "submit_decision_reason": "submit_click_no_effect",
+                            "auto_submit_attempted": True,
+                            "auto_submit_succeeded": False,
+                        }
+                        warnings.append("linkedin_submit_click_no_effect")
+                        break
+                    live_state = capture_live_state()
+                    page_title = live_state["page_title"]
+                    current_url = live_state["current_url"]
+                    checkpoint_urls = live_state["checkpoint_urls"]
+                    snapshot_text = live_state["snapshot_text"]
+                    refs = live_state["refs"]
+                    upload_ref = live_state["upload_ref"]
+                    contact_field_actions = live_state["contact_field_actions"]
+                    form_diagnostics = live_state["form_diagnostics"]
+                    page_diagnostics = live_state["page_diagnostics"]
+                    submit_signature_info = _linkedin_step_signature(snapshot_text, refs, page_diagnostics)
+                    sync_later_step_runtime_diagnostics(
+                        page_diagnostics,
+                        refs,
+                        signature_info=submit_signature_info,
+                    )
+                    remaining_submit_candidates = _linkedin_submit_candidates(client, refs)
+                    remaining_submit_payload = _submit_candidate_diagnostics_payload(
+                        list(remaining_submit_candidates.get("candidates") or []),
+                        remaining_submit_candidates.get("chosen") if isinstance(remaining_submit_candidates, dict) else None,
+                    )
+                    auto_submit_succeeded = bool(
+                        _submission_success_detected(snapshot_text, refs, page_diagnostics)
+                        or not bool(remaining_submit_payload.get("submit_candidate_labels"))
+                        or current_url != previous_url
+                        or not bool(page_diagnostics.get("easy_apply_dialog_exists"))
+                    )
+                    record_linkedin_action(
+                        state=previous_state,
+                        action="click_submit",
+                        reason="safe_auto_submit",
+                        chosen_ref=_text(chosen_submit_candidate.get("ref_hint")) or "[dom-submit-button]",
+                        chosen_label=submit_label,
+                        upload_ref_value=_text(page_diagnostics.get("upload_ref")),
+                        advanced=bool(
+                            current_url != previous_url
+                            or page_diagnostics.get("linkedin_state") != previous_state
+                            or snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS] != previous_excerpt
+                        ),
+                    )
+                    final_refs = refs
+                    final_upload_ref = upload_ref
+                    final_contact_actions = contact_field_actions
+                    final_form_diagnostics = form_diagnostics
+                    update_later_step_diagnostics(
+                        page_diagnostics,
+                        refs,
+                        review_step_detected=True,
+                        later_step_decision="safe_auto_submit" if auto_submit_succeeded else "safe_review_only",
+                        submit_step_detected=True,
+                        submit_button_present=True,
+                        submit_signal_type=_text(remaining_submit_payload.get("submit_signal_type")) or current_submit_signal_type,
+                        submit_probe_ran_on_step_signature=_text(post_iteration_signature_info.get("signature")),
+                        pre_submit_transition_attempted=prior_pre_submit_transition_attempted,
+                        pre_submit_transition_succeeded=prior_pre_submit_transition_succeeded,
+                        submit_confidence=current_submit_decision["submit_confidence"],
+                        submit_confidence_reasons=list(current_submit_decision["submit_confidence_reasons"]),
+                        submit_blocked_reason=None,
+                        attempted_submit_without_button=False,
+                        auto_submit_allowed=bool(current_submit_decision["auto_submit_allowed"]),
+                        auto_submit_attempted=True,
+                        auto_submit_succeeded=auto_submit_succeeded,
+                        fallback_answers_used=list(generic_answer_diagnostics.get("fallback_answers_used") or []),
+                        unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                        final_step_detected=True,
+                        high_confidence_answered_fields=list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                        medium_confidence_answered_fields=list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                        low_confidence_answered_fields=list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
+                    )
+                    final_page_diagnostics = {**page_diagnostics, **submit_candidate_payload}
+                    if not auto_submit_succeeded:
+                        current_submit_decision["reason"] = "submit_click_no_effect"
+                        current_submit_decision["submit_confidence_reasons"] = list(
+                            current_submit_decision.get("submit_confidence_reasons") or []
+                        ) + ["submit_click_no_effect"]
+                        warnings.append("linkedin_submit_click_no_effect")
+                    break
+            if current_review_step_detected and not current_pre_submit_transition:
                 linkedin_later_step_review_handoff = True
                 break
-            if str(page_diagnostics.get("linkedin_state") or "") != "easy_apply_later_step":
+            if str(page_diagnostics.get("linkedin_state") or "") not in {"easy_apply_later_step", "easy_apply_review_step"}:
                 break
-            if generic_answer_diagnostics["missing_required_fields"]:
+            if not bool(current_later_step_progression.get("can_continue", True)):
+                warnings.append("linkedin_later_step_continue_blocked")
                 break
-            chosen_ref = _text(page_diagnostics.get("next_ref") or page_diagnostics.get("next_button_ref"))
-            chosen_label = _text(page_diagnostics.get("next_ref_label") or page_diagnostics.get("next_button_label"))
-            if not chosen_ref:
+            if current_submit_decision["later_step_decision"] not in {"safe_auto_advance", "continue_flow"}:
                 break
-            previous_state = str(page_diagnostics.get("linkedin_state") or "")
-            previous_url = current_url
-            previous_excerpt = snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS]
-            previous_signature = _text(post_iteration_signature_info.get("signature") if post_iteration_signature_info else iteration_signature)
-            live_state = execute_linkedin_live_action(
-                {
-                    "action_type": "click",
-                    "field_type": "button",
-                    "original_ref": chosen_ref,
-                    "label": chosen_label,
-                    "normalized_label": _normalize_label_text(chosen_label),
-                }
+            if current_pre_submit_transition:
+                if linkedin_pre_submit_transition_attempt_count >= DEFAULT_LINKEDIN_PRE_SUBMIT_TRANSITION_MAX_ATTEMPTS:
+                    linkedin_repeated_state_detected = True
+                    linkedin_repeated_state_reason = "submit_transition_probe_cap_reached"
+                    linkedin_later_step_guard_triggered = True
+                    linkedin_later_step_guard_reason = linkedin_repeated_state_reason
+                    warnings.append("linkedin_submit_transition_probe_cap_reached")
+                    current_submit_decision["later_step_decision"] = "safe_review_only"
+                    current_submit_decision["reason"] = linkedin_repeated_state_reason
+                    current_submit_decision["submit_blocked_reason"] = linkedin_repeated_state_reason
+                    current_submit_decision["submit_confidence_reasons"] = list(
+                        current_submit_decision.get("submit_confidence_reasons") or []
+                    ) + [linkedin_repeated_state_reason]
+                    update_later_step_diagnostics(
+                        page_diagnostics,
+                        refs,
+                        later_step_decision="safe_review_only",
+                        submit_step_detected=current_submit_step_detected,
+                        submit_button_present=current_submit_button_present,
+                        submit_signal_type=current_submit_signal_type,
+                        pre_submit_transition_attempted=True,
+                        pre_submit_transition_succeeded=False,
+                        submit_confidence=current_submit_decision["submit_confidence"],
+                        submit_confidence_reasons=list(current_submit_decision["submit_confidence_reasons"]),
+                        submit_blocked_reason=linkedin_repeated_state_reason,
+                        attempted_submit_without_button=False,
+                        auto_submit_allowed=False,
+                        auto_submit_attempted=False,
+                        auto_submit_succeeded=False,
+                        fallback_answers_used=list(generic_answer_diagnostics.get("fallback_answers_used") or []),
+                        unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                        final_step_detected=current_final_step_detected,
+                        high_confidence_answered_fields=list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                        medium_confidence_answered_fields=list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                        low_confidence_answered_fields=list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
+                    )
+                    break
+                linkedin_pre_submit_transition_attempt_count += 1
+            live_state, advanced, blocking_reason = advance_linkedin_later_step(
+                current_state={
+                    "page_title": page_title,
+                    "current_url": current_url,
+                    "checkpoint_urls": checkpoint_urls,
+                    "snapshot_text": snapshot_text,
+                    "refs": refs,
+                    "upload_ref": upload_ref,
+                    "contact_field_actions": contact_field_actions,
+                    "form_diagnostics": form_diagnostics,
+                    "page_diagnostics": page_diagnostics,
+                },
+                reason="pre_submit_transition" if current_pre_submit_transition else "later_step_safe_to_advance",
+                pre_submit_transition=current_pre_submit_transition,
             )
             page_title = live_state["page_title"]
             current_url = live_state["current_url"]
@@ -5879,69 +8348,55 @@ def run_backend(
             contact_field_actions = live_state["contact_field_actions"]
             form_diagnostics = live_state["form_diagnostics"]
             page_diagnostics = live_state["page_diagnostics"]
-            post_click_signature_info = _linkedin_step_signature(snapshot_text, refs, page_diagnostics)
-            sync_later_step_runtime_diagnostics(
-                page_diagnostics,
-                refs,
-                signature_info=post_click_signature_info,
-            )
-            advanced = bool(
-                current_url != previous_url
-                or page_diagnostics.get("linkedin_state") != previous_state
-                or snapshot_text[:DEFAULT_MAX_SNAPSHOT_CHARS] != previous_excerpt
-                or _text(post_click_signature_info.get("signature")) != previous_signature
-            )
-            record_linkedin_action(
-                state=previous_state,
-                action="click_next",
-                reason="later_step_safe_to_advance",
-                chosen_ref=chosen_ref,
-                chosen_label=chosen_label,
-                upload_ref_value=_text(page_diagnostics.get("upload_ref")),
-                advanced=advanced,
-            )
             final_refs = refs
             final_upload_ref = upload_ref
             final_contact_actions = contact_field_actions
             final_form_diagnostics = form_diagnostics
             final_page_diagnostics = page_diagnostics
+            linkedin_pre_submit_transition_attempted = bool(
+                linkedin_pre_submit_transition_attempted or current_pre_submit_transition
+            )
+            linkedin_pre_submit_transition_succeeded = bool(
+                linkedin_pre_submit_transition_succeeded or (current_pre_submit_transition and advanced)
+            )
+            update_later_step_diagnostics(
+                page_diagnostics,
+                refs,
+                pre_submit_transition_attempted=current_pre_submit_transition,
+                pre_submit_transition_succeeded=bool(current_pre_submit_transition and advanced),
+            )
             if not advanced:
-                if _text(post_click_signature_info.get("signature")) == previous_signature:
-                    linkedin_repeated_state_detected = True
-                    linkedin_repeated_state_reason = "next_click_no_progress_same_signature"
-                    linkedin_later_step_guard_triggered = True
-                    linkedin_later_step_guard_reason = linkedin_repeated_state_reason
-                    sync_later_step_runtime_diagnostics(
-                        page_diagnostics,
-                        refs,
-                        signature_info=post_click_signature_info,
-                    )
+                linkedin_repeated_state_detected = True
+                linkedin_repeated_state_reason = _text(blocking_reason) or "next_click_no_progress_same_signature"
+                linkedin_later_step_guard_triggered = True
+                linkedin_later_step_guard_reason = linkedin_repeated_state_reason
+                sync_later_step_runtime_diagnostics(
+                    page_diagnostics,
+                    refs,
+                    active_step_info=linkedin_active_step_info_for_state(live_state),
+                )
                 warnings.append("linkedin_later_step_next_click_did_not_advance")
                 break
 
-        submit_decision = _submit_decision(
-            answer_profile=answer_profile,
-            missing_required_fields=list(generic_answer_diagnostics["missing_required_fields"]),
-            answer_confidences=list(generic_plan["answer_confidences"]),
-            review_step_visible=bool(
-                final_page_diagnostics.get("linkedin_state") == "easy_apply_review_step"
-                or bool(final_page_diagnostics.get("review_like_step_detected"))
-                or "review your application" in snapshot_text.lower()
-            ),
-        )
-        if _is_linkedin_easy_apply_target(payload):
-            submit_decision = {
-                **submit_decision,
-                "should_auto_submit": False,
-                "reason": (
-                    "linkedin_manual_submit_only"
-                    if (
-                        final_page_diagnostics.get("linkedin_state") == "easy_apply_review_step"
-                        or final_page_diagnostics.get("review_like_step_detected")
-                    )
-                    else submit_decision["reason"]
-                ),
-            }
+        submit_decision = dict(generic_answer_diagnostics.get("submit_decision") or {})
+        if not submit_decision:
+            final_signal_flags = _linkedin_step_signal_flags(snapshot_text, final_refs, final_page_diagnostics)
+            submit_decision = _later_step_decision(
+                answer_profile=answer_profile,
+                answer_mappings=list(generic_answer_diagnostics["answer_mappings"]),
+                missing_required_fields=list(generic_answer_diagnostics["missing_required_fields"]),
+                unresolved_fields=list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                high_confidence_answered_fields=list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                medium_confidence_answered_fields=list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                low_confidence_answered_fields=list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
+                answer_confidences=list(generic_plan["answer_confidences"]),
+                review_step_detected=bool(final_signal_flags.get("review_step_detected")),
+                submit_step_detected=bool(final_signal_flags.get("submit_step_detected")),
+                submit_button_present=bool(final_signal_flags.get("submit_button_present")),
+                final_step_detected=bool(final_signal_flags.get("final_step_detected")),
+                next_step_available=bool(_linkedin_next_ref(final_refs)),
+                visible_question_count=len([ref for ref in final_refs if ref.field_type in {"text", "select", "radio", "checkbox"}]),
+            )
         generic_answer_diagnostics["submit_decision"] = submit_decision
         final_page_diagnostics.update(
             {
@@ -5951,6 +8406,46 @@ def run_backend(
                 "submit_decision_reason": submit_decision["reason"],
                 "should_auto_submit": submit_decision["should_auto_submit"],
                 "submit_min_confidence": submit_decision["min_confidence"],
+                "later_step_decision": submit_decision["later_step_decision"],
+                "submit_confidence": submit_decision["submit_confidence"],
+                "overall_submit_confidence": submit_decision["overall_submit_confidence"],
+                "submit_confidence_reasons": list(submit_decision["submit_confidence_reasons"]),
+                "auto_submit_allowed": bool(submit_decision["auto_submit_allowed"]),
+                "auto_submit_attempted": auto_submit_attempted,
+                "auto_submit_succeeded": auto_submit_succeeded,
+                "review_step_detected": bool(final_page_diagnostics.get("review_step_detected")),
+                "review_like_step_detected": bool(
+                    auto_submit_attempted
+                    or auto_submit_succeeded
+                    or final_page_diagnostics.get("review_like_step_detected")
+                ),
+                "submit_step_detected": bool(final_page_diagnostics.get("submit_step_detected")),
+                "submit_button_present": bool(final_page_diagnostics.get("submit_button_present")),
+                "submit_signal_type": _text(final_page_diagnostics.get("submit_signal_type")) or "none",
+                "submit_candidate_refs": list(final_page_diagnostics.get("submit_candidate_refs") or []),
+                "submit_candidate_labels": list(final_page_diagnostics.get("submit_candidate_labels") or []),
+                "submit_candidate_tags": list(final_page_diagnostics.get("submit_candidate_tags") or []),
+                "submit_candidate_signal_types": list(final_page_diagnostics.get("submit_candidate_signal_types") or []),
+                "chosen_submit_ref": final_page_diagnostics.get("chosen_submit_ref"),
+                "chosen_submit_label": final_page_diagnostics.get("chosen_submit_label"),
+                "chosen_submit_tag": final_page_diagnostics.get("chosen_submit_tag"),
+                "chosen_submit_signal_type": final_page_diagnostics.get("chosen_submit_signal_type"),
+                "chosen_submit_attributes": final_page_diagnostics.get("chosen_submit_attributes") or {},
+                "submit_probe_ran_on_step_signature": final_page_diagnostics.get("submit_probe_ran_on_step_signature"),
+                "pre_submit_transition_attempted": bool(final_page_diagnostics.get("pre_submit_transition_attempted")),
+                "pre_submit_transition_succeeded": bool(final_page_diagnostics.get("pre_submit_transition_succeeded")),
+                "submit_blocked_reason": (
+                    _text(final_page_diagnostics.get("submit_blocked_reason"))
+                    or _text(submit_decision.get("submit_blocked_reason"))
+                    or None
+                ),
+                "attempted_submit_without_button": bool(final_page_diagnostics.get("attempted_submit_without_button")),
+                "fallback_answers_used": list(generic_answer_diagnostics.get("fallback_answers_used") or []),
+                "unresolved_fields": list(generic_answer_diagnostics.get("unresolved_fields") or []),
+                "final_step_detected": bool(final_page_diagnostics.get("final_step_detected")),
+                "high_confidence_answered_fields": list(generic_answer_diagnostics.get("high_confidence_answered_fields") or []),
+                "medium_confidence_answered_fields": list(generic_answer_diagnostics.get("medium_confidence_answered_fields") or []),
+                "low_confidence_answered_fields": list(generic_answer_diagnostics.get("low_confidence_answered_fields") or []),
             }
         )
         final_form_diagnostics = {
@@ -5959,8 +8454,48 @@ def run_backend(
             "missing_required_fields": generic_answer_diagnostics["missing_required_fields"],
             "required_fields_filled": generic_answer_diagnostics["required_fields_filled"],
             "self_id_handling_mode": generic_answer_diagnostics["self_id_handling_mode"],
+            "high_confidence_answered_fields": generic_answer_diagnostics.get("high_confidence_answered_fields") or [],
+            "medium_confidence_answered_fields": generic_answer_diagnostics.get("medium_confidence_answered_fields") or [],
+            "low_confidence_answered_fields": generic_answer_diagnostics.get("low_confidence_answered_fields") or [],
+            "unresolved_fields": generic_answer_diagnostics.get("unresolved_fields") or [],
+            "fallback_answers_used": generic_answer_diagnostics.get("fallback_answers_used") or [],
+            "submit_confidence": submit_decision["submit_confidence"],
+            "overall_submit_confidence": submit_decision["overall_submit_confidence"],
+            "submit_confidence_reasons": list(submit_decision["submit_confidence_reasons"]),
+            "later_step_decision": submit_decision["later_step_decision"],
+            "auto_submit_allowed": bool(submit_decision["auto_submit_allowed"]),
+            "auto_submit_attempted": auto_submit_attempted,
+            "auto_submit_succeeded": auto_submit_succeeded,
+            "review_step_detected": bool(final_page_diagnostics.get("review_step_detected")),
+            "submit_step_detected": bool(final_page_diagnostics.get("submit_step_detected")),
+            "submit_button_present": bool(final_page_diagnostics.get("submit_button_present")),
+            "submit_signal_type": _text(final_page_diagnostics.get("submit_signal_type")) or "none",
+            "final_step_detected": bool(final_page_diagnostics.get("final_step_detected")),
+            "submit_probe_ran_on_step_signature": final_page_diagnostics.get("submit_probe_ran_on_step_signature"),
+            "pre_submit_transition_attempted": bool(final_page_diagnostics.get("pre_submit_transition_attempted")),
+            "pre_submit_transition_succeeded": bool(final_page_diagnostics.get("pre_submit_transition_succeeded")),
+            "submit_candidate_refs": final_page_diagnostics.get("submit_candidate_refs") or [],
+            "submit_candidate_labels": final_page_diagnostics.get("submit_candidate_labels") or [],
+            "submit_candidate_tags": final_page_diagnostics.get("submit_candidate_tags") or [],
+            "submit_candidate_signal_types": final_page_diagnostics.get("submit_candidate_signal_types") or [],
+            "chosen_submit_ref": final_page_diagnostics.get("chosen_submit_ref"),
+            "chosen_submit_label": final_page_diagnostics.get("chosen_submit_label"),
+            "chosen_submit_tag": final_page_diagnostics.get("chosen_submit_tag"),
+            "chosen_submit_signal_type": final_page_diagnostics.get("chosen_submit_signal_type"),
+            "chosen_submit_attributes": final_page_diagnostics.get("chosen_submit_attributes") or {},
+            "submit_blocked_reason": (
+                _text(final_page_diagnostics.get("submit_blocked_reason"))
+                or _text(submit_decision.get("submit_blocked_reason"))
+                or None
+            ),
+            "attempted_submit_without_button": bool(final_page_diagnostics.get("attempted_submit_without_button")),
             "later_step_policy_matches": final_page_diagnostics.get("later_step_policy_matches") or [],
             "later_step_answers_applied": final_page_diagnostics.get("later_step_answers_applied") or [],
+            "later_step_required_field_statuses": final_page_diagnostics.get("later_step_required_field_statuses") or [],
+            "later_step_radio_group_diagnostics": final_page_diagnostics.get("later_step_radio_group_diagnostics") or [],
+            "later_step_canonical_key_resolution": final_page_diagnostics.get("later_step_canonical_key_resolution") or [],
+            "later_step_radio_selection_strategy": final_page_diagnostics.get("later_step_radio_selection_strategy") or [],
+            "later_step_continue_gate_reason": final_page_diagnostics.get("later_step_continue_gate_reason"),
             "later_step_safe_skips": final_page_diagnostics.get("later_step_safe_skips") or [],
             "later_step_optional_steps_skipped": final_page_diagnostics.get("later_step_optional_steps_skipped") or [],
             "later_step_personal_answer_fallbacks_used": final_page_diagnostics.get("later_step_personal_answer_fallbacks_used") or [],
@@ -5980,7 +8515,35 @@ def run_backend(
             "should_auto_submit": submit_decision["should_auto_submit"],
             "submit_min_confidence": submit_decision["min_confidence"],
         }
-        if _detect_keywords(_combine_text(current_url, page_title, snapshot_text), SUBMIT_HINTS) and "thank" in snapshot_text.lower():
+        later_step_required_fields_satisfied = _later_step_required_fields_satisfied(
+            list(final_page_diagnostics.get("later_step_required_field_statuses") or [])
+        )
+        if auto_submit_succeeded:
+            return _result(
+                draft_status="draft_ready",
+                source_status="success",
+                awaiting_review=False,
+                review_status="submitted",
+                submitted=True,
+                failure_category=None,
+                blocking_reason=None,
+                fields_filled_manifest=fields_filled_manifest,
+                screenshot_metadata_references=screenshots,
+                checkpoint_urls=checkpoint_urls,
+                page_title=page_title,
+                warnings=warnings,
+                errors=errors,
+                notify_reason="application_submitted",
+                page_diagnostics=final_page_diagnostics,
+                form_diagnostics=final_form_diagnostics,
+                debug_json=build_debug_json(),
+            )
+
+        if (
+            not auto_submit_attempted
+            and _detect_keywords(_combine_text(current_url, page_title, snapshot_text), SUBMIT_HINTS)
+            and "thank" in snapshot_text.lower()
+        ):
             return _result(
                 draft_status="partial_draft" if fields_filled_manifest else "not_started",
                 source_status="unsafe_submit_attempted",
@@ -5999,7 +8562,55 @@ def run_backend(
                 debug_json=build_debug_json(),
             )
 
-        if generic_answer_diagnostics["missing_required_fields"]:
+        if (
+            linkedin_later_step_review_handoff
+            and later_step_required_fields_satisfied
+            and not generic_answer_diagnostics["missing_required_fields"]
+            and not generic_answer_diagnostics.get("unresolved_fields")
+        ):
+            return _result(
+                draft_status="draft_ready",
+                source_status="success",
+                awaiting_review=True,
+                review_status="awaiting_review",
+                failure_category=None,
+                blocking_reason=None,
+                fields_filled_manifest=fields_filled_manifest,
+                screenshot_metadata_references=screenshots,
+                checkpoint_urls=checkpoint_urls,
+                page_title=page_title,
+                warnings=warnings,
+                errors=errors,
+                page_diagnostics=final_page_diagnostics,
+                form_diagnostics=final_form_diagnostics,
+                debug_json=build_debug_json(),
+            )
+
+        if not later_step_required_fields_satisfied:
+            later_step_gate_reason = _text(final_page_diagnostics.get("later_step_continue_gate_reason")) or None
+            return _result(
+                draft_status="partial_draft" if fields_filled_manifest else "not_started",
+                source_status="manual_review_required",
+                awaiting_review=bool(fields_filled_manifest),
+                review_status="awaiting_review" if fields_filled_manifest else "blocked",
+                failure_category="manual_review_required",
+                blocking_reason=(
+                    UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON
+                    if later_step_gate_reason == UNCLASSIFIED_REQUIRED_RADIO_GROUP_REASON
+                    else "Automation stopped because one or more required later-step questions could not be safely verified before continuing."
+                ),
+                fields_filled_manifest=fields_filled_manifest,
+                screenshot_metadata_references=screenshots,
+                checkpoint_urls=checkpoint_urls,
+                page_title=page_title,
+                warnings=warnings,
+                errors=errors + [later_step_gate_reason or "required_later_step_fields_not_satisfied"],
+                page_diagnostics=final_page_diagnostics,
+                form_diagnostics=final_form_diagnostics,
+                debug_json=build_debug_json(),
+            )
+
+        if generic_answer_diagnostics["missing_required_fields"] or generic_answer_diagnostics.get("unresolved_fields"):
             return _result(
                 draft_status="partial_draft" if fields_filled_manifest else "not_started",
                 source_status="manual_review_required",
@@ -6018,7 +8629,31 @@ def run_backend(
                 debug_json=build_debug_json(),
             )
 
+        if auto_submit_attempted and not auto_submit_succeeded:
+            return _result(
+                draft_status="draft_ready" if fields_filled_manifest else "partial_draft",
+                source_status="manual_review_required",
+                awaiting_review=bool(fields_filled_manifest),
+                review_status="awaiting_review" if fields_filled_manifest else "blocked",
+                failure_category="manual_review_required",
+                blocking_reason="Auto-submit was attempted but the page did not present a reliable submission confirmation, so Mission Control handed off for review.",
+                fields_filled_manifest=fields_filled_manifest,
+                screenshot_metadata_references=screenshots,
+                checkpoint_urls=checkpoint_urls,
+                page_title=page_title,
+                warnings=warnings,
+                errors=errors + ["auto_submit_confirmation_missing"],
+                page_diagnostics=final_page_diagnostics,
+                form_diagnostics=final_form_diagnostics,
+                debug_json=build_debug_json(),
+            )
+
         if linkedin_later_step_guard_triggered and not linkedin_later_step_review_handoff:
+            precise_guard_reason = (
+                _text(final_page_diagnostics.get("step_advance_blocking_reason"))
+                or _text(linkedin_later_step_guard_reason)
+                or None
+            )
             return _result(
                 draft_status="partial_draft" if fields_filled_manifest else "not_started",
                 source_status="manual_review_required",
@@ -6027,8 +8662,8 @@ def run_backend(
                 failure_category="manual_review_required",
                 blocking_reason=(
                     "LinkedIn later-step automation stopped after repeated unchanged steps to avoid timing out before review."
-                    if not linkedin_later_step_guard_reason
-                    else f"LinkedIn later-step automation stopped safely: {linkedin_later_step_guard_reason}."
+                    if not precise_guard_reason
+                    else f"LinkedIn later-step automation stopped safely: {precise_guard_reason}."
                 ),
                 fields_filled_manifest=fields_filled_manifest,
                 screenshot_metadata_references=screenshots,
@@ -6078,6 +8713,12 @@ def run_backend(
         )
     except BrowserCommandError as exc:
         last_error = exc
+        persist_runtime_snapshot(
+            "browser_command_error",
+            current_page_diagnostics=page_diagnostics,
+            current_form_diagnostics=form_diagnostics,
+            blocking_reason=exc.blocking_reason,
+        )
         return _result(
             draft_status="not_started" if not fields_filled_manifest else "partial_draft",
             source_status=exc.failure_category,

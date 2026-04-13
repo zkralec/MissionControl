@@ -1,6 +1,6 @@
 {
   "request": {
-    "recorded_at": "2026-04-08T18:23:42Z",
+    "recorded_at": "2026-04-09T15:06:49Z",
     "action": "apply_draft",
     "stop_before_submit": true,
     "application_target": {
@@ -44,14 +44,14 @@
     }
   },
   "result_summary": {
-    "recorded_at": "2026-04-08T18:26:41Z",
-    "draft_status": "draft_ready",
-    "source_status": "success",
-    "awaiting_review": true,
-    "review_status": "awaiting_review",
+    "recorded_at": "2026-04-09T15:10:49Z",
+    "draft_status": "partial_draft",
+    "source_status": "timed_out",
+    "awaiting_review": false,
+    "review_status": "blocked",
     "submitted": false,
-    "failure_category": null,
-    "blocking_reason": null,
+    "failure_category": "timed_out",
+    "blocking_reason": "The browser runner hit its time budget before reaching a safe review checkpoint.",
     "fields_filled_count": 9,
     "screenshots_count": 1,
     "checkpoint_urls": [
@@ -59,8 +59,11 @@
       "https://www.linkedin.com/jobs/view/4354740729/"
     ],
     "warnings": [
-      "networkidle_wait_skipped"
+      "networkidle_wait_skipped",
+      "timeout_progress_snapshot_recovered"
     ],
-    "errors": []
+    "errors": [
+      "openclaw_apply_timed_out"
+    ]
   }
 }

@@ -1,0 +1,47 @@
+==============================================================================
+  FIELDS REPORT — run-8fe3876ca1a4
+==============================================================================
+  URL     : https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com
+  Adapter : workable
+  Status  : draft_ready
+  Total   : 30  filled=21  skipped=9  failed=0
+==============================================================================
+
+    #  REQ  TYPE        STATUS    LABEL                                VALUE
+  ---  ---  ----------  --------  -----------------------------------  ------------------------------
+
+  --- FILLED (21) ---
+    1  YES  text        filled    First name                           Zack
+    2  YES  text        filled    Last name                            Kralec
+    3  YES  email       filled    Email                                zkralec@icloud.com
+    4  YES  phone       filled    Phone +1                             4104566443
+    5  YES  text        filled    Address                              3233 Vance Rd, Monkton MD, 21111
+    6  YES  text        filled    Salary expectations                  100000
+    7  YES  file        filled    Choose file or drag and drop here    ZacharyKralecResume.pdf
+    8  YES  text        filled    Do you have a proven track record o  Yes — I built Mission Control, an AI-pow...
+    9  YES  text        filled    Do you have a strong working knowle  Yes — I’ve integrated OpenAI LLMs into M...
+   10  YES  text        filled    Do you have the ability to go from   Yes — I’ve taken ideas to working AI pro...
+   11  YES  text        filled    Are you comfortable with ambiguity?  Yes — I’m comfortable with ambiguity and...
+   12  YES  text        filled    Are you biased toward action over p  I’m biased toward action: I prefer to st...
+   13  YES  text        filled    Do you have experience building AI   Yes. I built Mission Control, an AI-powe...
+   14  YES  text        filled    Do you have a background in vertica  I haven’t shipped a commercial vertical ...
+   15  YES  text        filled    Are you familiar with the security   Yes — through my corporate IT and automa...
+   16  YES  text        filled    Are you a previous startup or found  I’m not a previous startup founder, but ...
+   17  YES  text        filled    Are you experienced working across   Yes. As a Corporate IT Analyst and in pr...
+   18  YES  text        filled    What are your salary expectations?   100000
+   19  no   textarea    filled    Summary (Optional)                   I’m an early-career software engineer wi...
+   20  YES  textarea    filled    Cover letter                         I’m an early-career software engineer wi...
+   21  no   select      filled    Telephone country code               4104566443
+
+  --- SKIPPED (9) ---
+   22  no   text        skipped   Headline (Optional)                  no answer
+   23  no   text        skipped   city                                 covered by address autocomplete
+   24  no   text        skipped   postcode                             covered by address autocomplete
+   25  no   text        skipped   country                              covered by address autocomplete
+   26  no   file        skipped   Choose file or drag and drop here    unsupported image upload target
+   27  no   radio       skipped   YES                                  no answer
+   28  no   text        skipped   Do you have at least a bachelor's d  no answer
+   29  no   text        skipped   Do you have experience in designing  no answer
+   30  no   radio       skipped   YES                                  no answer
+
+==============================================================================

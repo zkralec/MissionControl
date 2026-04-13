@@ -1,0 +1,30 @@
+{
+  "run_id": "run-932d772fdf34",
+  "job_url": "https://epic.avature.net/Careers/RegisterMethod?folderId=742&source=LinkedIn",
+  "site": "Avature",
+  "adapter_used": "avature",
+  "started_at": "2026-04-13T18:49:46.026917+00:00",
+  "completed_at": "2026-04-13T18:50:05.610355+00:00",
+  "status": "profile_required",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/01-01-avature-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/02-01-avature-register.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/03-avature-login-after-trigger.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/04-avature-login-credentials-entered.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/05-avature-post-login.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/06-02-avature-profile-dashboard.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-932d772fdf34/07-02-avature-post-login-recovery.png"
+  ],
+  "failure_reason": "Avature portal requires profile completion before the application can proceed. Complete your profile at https://epic.avature.net/Careers/Profile and then re-run the engine.",
+  "llm_calls": 0,
+  "notes": [
+    "Step 1: Logged into Avature as zkralec@icloud.com.",
+    "Step 2: Redirected to profile/dashboard after login. Navigating back to original target URL."
+  ],
+  "steps": []
+}

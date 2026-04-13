@@ -358,6 +358,56 @@ def test_openclaw_apply_draft_runner_enforces_no_submit_safety(tmp_path) -> None
     assert result["failure_category"] == "unsafe_submit_attempted"
     assert "unsafe_submit_attempted_detected" in result["warnings"]
     assert result["awaiting_review"] is False
+
+
+def test_openclaw_apply_draft_runner_allows_safe_auto_submit_signal(tmp_path) -> None:
+    payload = _base_payload()
+    fake_tool = _write_fake_openclaw_tool(tmp_path)
+    env = _isolated_runner_env()
+    env.update(
+        {
+            "OPENCLAW_APPLY_ADAPTER": "command",
+            "OPENCLAW_APPLY_TOOL_COMMAND": f"{sys.executable} {fake_tool}",
+            "OPENCLAW_APPLY_SCREENSHOT_DIR": str(tmp_path / "screenshots"),
+            "OPENCLAW_APPLY_RECEIPT_DIR": str(tmp_path / "receipts"),
+            "OPENCLAW_APPLY_RESUME_DIR": str(tmp_path / "resume_uploads"),
+            "FAKE_OPENCLAW_WRITE_SCREENSHOT": "1",
+            "FAKE_OPENCLAW_RESPONSE": json.dumps(
+                {
+                    "draft_status": "draft_ready",
+                    "source_status": "success",
+                    "awaiting_review": False,
+                    "review_status": "submitted",
+                    "submitted": True,
+                    "fields_filled_manifest": [
+                        {"field_name": "first_name", "status": "filled", "value_redacted": True}
+                    ],
+                    "checkpoint_urls": ["https://linkedin.example/jobs/view/1"],
+                    "page_title": "Application submitted",
+                    "warnings": [],
+                    "errors": [],
+                    "page_diagnostics": {
+                        "auto_submit_allowed": True,
+                        "auto_submit_attempted": True,
+                        "auto_submit_succeeded": True,
+                        "submit_confidence": "high",
+                    },
+                    "form_diagnostics": {
+                        "fallback_answers_used": [{"label": "Veteran status"}],
+                    },
+                }
+            ),
+            "TEST_TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = _run_script(payload, env=env, input_via_file=False)
+
+    assert result["submitted"] is True
+    assert result["failure_category"] is None
+    assert result["source_status"] == "success"
+    assert result["review_status"] == "submitted"
+    assert result["awaiting_review"] is False
     assert result["notify_decision"]["should_notify"] is False
 
 
@@ -537,6 +587,73 @@ def test_openclaw_apply_draft_runner_supports_inspect_only_mode(tmp_path) -> Non
     assert result["draft_status"] == "inspect_only"
     assert result["awaiting_review"] is False
     assert result["notify_decision"]["should_notify"] is False
+
+
+def test_openclaw_apply_draft_runner_recovers_progress_snapshot_on_timeout(tmp_path) -> None:
+    payload = _base_payload()
+
+    class TimeoutAdapter:
+        def run(self, request: dict) -> dict:
+            progress_path = Path(request["artifacts"]["progress_snapshot_path"])
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            progress_path.write_text(
+                json.dumps(
+                    {
+                        "progress_stage": "later_step_diagnostics",
+                        "page_title": "Apply to Acme AI",
+                        "checkpoint_urls": ["https://linkedin.example/jobs/view/1"],
+                        "page_diagnostics": {
+                            "review_step_detected": True,
+                            "submit_button_present": False,
+                            "later_step_decision": "continue_flow",
+                            "last_step_signature": "review-your-application-2",
+                        },
+                        "form_diagnostics": {
+                            "submit_button_present": False,
+                            "later_step_decision": "continue_flow",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            raise subprocess.TimeoutExpired(cmd=["fake-openclaw"], timeout=30)
+
+    config = RunnerConfig(
+        adapter="auto",
+        tool_command=None,
+        python_entrypoint=None,
+        headless=True,
+        screenshot_root=tmp_path / "screenshots",
+        receipt_root=tmp_path / "receipts",
+        resume_root=tmp_path / "resume_uploads",
+        timeout_seconds=30,
+        max_steps=12,
+        log_level="INFO",
+        inspect_only=False,
+        allowed_resume_extensions=(".pdf", ".doc", ".docx", ".txt", ".rtf"),
+        auth_strategy=None,
+        storage_state_path=None,
+        browser_profile_path=None,
+        browser_attach_mode=False,
+        skip_browser_start=False,
+        allow_browser_start=True,
+        gateway_url=None,
+        cdp_url=None,
+        host_gateway_alias=None,
+        run_on_host=False,
+        host_gateway_url="ws://127.0.0.1:18789",
+        host_cdp_url="http://127.0.0.1:18800",
+    )
+
+    result = execute_apply_draft(payload, config=config, adapter=TimeoutAdapter())
+
+    assert result["source_status"] == "timed_out"
+    assert result["failure_category"] == "timed_out"
+    assert result["page_diagnostics"]["review_step_detected"] is True
+    assert result["page_diagnostics"]["last_step_signature"] == "review-your-application-2"
+    assert result["form_diagnostics"]["later_step_decision"] == "continue_flow"
+    assert "timeout_progress_snapshot_recovered" in result["warnings"]
+    assert result["debug_json"]["draft_progress"]["progress_stage"] == "later_step_diagnostics"
 
 
 def test_openclaw_apply_draft_runner_host_mode_uses_host_local_browser_urls(tmp_path) -> None:

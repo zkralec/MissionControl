@@ -1,0 +1,49 @@
+==============================================================================
+  FIELDS REPORT — run-3a8dc1b030bb
+==============================================================================
+  URL     : https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com
+  Adapter : workable
+  Status  : draft_ready
+  Total   : 30  filled=20  skipped=6  failed=4
+==============================================================================
+
+    #  REQ  TYPE        STATUS    LABEL                                VALUE
+  ---  ---  ----------  --------  -----------------------------------  ------------------------------
+
+  --- FILLED (20) ---
+    1  YES  text        filled    First name                           Zack
+    2  YES  text        filled    Last name                            Kralec
+    3  YES  email       filled    Email                                zkralec@icloud.com
+    4  YES  phone       filled    Phone +1                             4104566443
+    5  no   text        filled    (unlabeled)                          Monkton
+    6  no   text        filled    (unlabeled)                          21111
+    7  no   text        filled    (unlabeled)                          United States
+    8  YES  text        filled    Do you have a proven track record o  Yes — I built and deployed Mission Contr...
+    9  YES  text        filled    Do you have a strong working knowle  Yes. I have practical, working knowledge...
+   10  YES  text        filled    Do you have the ability to go from   Yes—I can. I built Mission Control from ...
+   11  YES  text        filled    Are you comfortable with ambiguity?  Yes — I’m comfortable with ambiguity and...
+   12  YES  text        filled    Are you biased toward action over p  I’m biased toward action: I prefer to mo...
+   13  YES  text        filled    Do you have experience building AI   Yes. I built Mission Control, an AI-powe...
+   14  YES  text        filled    Do you have a background in vertica  I don’t have formal experience building ...
+   15  YES  text        filled    Are you familiar with the security   I’m familiar with security-adjacent oper...
+   16  YES  text        filled    Are you a previous startup or found  I’m not a previous startup founder, but ...
+   17  YES  text        filled    Are you experienced working across   Yes. In my current role I’ve worked with...
+   18  no   textarea    filled    Summary (Optional)                   I’m an early-career software engineer wi...
+   19  YES  textarea    filled    Cover letter                         I’m an early-career software engineer wi...
+   20  no   select      filled    Telephone country code               4104566443
+
+  --- SKIPPED (6) ---
+   21  no   text        skipped   Headline (Optional)                  no answer
+   22  no   text        skipped   Address                              no answer
+   23  no   radio       skipped   YES                                  no answer
+   24  no   text        skipped   Do you have at least a bachelor's d  no answer
+   25  no   text        skipped   Do you have experience in designing  no answer
+   26  no   radio       skipped   YES                                  no answer
+
+  --- FAILED / NO VALUE (4) ---
+   27  no   file        no_value  Choose file or drag and drop here    
+   28  YES  text        failed    Salary expectations                  100000  ERROR: unable to set field value via fill, js-setter, or type
+   29  YES  file        no_value  Choose file or drag and drop here    
+   30  YES  text        failed    What are your salary expectations?   100000  ERROR: unable to set field value via fill, js-setter, or type
+
+==============================================================================

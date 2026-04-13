@@ -1,0 +1,27 @@
+{
+  "run_id": "run-98515a55e634",
+  "job_url": "https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com",
+  "site": "Workable",
+  "adapter_used": "workable",
+  "started_at": "2026-04-13T19:27:47.566726+00:00",
+  "completed_at": "2026-04-13T19:27:56.944093+00:00",
+  "status": "draft_ready",
+  "review_reached": true,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-98515a55e634/01-01-workable-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-98515a55e634/02-cookie-consent-detected.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-98515a55e634/03-cookie-consent-dismissed.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-98515a55e634/04-02-workable-form.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-98515a55e634/05-01-workable-review.png"
+  ],
+  "failure_reason": null,
+  "llm_calls": 0,
+  "notes": [
+    "Workable review page reached. Human review required before submitting."
+  ],
+  "steps": []
+}

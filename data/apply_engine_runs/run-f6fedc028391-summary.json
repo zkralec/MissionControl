@@ -1,0 +1,23 @@
+{
+  "run_id": "run-f6fedc028391",
+  "job_url": "https://epic.avature.net/Careers/RegisterMethod?folderId=742&source=LinkedIn",
+  "site": "Generic",
+  "adapter_used": "generic",
+  "started_at": "2026-04-13T18:25:55.552576+00:00",
+  "completed_at": "2026-04-13T18:26:04.053282+00:00",
+  "status": "partial",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-f6fedc028391/01-01-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-f6fedc028391/02-02-on-form.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-f6fedc028391/03-01-filled.png"
+  ],
+  "failure_reason": "Could not navigate past step 1 \u2014 no navigation buttons found.",
+  "llm_calls": 0,
+  "notes": [],
+  "steps": []
+}

@@ -32,6 +32,25 @@ def _meaningful_draft_status(value: Any) -> bool:
     return str(value or "").strip().lower() in {"draft_ready", "partial_draft"}
 
 
+def _safe_auto_submit_signal(meta: dict[str, Any]) -> bool:
+    page_diagnostics = meta.get("page_diagnostics") if isinstance(meta.get("page_diagnostics"), dict) else {}
+    form_diagnostics = meta.get("form_diagnostics") if isinstance(meta.get("form_diagnostics"), dict) else {}
+    auto_submit_allowed = bool(page_diagnostics.get("auto_submit_allowed") or form_diagnostics.get("auto_submit_allowed"))
+    auto_submit_succeeded = bool(page_diagnostics.get("auto_submit_succeeded") or form_diagnostics.get("auto_submit_succeeded"))
+    return bool(meta.get("submitted", False)) and auto_submit_allowed and auto_submit_succeeded
+
+
+def _recover_progress_diagnostics(meta: dict[str, Any], debug_json: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    page_diagnostics = meta.get("page_diagnostics") if isinstance(meta.get("page_diagnostics"), dict) else {}
+    form_diagnostics = meta.get("form_diagnostics") if isinstance(meta.get("form_diagnostics"), dict) else {}
+    if page_diagnostics or form_diagnostics:
+        return page_diagnostics, form_diagnostics
+    draft_progress = debug_json.get("draft_progress") if isinstance(debug_json.get("draft_progress"), dict) else {}
+    recovered_page = draft_progress.get("page_diagnostics") if isinstance(draft_progress.get("page_diagnostics"), dict) else {}
+    recovered_form = draft_progress.get("form_diagnostics") if isinstance(draft_progress.get("form_diagnostics"), dict) else {}
+    return recovered_page, recovered_form
+
+
 def _draft_notify_payload(
     *,
     pipeline_id: str,
@@ -85,6 +104,67 @@ def _draft_notify_payload(
     }
 
 
+def _submitted_notify_payload(
+    *,
+    pipeline_id: str,
+    task: Any,
+    application_target: dict[str, Any],
+    page_diagnostics: dict[str, Any],
+    form_diagnostics: dict[str, Any],
+    channels: list[str],
+) -> dict[str, Any]:
+    title = str(application_target.get("title") or "Unknown role").strip() or "Unknown role"
+    company = str(application_target.get("company") or "Unknown company").strip() or "Unknown company"
+    auto_submit_succeeded = bool(page_diagnostics.get("auto_submit_succeeded") or form_diagnostics.get("auto_submit_succeeded"))
+    confidence = str(
+        page_diagnostics.get("submit_confidence")
+        or form_diagnostics.get("submit_confidence")
+        or page_diagnostics.get("overall_submit_confidence")
+        or form_diagnostics.get("overall_submit_confidence")
+        or ("high" if auto_submit_succeeded else "unknown")
+    ).strip() or ("high" if auto_submit_succeeded else "unknown")
+    fallback_answers = page_diagnostics.get("fallback_answers_used")
+    if not isinstance(fallback_answers, list):
+        fallback_answers = form_diagnostics.get("fallback_answers_used")
+    notable_fallbacks = [
+        str(row.get("label") or row.get("canonical_key") or "").strip()
+        for row in (fallback_answers or [])
+        if isinstance(row, dict) and str(row.get("label") or row.get("canonical_key") or "").strip()
+    ][:3]
+    message_lines = [
+        f"Company: {company}",
+        f"Title: {title}",
+        "Status: submitted",
+        f"Confidence: {confidence}",
+    ]
+    if notable_fallbacks:
+        message_lines.append(f"Fallbacks: {', '.join(notable_fallbacks)}")
+
+    return {
+        "channels": channels,
+        "message": "\n".join(message_lines),
+        "severity": "info",
+        "source_task_type": "openclaw_apply_draft_v1",
+        "dedupe_key": (
+            f"jobapply:submitted:{pipeline_id}:{str(application_target.get('job_id') or 'unknown')}:{str(getattr(task, '_run_id', '') or 'unknown')}"
+        ),
+        "metadata": {
+            "pipeline_id": pipeline_id,
+            "application_target": {
+                "job_id": application_target.get("job_id"),
+                "title": title,
+                "company": company,
+            },
+            "awaiting_review": False,
+            "submitted": True,
+            "submit_confidence": confidence,
+            "fallback_answers_used": notable_fallbacks,
+        },
+        "include_header": False,
+        "include_metadata": False,
+    }
+
+
 def _sanitize_runner_result(
     *,
     result: dict[str, Any],
@@ -102,11 +182,13 @@ def _sanitize_runner_result(
     blocking_reason = str(meta.get("blocking_reason") or "").strip() or None
     failure_category = str(meta.get("failure_category") or "").strip() or None
     submitted = bool(meta.get("submitted", False))
+    safe_submitted = _safe_auto_submit_signal(meta)
     awaiting_review_requested = bool(meta.get("awaiting_review", default_status == "awaiting_review"))
     meta_notify_decision = meta.get("notify_decision") if isinstance(meta.get("notify_decision"), dict) else {}
     debug_json = meta.get("debug_json") if isinstance(meta.get("debug_json"), dict) else {}
+    page_diagnostics, form_diagnostics = _recover_progress_diagnostics(meta, debug_json)
 
-    if submitted:
+    if submitted and not safe_submitted:
         warnings = list(warnings) + ["worker_level_unsafe_submit_guard_triggered"]
         errors = list(errors) + ["unsafe_submit_attempted"]
         draft_status = "partial_draft" if fields_filled_manifest else "not_started"
@@ -146,27 +228,25 @@ def _sanitize_runner_result(
             "Runner output is missing required review metadata: " + ", ".join(missing_parts or ["review_ready_state"])
         )
 
-    should_notify = (
-        awaiting_review
-        and not submitted
-        and len(screenshots) > 0
-        and bool(meta_notify_decision.get("should_notify", True))
-    )
+    should_notify = awaiting_review and not submitted and len(screenshots) > 0 and bool(meta_notify_decision.get("should_notify", True))
     notify_decision = {
         "should_notify": should_notify,
-        "reason": str(meta_notify_decision.get("reason") or ("draft_ready_for_review" if should_notify else review_status)).strip()
-        or ("draft_ready_for_review" if should_notify else review_status),
+        "reason": str(
+            meta_notify_decision.get("reason")
+            or ("application_submitted" if safe_submitted else ("draft_ready_for_review" if should_notify else review_status))
+        ).strip()
+        or ("application_submitted" if safe_submitted else ("draft_ready_for_review" if should_notify else review_status)),
         "channels": [],
     }
 
     return {
         "draft_status": draft_status,
         "source_status": source_status,
-        "review_status": "awaiting_review" if awaiting_review else review_status,
+        "review_status": "submitted" if safe_submitted else ("awaiting_review" if awaiting_review else review_status),
         "awaiting_review": awaiting_review,
         "failure_category": failure_category,
         "blocking_reason": blocking_reason,
-        "submitted": submitted,
+        "submitted": safe_submitted,
         "fields_filled_manifest": fields_filled_manifest,
         "screenshots": screenshots,
         "checkpoint_urls": checkpoint_urls,
@@ -175,8 +255,8 @@ def _sanitize_runner_result(
         "errors": errors,
         "notify_decision": notify_decision,
         "account_created": bool(meta.get("account_created", False)),
-        "page_diagnostics": meta.get("page_diagnostics") if isinstance(meta.get("page_diagnostics"), dict) else {},
-        "form_diagnostics": meta.get("form_diagnostics") if isinstance(meta.get("form_diagnostics"), dict) else {},
+        "page_diagnostics": page_diagnostics,
+        "form_diagnostics": form_diagnostics,
         "inspect_only": bool(meta.get("inspect_only", False)),
         "debug_json": debug_json,
     }
@@ -346,12 +426,31 @@ def execute(task: Any, db: Any) -> dict[str, Any]:
     notify_channels = _as_text_list(draft_policy.get("notify_channels")) or _as_text_list(request.get("notify_channels")) or ["discord"]
     next_tasks: list[dict[str, Any]] = []
     notify_decision = {
-        "should_notify": bool(sanitized["notify_decision"]["should_notify"]) and len(screenshots) > 0 and not submitted,
-        "reason": str(sanitized["notify_decision"]["reason"] or ("draft_ready_for_review" if awaiting_review else review_status)).strip()
-        or ("draft_ready_for_review" if awaiting_review else review_status),
-        "channels": notify_channels if awaiting_review and len(screenshots) > 0 and not submitted else [],
+        "should_notify": (
+            bool(sanitized["notify_decision"]["should_notify"]) and len(screenshots) > 0 and not submitted
+        ) or submitted,
+        "reason": str(
+            sanitized["notify_decision"]["reason"]
+            or ("application_submitted" if submitted else ("draft_ready_for_review" if awaiting_review else review_status))
+        ).strip()
+        or ("application_submitted" if submitted else ("draft_ready_for_review" if awaiting_review else review_status)),
+        "channels": notify_channels if (submitted or (awaiting_review and len(screenshots) > 0 and not submitted)) else [],
     }
-    if notify_decision["should_notify"]:
+    if submitted:
+        next_tasks.append(
+            {
+                "task_type": "notify_v1",
+                "payload_json": _submitted_notify_payload(
+                    pipeline_id=pipeline_id,
+                    task=task,
+                    application_target=application_target,
+                    page_diagnostics=sanitized["page_diagnostics"],
+                    form_diagnostics=sanitized["form_diagnostics"],
+                    channels=notify_channels,
+                ),
+            }
+        )
+    elif notify_decision["should_notify"]:
         next_tasks.append(
             {
                 "task_type": "notify_v1",

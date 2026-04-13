@@ -1,0 +1,241 @@
+# Applicant profile for the apply engine.
+# Copy this to applicant_profile.yaml and fill in your details.
+# This file drives all form filling. It is NOT code — just data.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Personal Information
+# ──────────────────────────────────────────────────────────────────────────────
+personal:
+  first_name: "Zack"
+  last_name: "Kralec"
+  email: "zkralec@icloud.com"
+  phone: "4104566443"          # digits only, no formatting
+  phone_type: "Mobile"
+  city: "Monkton"
+  state: "MD"                  # 2-letter state code
+  state_full: "Maryland"       # Some forms ask for full name
+  postal_code: "21111"
+  country: "United States"
+  address_line_1: "3233 Vance Rd"
+  linkedin_url: "https://www.linkedin.com/in/zachary-kralec-8b5a7a263/"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Resume & Documents
+# ──────────────────────────────────────────────────────────────────────────────
+resume:
+  path: "~/resumes/ZacharyKralecResume.pdf"   # Absolute or ~ path to resume file
+  linkedin_url: "https://www.linkedin.com/in/zachary-kralec-8b5a7a263/"
+  twitter_url: ""                             # Leave blank to intentionally skip
+  portfolio_url: "https://www.zkralec.dev"
+  github_url: "https://github.com/zkralec"
+  website_url: ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Work Eligibility
+# ──────────────────────────────────────────────────────────────────────────────
+work_eligibility:
+  authorized_us: true
+  needs_sponsorship: false
+  security_clearance: false
+  polygraph: false
+  background_check: true
+  drug_screen: true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Preferences
+# ──────────────────────────────────────────────────────────────────────────────
+preferences:
+  relocation: true
+  remote: true
+  hybrid: true
+  onsite: true
+  greater_boston_area: false
+  onsite_boston_4_days: true
+  work_preference: "Any"               # Any | Remote | Hybrid | Onsite
+  employment_type: "Full time"         # Full time | Part time | Contract | Temporary
+  travel: "Yes"
+  travel_amount: "100%"                # 25% | 50% | 75% | 100%
+  desired_salary: "100000"
+  available_start_date: "05/18/2026"   # MM/DD/YYYY
+  hear_about_us: "LinkedIn"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Experience
+# ──────────────────────────────────────────────────────────────────────────────
+experience:
+  years_total: 3
+  current_title: "Corporate IT Analyst"
+  current_company: "Resource Management Concepts Inc."
+  currently_employed: true
+  worked_here_before: false
+  interviewed_here_before: false
+  referred: false
+  know_anyone_at_company: false
+  reason_seeking_new_role: "Looking to advance my career and take on more complex work and responsibility."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Education
+# ──────────────────────────────────────────────────────────────────────────────
+education:
+  - degree: "Bachelor of Science"
+    major: "Computer Science"
+    school: "St. Mary's College of Maryland"
+    graduation_year: 2026
+    gpa: "3.54"
+
+highest_education: "Bachelor's Degree"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Demographic / Self-ID
+# Fields below are voluntary. They are used when forms ask for them.
+# ──────────────────────────────────────────────────────────────────────────────
+demographics:
+  veteran_status: "Not a veteran"
+  gender: "Male"
+  disability_status: "No disability"
+  ethnicity_race: "White (not Hispanic)"
+  ethnicity: "White (not Hispanic)"
+  race: "White"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Free-text answers (used for textarea / motivation questions)
+# ──────────────────────────────────────────────────────────────────────────────
+answers:
+  reason_for_interest: >
+    I'm excited by the opportunity to work on complex engineering challenges
+    at this stage of my career. I have a strong background in distributed systems
+    and automation, and I'm looking to apply that in a high-impact role.
+
+  anything_else_to_know: ""
+
+  accommodation_capability: "Yes"
+  text_message_opt_in: "Yes"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reusable Templated Long-Form Answers
+# These are the deterministic baseline for essay / textarea prompts.
+# You can use {company_name}, {role_title}, and {role_family}.
+# ──────────────────────────────────────────────────────────────────────────────
+templates:
+  target_roles: "Software Engineer, Backend Engineer, AI Engineer, Automation Engineer, Platform Engineer"
+
+  narrative_headline: >
+    Early-career software engineer focused on AI-powered automation, backend systems,
+    and practical tools that solve real workflow problems.
+
+  exit_story: >
+    I’m moving from hands-on IT and automation work toward software engineering roles
+    where I can spend more of my time building production systems, backend services,
+    and AI-assisted tooling with real operational impact.
+
+  superpowers: >
+    I learn quickly, connect software to real operational needs, and prefer building
+    practical systems over one-off demos. My strongest work sits at the intersection
+    of backend engineering, automation, and applied AI.
+
+  professional_summary: >
+    I’m an early-career software engineer with hands-on experience building AI-powered
+    automation, backend systems, and internal tools. A lot of my work is about taking
+    messy real-world processes and turning them into software that is reliable, useful,
+    and easier to operate. I bring an athlete-and-builder mindset to my work: disciplined,
+    coachable, and focused on steady improvement while shipping systems that solve real problems.
+
+  why_this_role: >
+    I’m interested in the {role_title} role because it matches the kind of engineer I’m
+    working to become: someone who can build practical software, learn quickly from a strong
+    team, and contribute to systems that matter in production. My background combines software
+    development, automation, and hands-on operational work, so I’m especially motivated by
+    roles where I can keep strengthening my backend and AI-focused engineering skills.
+
+  why_this_company: >
+    I’m interested in {company_name} because I want to work on real products with a team that
+    values thoughtful engineering and practical impact. I’m especially drawn to environments
+    where software is used to solve meaningful customer or operational problems and where I
+    can contribute early while continuing to grow into a stronger engineer.
+
+  ai_project_example: >
+    One project I’m especially proud of is Mission Control, an AI-powered automation platform
+    I built with Python, FastAPI, Redis, OpenAI integrations, React, and TypeScript. The
+    interesting part for me was not just calling models, but building the system around them:
+    orchestration, retry-safe execution, observability, budget awareness, and operator-facing
+    controls. It taught me a lot about using AI in practical systems where reliability and
+    workflow design matter just as much as the model itself.
+
+  automation_project_example: >
+    A strong automation example from my recent work was building a resumable PDQ inventory
+    audit workflow to collect installed software and browser extension data across more than
+    100 endpoints. The goal was to turn a repetitive manual process into something repeatable,
+    auditable, and easier to review. I like that project because it reflects how I approach
+    engineering: understand the operational problem first, then build tooling that saves time
+    and produces results people can trust.
+
+  interesting_dataset: >
+    One dataset area I found especially interesting involved endpoint inventory and software
+    audit data collected across a large set of systems. It was useful because the data was
+    messy in a very real-world way: different environments, inconsistent software footprints,
+    and a need to identify the few findings that actually mattered. I enjoy that kind of work
+    because it combines data handling, systems thinking, and practical decision-making.
+
+  first_day_question: >
+    On my first day, one of the first questions I’d want to ask is how the team defines success
+    for this role in the first 60 to 90 days. That helps me understand what matters most, how
+    impact is measured, and where I can ramp up quickly in a way that is genuinely useful.
+
+  mission_control_project: >
+    The most relevant project I’ve built is Mission Control, an AI and automation platform for
+    orchestrating scheduled and on-demand workflows. I built backend services, task execution
+    flows, observability tooling, and UI controls so the system could be useful in practice,
+    not just as a prototype. It reflects the kind of engineering work I enjoy most: backend-heavy,
+    automation-oriented, and grounded in making complex workflows more reliable.
+
+  sprint_start_pro_project: >
+    Sprint Start Pro is a product-oriented project that let me think more deeply about user flow,
+    execution, and turning an idea into a polished experience. I like it as an example because it
+    shows that I’m not only interested in backend logic, but also in how software feels to use and
+    how product decisions affect the final system.
+
+  ai_fake_news_detector_project: >
+    I also built an AI Fake News Detector project that focused on classification and practical model
+    evaluation. What I valued most in that work was learning how output quality changes based on data
+    quality, framing, and evaluation choices. It pushed me to think beyond whether a model runs and
+    more about whether the overall system is actually useful and trustworthy.
+
+  current_company: "Resource Management Concepts Inc."
+  current_location: "Monkton, MD"
+
+  relocation_answer: >
+    Yes. I’m open to relocation for the right opportunity, and I’m also open to remote, hybrid,
+    or on-site work depending on the team and role.
+
+  onsite_answer: >
+    Yes. I’m comfortable with on-site work and I’m also open to hybrid or remote setups. My main
+    priority is finding a role where I can contribute, learn quickly, and do strong engineering work.
+
+  boston_area_answer: >
+    Yes. I’m open to opportunities in the Boston area and would be comfortable with a remote, hybrid,
+    or on-site arrangement depending on the role.
+
+  work_authorization_answer: >
+    I am authorized to work in the United States and do not require current or future employment sponsorship.
+
+  sponsorship_answer: >
+    I do not require visa sponsorship now or in the future.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Site-specific overrides
+# Values here take precedence over the global values above.
+# Useful when specific sites ask questions differently or need different answers.
+# ──────────────────────────────────────────────────────────────────────────────
+site_overrides:
+  linkedin:
+    desired_salary: "100000"
+    travel_amount: "100%"
+
+  greenhouse:
+    desired_salary: "100000"
+
+  lever:
+    desired_salary: "100000"
+
+  workday:
+    desired_salary: "110000"   # Workday salary fields often expect a higher number

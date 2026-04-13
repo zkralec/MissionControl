@@ -1,0 +1,270 @@
+{
+  "run_id": "run-be2e01f921fa",
+  "job_url": "https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com",
+  "site": "Workable",
+  "adapter_used": "workable",
+  "started_at": "2026-04-13T19:40:46.245822+00:00",
+  "completed_at": "2026-04-13T19:46:22.848423+00:00",
+  "status": "draft_ready",
+  "review_reached": true,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-be2e01f921fa/01-01-workable-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-be2e01f921fa/02-cookie-consent-detected.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-be2e01f921fa/03-cookie-consent-dismissed.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-be2e01f921fa/04-02-workable-form.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-be2e01f921fa/05-01-workable-filled.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-be2e01f921fa/06-01-workable-pre-submit.png"
+  ],
+  "failure_reason": null,
+  "llm_calls": 10,
+  "notes": [
+    "Workable submit button detected. Human review required before submitting."
+  ],
+  "fields_manifest": [
+    {
+      "label": "First name",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Zack",
+      "error": null
+    },
+    {
+      "label": "Last name",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "Kralec",
+      "error": null
+    },
+    {
+      "label": "Email",
+      "type": "email",
+      "required": true,
+      "status": "filled",
+      "value_preview": "zkralec@icloud.com",
+      "error": null
+    },
+    {
+      "label": "Headline (Optional)",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "Phone +1",
+      "type": "phone",
+      "required": true,
+      "status": "filled",
+      "value_preview": "4104566443",
+      "error": null
+    },
+    {
+      "label": "Address",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "",
+      "type": "text",
+      "required": false,
+      "status": "failed",
+      "value_preview": "Monkton",
+      "error": "ElementHandle.click: Timeout 15000ms exceeded.\nCall log:\n  - attempting click action\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div>\u2026</div> intercepts pointer events\n  - retrying click action\n    - waiting 20ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--1tBNa\" data-role=\"illustrated-input\">\u2026</div> from <div class=\"styles--3IYUq\">\u2026</div> subtree intercepts pointer events\n  2 \u00d7 retrying click action\n      - waiting 100ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  6 \u00d7 retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div>\u2026</div> intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--1tBNa\" data-role=\"illustrated-input\">\u2026</div> from <div class=\"styles--3IYUq\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div>\u2026</div> intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--1tBNa\" data-role=\"illustrated-input\">\u2026</div> from <div class=\"styles--3IYUq\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n"
+    },
+    {
+      "label": "",
+      "type": "text",
+      "required": false,
+      "status": "failed",
+      "value_preview": "21111",
+      "error": "ElementHandle.click: Timeout 15000ms exceeded.\nCall log:\n  - attempting click action\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div>\u2026</div> intercepts pointer events\n  - retrying click action\n    - waiting 20ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--1tBNa\" data-role=\"illustrated-input\">\u2026</div> from <div class=\"styles--3IYUq\">\u2026</div> subtree intercepts pointer events\n  2 \u00d7 retrying click action\n      - waiting 100ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  6 \u00d7 retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div>\u2026</div> intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--1tBNa\" data-role=\"illustrated-input\">\u2026</div> from <div class=\"styles--3IYUq\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div>\u2026</div> intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--1tBNa\" data-role=\"illustrated-input\">\u2026</div> from <div class=\"styles--3IYUq\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div class=\"styles--3aPac\">\u2026</div> from <div class=\"styles--2mJeY\">\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 500ms\n"
+    },
+    {
+      "label": "",
+      "type": "text",
+      "required": false,
+      "status": "filled",
+      "value_preview": "United States",
+      "error": null
+    },
+    {
+      "label": "SVGs not supported by this browser.Choose file or drag and drop here",
+      "type": "file",
+      "required": false,
+      "status": "no_value",
+      "value_preview": "",
+      "error": null
+    },
+    {
+      "label": "Salary expectations",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "100000",
+      "error": null
+    },
+    {
+      "label": "SVGs not supported by this browser.Choose file or drag and drop here",
+      "type": "file",
+      "required": true,
+      "status": "no_value",
+      "value_preview": "",
+      "error": null
+    },
+    {
+      "label": "Do you have a proven track record of building AI products, tools, projects, startups, or side projects that went live? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes \u2014 I built Mission Control, an AI-pow...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes \u2014 I built Mission Control, an AI-powered automation platform (Python, FastAPI, Redis, OpenAI integrations, React/TypeScript) where I implemented orchestration, retry-safe execution, observability, budget awareness, and operator-facing controls so it was useful in practice. I also built a resumable PDQ inventory audit workflow that ran across 100+ endpoints to turn a repetitive manual process into a repeatable, auditable automation.\")\n"
+    },
+    {
+      "label": "Do you have a strong working knowledge of AI and machine learning tools, large language models, and agent frameworks? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes \u2014 I have hands-on experience integra...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes \u2014 I have hands-on experience integrating LLMs (OpenAI) and AI automation into production systems. In Mission Control I built the backend orchestration, retry-safe task execution, observability, budget awareness, and operator-facing controls that let models be used reliably as part of workflows. I\u2019m familiar with agent patterns and multi-step orchestration needs, though I haven\u2019t specialized in a specific third-party agent framework and can ramp up quickly on one if needed.\")\n"
+    },
+    {
+      "label": "Do you have the ability to go from zero to a functional AI prototype quickly? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes \u2014 I can take an idea to a functional...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes \u2014 I can take an idea to a functional AI prototype. I built Mission Control, an AI-powered automation platform using Python, FastAPI, Redis, and OpenAI integrations, and delivered backend orchestration, retry-safe execution, observability, and operator controls so it worked beyond a demo. I learn quickly and prioritize practical scaffolding (APIs, retries, logging, budget-awareness) so prototypes are reliable and easy to evolve into production.\")\n"
+    },
+    {
+      "label": "Are you comfortable with ambiguity? You will often be defining the problem as much as the solution. Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes \u2014 I\u2019m comfortable with ambiguity. In...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes \u2014 I\u2019m comfortable with ambiguity. In projects like Mission Control and the resumable PDQ inventory workflow I turned vague operational needs into concrete requirements by talking with operators, running small experiments, and iterating on observability and retry-safe execution. I focus on delivering pragmatic, testable pieces early and refining them with feedback so the problem and solution evolve together.\")\n"
+    },
+    {
+      "label": "Are you biased toward action over planning? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes \u2014 I favor moving to implementation q...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes \u2014 I favor moving to implementation quickly, but only after a short, practical plan that addresses operational risks. I start by understanding the real-world problem, sketch a minimal safe design, then iterate while adding reliability and observability. In Mission Control and the resumable PDQ audit I focused on retry-safe execution, operator controls, and monitoring so the work shipped fast and stayed useful in practice.\")\n"
+    },
+    {
+      "label": "Do you have experience building AI agents, voice agents, or workflow automation? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes\u2014I have experience building AI-powere...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes\u2014I have experience building AI-powered agents and workflow automation. I built Mission Control, an AI automation platform that orchestrates scheduled and on-demand workflows and includes retry-safe task execution, observability, budget awareness, and operator-facing controls using Python, FastAPI, Redis, OpenAI integrations, React, and TypeScript. I also built a resumable PDQ inventory audit workflow to collect installed software and browser extension data across more than 100 endpoints to turn a manual audit into a repeatable, auditable process.\")\n"
+    },
+    {
+      "label": "Do you have a background in vertical SaaS or B2B product development? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes. I\u2019ve built B2B/internal automation ...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes. I\u2019ve built B2B/internal automation and operations tooling\u2014most notably Mission Control, an AI-powered orchestration platform where I implemented backend services, task execution flows, observability, and operator-facing UI to run scheduled and on-demand workflows. I also built a resumable PDQ inventory audit used across 100+ endpoints to turn a manual process into a repeatable, auditable workflow. These projects gave me practical experience designing reliable, backend-heavy systems for operational users.\")\n"
+    },
+    {
+      "label": "Are you familiar with the security industry? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes. In my Corporate IT Analyst role and...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes. In my Corporate IT Analyst role and related projects I\u2019ve built security-adjacent tooling like a resumable PDQ inventory audit that collected installed software and browser extension data across 100+ endpoints and Mission Control, an AI-driven orchestration platform with observability and operator-facing controls. Those experiences gave me practical familiarity with asset inventory, audit workflows, automation for repetitive security tasks, and building reliable, retry-safe systems that support security operations.\")\n"
+    },
+    {
+      "label": "Are you a previous startup or founder with AI experience? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "I haven't been a startup founder, but I ...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"I haven't been a startup founder, but I do have hands-on AI experience building production-focused systems. I built Mission Control, an AI-powered automation platform using Python, FastAPI, Redis, OpenAI integrations, React, and TypeScript, owning backend orchestration, retry-safe execution, observability, and operator-facing controls. That work focused on making AI useful and reliable in real operational workflows rather than one-off demos.\")\n"
+    },
+    {
+      "label": "Are you experienced working across multiple product lines or business units? Please describe.",
+      "type": "text",
+      "required": true,
+      "status": "failed",
+      "value_preview": "Yes. In my Corporate IT Analyst and engi...",
+      "error": "ElementHandle.type: Timeout 15000ms exceeded.\nCall log:\n  - elementHandle.type(\"Yes. In my Corporate IT Analyst and engineering work I\u2019ve built internal tools and automation used by multiple operational teams and workflows, focusing on reliable backend services and operator-facing controls. For example, Mission Control and the resumable PDQ inventory audit involved collaborating with stakeholders to turn messy processes into production-ready automation that worked across many endpoints and use cases.\")\n"
+    },
+    {
+      "label": "YES",
+      "type": "radio",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "What are your salary expectations?",
+      "type": "text",
+      "required": true,
+      "status": "filled",
+      "value_preview": "100000",
+      "error": null
+    },
+    {
+      "label": "Do you have at least a bachelor's degree in Artificial Intelligence, Software Engineering, Computer Science, Robotics, Mechanical Engineering or a similar discipline? Please describe.",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "Do you have experience in designing and building Workflow Automation? Please describe.",
+      "type": "text",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "YES",
+      "type": "radio",
+      "required": false,
+      "status": "skipped",
+      "value_preview": "no answer",
+      "error": null
+    },
+    {
+      "label": "Summary (Optional)",
+      "type": "textarea",
+      "required": false,
+      "status": "filled",
+      "value_preview": "I\u2019m an early-career software engineer wi...",
+      "error": null
+    },
+    {
+      "label": "Cover letter",
+      "type": "textarea",
+      "required": true,
+      "status": "filled",
+      "value_preview": "I\u2019m an early-career software engineer wi...",
+      "error": null
+    },
+    {
+      "label": "Telephone country code",
+      "type": "select",
+      "required": false,
+      "status": "filled",
+      "value_preview": "4104566443",
+      "error": null
+    }
+  ],
+  "steps": []
+}

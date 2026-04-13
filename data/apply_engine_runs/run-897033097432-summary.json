@@ -1,0 +1,24 @@
+{
+  "run_id": "run-897033097432",
+  "job_url": "https://epic.avature.net/Careers/RegisterMethod?folderId=742&source=LinkedIn",
+  "site": "Avature",
+  "adapter_used": "avature",
+  "started_at": "2026-04-13T18:43:49.256480+00:00",
+  "completed_at": "2026-04-13T18:43:56.973607+00:00",
+  "status": "failed",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-897033097432/01-01-avature-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-897033097432/02-01-avature-register.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-897033097432/03-avature-login-after-trigger.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-897033097432/04-fail-avature-exception.png"
+  ],
+  "failure_reason": "AttributeError: 'ElementHandle' object has no attribute 'triple_click'",
+  "llm_calls": 0,
+  "notes": [],
+  "steps": []
+}

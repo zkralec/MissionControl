@@ -1,0 +1,22 @@
+{
+  "run_id": "run-bfc0ea01442f",
+  "job_url": "https://apply.workable.com/valsoft-corp/j/5626740C7C/?utm_source=linkedin.com",
+  "site": "Workable",
+  "adapter_used": "workable",
+  "started_at": "2026-04-13T19:24:18.366421+00:00",
+  "completed_at": "2026-04-13T19:24:38.747100+00:00",
+  "status": "failed",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-bfc0ea01442f/01-01-workable-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-bfc0ea01442f/02-fail-workable-exception.png"
+  ],
+  "failure_reason": "TimeoutError: ElementHandle.click: Timeout 15000ms exceeded.\nCall log:\n  - attempting click action\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div data-ui=\"backdrop\" class=\"styles--1TOnJ\"></div> from <div>\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting for element to be visible, enabled and stable\n    - element is visible, enabled and stable\n    - scrolling into view if needed\n    - done scrolling\n    - <div role=\"dialog\" tabindex=\"-1\" aria-modal=\"true\" data-ui=\"cookie-consent\" aria-label=\"Cookie Consent\" class=\"styles--1Gy29 styles--2L3-h\">\u2026</div> from <div>\u2026</div> subtree intercepts pointer events\n  - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div data-ui=\"backdrop\" class=\"styles--1TOnJ\"></div> from <div>\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    7 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div data-ui=\"backdrop\" class=\"styles--1TOnJ\"></div> from <div>\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" tabindex=\"-1\" aria-modal=\"true\" data-ui=\"cookie-consent\" aria-label=\"Cookie Consent\" class=\"styles--1Gy29 styles--2L3-h\">\u2026</div> from <div>\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div data-ui=\"backdrop\" class=\"styles--1TOnJ\"></div> from <div>\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n      - waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div data-ui=\"backdrop\" class=\"styles--1TOnJ\"></div> from <div>\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n",
+  "llm_calls": 0,
+  "notes": [],
+  "steps": []
+}

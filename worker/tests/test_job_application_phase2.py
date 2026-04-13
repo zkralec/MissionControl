@@ -516,6 +516,92 @@ def test_openclaw_apply_draft_persists_review_artifact_and_notify_followup(monke
     assert "Submission: not attempted" in notify_payload["message"]
 
 
+def test_openclaw_apply_draft_enqueues_submit_digest_after_successful_auto_submit(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPLICATION_DRAFT_STATE_DB_PATH", str(tmp_path / "application_draft_state.sqlite3"))
+    monkeypatch.setattr(
+        openclaw_apply_draft_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "resume.tailor.v1",
+            "application_target": {
+                "job_id": "job-1",
+                "title": "Senior ML Engineer",
+                "company": "Acme AI",
+                "source": "linkedin",
+                "source_url": "https://linkedin.example/jobs/1",
+                "application_url": "https://linkedin.example/jobs/view/1",
+            },
+            "resume_variant_artifact": {
+                "resume_variant_name": "Tailored Resume - Acme AI",
+                "resume_variant_text": "Tailored resume body",
+                "resume_file_name": "tailored_resume_acme_ai.txt",
+            },
+            "application_answers_artifact": {"items": []},
+            "cover_letter_artifact": {"text": ""},
+        },
+    )
+    monkeypatch.setattr(openclaw_apply_draft_v1, "openclaw_apply_enabled", lambda request: True)
+    monkeypatch.setattr(openclaw_apply_draft_v1, "openclaw_apply_command_configured", lambda: True)
+    monkeypatch.setattr(
+        openclaw_apply_draft_v1,
+        "run_openclaw_apply_draft",
+        lambda **kwargs: {
+            "status": "success",
+            "warnings": [],
+            "errors": [],
+            "meta": {
+                "draft_status": "draft_ready",
+                "source_status": "success",
+                "awaiting_review": False,
+                "review_status": "submitted",
+                "submitted": True,
+                "failure_category": None,
+                "fields_filled_manifest": [
+                    {"field_name": "first_name", "status": "filled", "value_redacted": True},
+                ],
+                "screenshots": [
+                    {"label": "application-form", "path": "/tmp/app-form.png", "kind": "checkpoint"}
+                ],
+                "checkpoint_urls": ["https://linkedin.example/jobs/view/1"],
+                "page_title": "Application submitted",
+                "page_diagnostics": {
+                    "auto_submit_allowed": True,
+                    "auto_submit_attempted": True,
+                    "auto_submit_succeeded": True,
+                    "submit_confidence": "high",
+                    "fallback_answers_used": [{"label": "Veteran status"}],
+                },
+                "form_diagnostics": {
+                    "submit_confidence": "high",
+                    "fallback_answers_used": [{"label": "Veteran status"}],
+                },
+                "notify_decision": {"should_notify": False, "reason": "application_submitted", "channels": []},
+            },
+        },
+    )
+
+    payload = {
+        "pipeline_id": "pipe-apply-1",
+        "upstream": {"task_id": "task-tailor", "run_id": "run-tailor", "task_type": "resume_tailor_v1"},
+        "request": {"openclaw_apply_enabled": True, "notify_channels": ["discord"]},
+        "draft_policy": {"notify_channels": ["discord"]},
+    }
+    result = openclaw_apply_draft_v1.execute(_task(payload, task_id="task-draft", run_id="run-draft"), db=object())
+    artifact = result["content_json"]
+    notify_payload = result["next_tasks"][0]["payload_json"]
+
+    assert artifact["submitted"] is True
+    assert artifact["awaiting_review"] is False
+    assert artifact["review_status"] == "submitted"
+    assert artifact["notify_decision"]["should_notify"] is True
+    assert notify_payload["source_task_type"] == "openclaw_apply_draft_v1"
+    assert "Status: submitted" in notify_payload["message"]
+    assert "Confidence: high" in notify_payload["message"]
+    assert "Fallbacks: Veteran status" in notify_payload["message"]
+    assert notify_payload["include_header"] is False
+    assert notify_payload["include_metadata"] is False
+
+
 def test_openclaw_apply_draft_fails_clearly_when_disabled() -> None:
     payload = {
         "pipeline_id": "pipe-apply-1",
@@ -590,6 +676,83 @@ def test_openclaw_apply_draft_normalizes_malformed_review_ready_output(monkeypat
     assert artifact["failure_category"] == "manual_review_required"
     assert artifact["notify_decision"]["should_notify"] is False
     assert result["next_tasks"] == []
+
+
+def test_openclaw_apply_draft_recovers_timeout_progress_diagnostics(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPLICATION_DRAFT_STATE_DB_PATH", str(tmp_path / "application_draft_state.sqlite3"))
+    monkeypatch.setattr(
+        openclaw_apply_draft_v1,
+        "fetch_upstream_result_content_json",
+        lambda db, upstream: {
+            "artifact_type": "resume.tailor.v1",
+            "application_target": {
+                "job_id": "job-1",
+                "title": "Senior ML Engineer",
+                "company": "Acme AI",
+                "source": "linkedin",
+                "source_url": "https://linkedin.example/jobs/1",
+                "application_url": "https://linkedin.example/jobs/view/1",
+            },
+            "resume_variant_artifact": {
+                "resume_variant_name": "Tailored Resume - Acme AI",
+                "resume_variant_text": "Tailored resume body",
+                "resume_file_name": "tailored_resume_acme_ai.txt",
+            },
+            "application_answers_artifact": {"items": []},
+            "cover_letter_artifact": {"text": ""},
+        },
+    )
+    monkeypatch.setattr(openclaw_apply_draft_v1, "openclaw_apply_enabled", lambda request: True)
+    monkeypatch.setattr(openclaw_apply_draft_v1, "openclaw_apply_command_configured", lambda: True)
+    monkeypatch.setattr(
+        openclaw_apply_draft_v1,
+        "run_openclaw_apply_draft",
+        lambda **kwargs: {
+            "status": "timed_out",
+            "warnings": [],
+            "errors": ["openclaw_apply_timed_out"],
+            "meta": {
+                "draft_status": "not_started",
+                "source_status": "timed_out",
+                "awaiting_review": False,
+                "review_status": "blocked",
+                "submitted": False,
+                "failure_category": "timed_out",
+                "fields_filled_manifest": [],
+                "screenshots": [],
+                "checkpoint_urls": ["https://linkedin.example/jobs/view/1"],
+                "page_diagnostics": {},
+                "form_diagnostics": {},
+                "debug_json": {
+                    "draft_progress": {
+                        "progress_stage": "later_step_diagnostics",
+                        "page_diagnostics": {
+                            "review_step_detected": True,
+                            "submit_button_present": False,
+                            "later_step_decision": "continue_flow",
+                        },
+                        "form_diagnostics": {
+                            "later_step_decision": "continue_flow",
+                        },
+                    }
+                },
+            },
+        },
+    )
+
+    payload = {
+        "pipeline_id": "pipe-apply-1",
+        "upstream": {"task_id": "task-tailor", "run_id": "run-tailor", "task_type": "resume_tailor_v1"},
+        "request": {"openclaw_apply_enabled": True, "notify_channels": ["discord"]},
+        "draft_policy": {"notify_channels": ["discord"]},
+    }
+    result = openclaw_apply_draft_v1.execute(_task(payload, task_id="task-draft", run_id="run-draft"), db=object())
+    artifact = result["content_json"]
+
+    assert artifact["source_status"] == "timed_out"
+    assert artifact["page_diagnostics"]["review_step_detected"] is True
+    assert artifact["page_diagnostics"]["later_step_decision"] == "continue_flow"
+    assert artifact["form_diagnostics"]["later_step_decision"] == "continue_flow"
 
 
 def test_openclaw_apply_draft_prevents_duplicate_redraft(monkeypatch, tmp_path) -> None:

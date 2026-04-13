@@ -1,0 +1,36 @@
+{
+  "run_id": "run-364a5461b6cf",
+  "job_url": "https://epic.avature.net/Careers/RegisterMethod?folderId=742&source=LinkedIn",
+  "site": "Avature",
+  "adapter_used": "avature",
+  "started_at": "2026-04-13T19:07:12.131758+00:00",
+  "completed_at": "2026-04-13T19:07:35.400744+00:00",
+  "status": "draft_ready",
+  "review_reached": true,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/01-01-avature-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/02-01-avature-register.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/03-avature-login-after-trigger.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/04-avature-login-credentials-entered.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/05-avature-post-login.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/06-02-avature-profile-dashboard.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/07-02-avature-post-login-recovery.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/08-03-avature-apply-confirmation.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/09-03-avature-apply-confirmation.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/10-03-avature-after-apply-now.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-364a5461b6cf/11-04-avature-profile.png"
+  ],
+  "failure_reason": null,
+  "llm_calls": 0,
+  "notes": [
+    "Step 1: Logged into Avature as zkralec@icloud.com.",
+    "Step 2: Redirected to Profile after login. Navigating to derived ApplyConfirmation URL.",
+    "Step 3: Clicked 'Apply Now' on ApplyConfirmation page.",
+    "Avature review/confirmation page reached. Human review required before submitting."
+  ],
+  "steps": []
+}

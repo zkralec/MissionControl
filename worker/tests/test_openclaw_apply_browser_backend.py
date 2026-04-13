@@ -11,9 +11,11 @@ sys.path.insert(0, str(ROOT / "worker"))
 from integrations.openclaw_apply_browser_backend import (
     BrowserCommandError,
     OpenClawBrowserClient,
+    _choose_next_candidate,
     _current_form_date,
     _normalize_browser_base_command,
     _resolve_runtime_config,
+    _sanitize_next_candidate,
     run_backend,
 )
 
@@ -88,6 +90,12 @@ class FakeBrowserClient:
         self.start_calls = 0
         self.status_calls = 0
         self.tabs_calls = 0
+        self.submit_probe_result = None
+        self.submit_click_result = None
+        self.active_step_probe_result = None
+        self.next_click_result = None
+        self.dom_submit_clicks = 0
+        self.dom_next_clicks = 0
 
     def start(self) -> None:
         self.start_calls += 1
@@ -125,6 +133,16 @@ class FakeBrowserClient:
             return self.page_title
         if "window.location.href" in fn_source:
             return self.current_url
+        if "__openclaw_linkedin_submit_probe__" in fn_source:
+            return self.submit_probe_result
+        if "__openclaw_linkedin_submit_click__" in fn_source:
+            self.dom_submit_clicks += 1
+            return self.submit_click_result
+        if "__openclaw_linkedin_active_step_probe__" in fn_source:
+            return self.active_step_probe_result
+        if "__openclaw_linkedin_next_click__" in fn_source:
+            self.dom_next_clicks += 1
+            return self.next_click_result
         return None
 
     def upload(self, staged_path: Path, *, input_ref: str | None = None) -> None:
@@ -162,6 +180,141 @@ def _post_upload_client(form_snapshot: str, *, final_snapshot: str | None = None
             final_snapshot or form_snapshot,
         ]
     )
+
+
+def _configure_linkedin_easy_apply_payload(payload: dict, tmp_path: Path) -> None:
+    pdf_path = tmp_path / "resume.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%Test\n")
+    payload["application_target"]["application_url"] = "https://www.linkedin.com/jobs/view/4354740729/apply/?openSDUIApplyFlow=true"
+    payload["application_target"]["source_url"] = "https://www.linkedin.com/jobs/view/4354740729/"
+    payload["resume_variant"]["resume_upload_path"] = str(pdf_path)
+    payload["resume_variant"]["resume_file_name"] = "resume.pdf"
+    payload["artifacts"]["resume_upload_path"] = str(pdf_path)
+    payload["resume_variant"]["resume_variant_text"] = (
+        "Zachary Kralec\n"
+        "zkralec@icloud.com\n"
+        "240-555-0101\n"
+    )
+    payload["contact_profile"] = {
+        "city": "Saint Mary's City",
+        "state_or_province": "MD",
+        "postal_code": "20686",
+        "country": "United States",
+        "primary_phone_number": "240-555-0101",
+        "phone_type": "mobile",
+    }
+
+
+class HighConfidenceLinkedInSubmitClient(FakeBrowserClient):
+    def __init__(self, *, review_snapshot: str, submitted_snapshot: str, dom_submit_advances: bool = True) -> None:
+        super().__init__(
+            page_title="Apply to Acme AI",
+            current_url="https://www.linkedin.com/jobs/view/4354740729/",
+            snapshots=[],
+        )
+        self.stage = "contact"
+        self.review_snapshot = review_snapshot
+        self.submitted_snapshot = submitted_snapshot
+        self.dom_submit_advances = dom_submit_advances
+        self.values: dict[str, object] = {}
+
+    def snapshot(self) -> str:
+        if self.stage == "contact":
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Contact info"',
+                    '[first-name] textbox "First name*": Zachary',
+                    '[last-name] textbox "Last name*": Kralec',
+                    '[email-address] combobox "Email address *": zkralec@icloud.com selected',
+                    '[city-input] textbox "City*": Saint Mary\'s City',
+                    '[state-input] textbox "State or Province*": MD',
+                    '[zip-input] textbox "Zip/Postal Code*": 20686',
+                    '[country-select] combobox "Country *": United States selected',
+                    '[phone-input] textbox "Primary Phone Number*": 240-555-0101',
+                    '[phone-type-mobile] radio "Mobile" checked',
+                    '[contact-next] button "Continue to next step"',
+                ]
+            )
+        if self.stage == "resume":
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Resume"',
+                    'generic "Selected"',
+                    '[resume-file] heading "Zachary Kralec Resume 04_01_26.pdf"',
+                    '[selected-resume] radio "Deselect resume Zachary Kralec Resume 04_01_26.pdf" checked',
+                    '[resume-next] button "Continue to next step"',
+                ]
+            )
+        if self.stage == "top_choice":
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Additional questions"',
+                    'text "Mark this job as a top choice (Optional)"',
+                    '[top-choice] checkbox "Mark this job as a top choice"',
+                    '[top-choice-next] button "Continue to next step"',
+                ]
+            )
+        if self.stage == "screening":
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Additional questions"',
+                    '[auth] combobox "Are you authorized to work in the US without a sponsor visa? *"',
+                    '[recruiter] combobox "Have you been working with a recruiter at Acme AI? *"',
+                    '[clearance] combobox "Do you currently hold an active government issued security clearance? *"',
+                    '[clearance-level] combobox "Security clearance level *"',
+                    '[polygraph] combobox "Do you have an active polygraph? *"',
+                    '[salary] textbox "Desired salary *"',
+                    '[start-date] textbox "Available start date *"',
+                    '[hear-about] combobox "How did you learn about our company? *"',
+                    '- Certification statement:',
+                    '  [cert-name] textbox "Full name *"',
+                    '  [cert-date] textbox "Today\'s date *"',
+                    '  [cert-confirm] checkbox "I have read and understand the above statement *"',
+                    '[screening-next] button "Continue to next step"',
+                ]
+            )
+        if self.stage == "review":
+            return self.review_snapshot
+        return self.submitted_snapshot
+
+    def click(self, ref: str) -> None:
+        super().click(ref)
+        if ref == "contact-next":
+            self.stage = "resume"
+        elif ref == "resume-next":
+            self.stage = "top_choice"
+        elif ref == "top-choice-next":
+            self.stage = "screening"
+        elif ref == "screening-next":
+            self.stage = "review"
+        elif ref == "submit-application":
+            self.stage = "submitted"
+        elif ref == "submit-button":
+            self.stage = "submitted"
+
+    def evaluate_json(self, fn_source: str):
+        result = super().evaluate_json(fn_source)
+        if (
+            "__openclaw_linkedin_submit_click__" in fn_source
+            and self.dom_submit_advances
+            and isinstance(result, dict)
+            and bool(result.get("clicked"))
+        ):
+            self.stage = "submitted"
+        return result
+
+    def fill(self, fields: list[dict]) -> None:
+        super().fill(fields)
+        for row in fields:
+            self.values[str(row["ref"])] = row["value"]
+
+    def select(self, ref: str, value: str) -> None:
+        super().select(ref, value)
+        self.values[ref] = value
 
 
 def test_backend_success_path_returns_review_ready_payload(tmp_path: Path) -> None:
@@ -391,7 +544,7 @@ def test_backend_linkedin_selected_resume_continues_without_upload(tmp_path: Pat
     assert client.upload_calls == []
 
 
-def test_backend_linkedin_later_steps_progress_to_review_with_safe_defaults(tmp_path: Path) -> None:
+def test_backend_linkedin_later_steps_auto_submit_with_high_confidence_answers(tmp_path: Path) -> None:
     payload = _payload(tmp_path)
     pdf_path = tmp_path / "resume.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%Test\n")
@@ -476,7 +629,6 @@ def test_backend_linkedin_later_steps_progress_to_review_with_safe_defaults(tmp_
                         '[salary] textbox "Desired salary *"',
                         '[start-date] textbox "Available start date *"',
                         '[hear-about] combobox "How did you learn about our company? *"',
-                        '[veteran] combobox "Veteran status *"',
                         '- Certification statement:',
                         '  [cert-name] textbox "Full name *"',
                         '  [cert-date] textbox "Today\'s date *"',
@@ -485,11 +637,19 @@ def test_backend_linkedin_later_steps_progress_to_review_with_safe_defaults(tmp_
                         '[screening-next] button "Continue to next step"',
                     ]
                 )
+            if self.stage == "review":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Review your application"',
+                        '[submit-application] button "Submit application"',
+                    ]
+                )
             return "\n".join(
                 [
                     '[dialog-root] dialog "Apply to Acme AI" [active]',
-                    '[step-heading] heading "Review your application"',
-                    '[submit-application] button "Submit application"',
+                    '[step-heading] heading "Application submitted"',
+                    'text "Thank you for applying"',
                 ]
             )
 
@@ -503,6 +663,8 @@ def test_backend_linkedin_later_steps_progress_to_review_with_safe_defaults(tmp_
                 self.stage = "screening"
             elif ref == "screening-next":
                 self.stage = "review"
+            elif ref == "submit-application":
+                self.stage = "submitted"
 
         def fill(self, fields: list[dict]) -> None:
             super().fill(fields)
@@ -520,25 +682,890 @@ def test_backend_linkedin_later_steps_progress_to_review_with_safe_defaults(tmp_
 
     assert result["failure_category"] is None
     assert result["draft_status"] == "draft_ready"
-    assert result["awaiting_review"] is True
-    assert client.click_calls == ["contact-next", "resume-next", "top-choice-next", "screening-next"]
+    assert result["review_status"] == "submitted"
+    assert result["awaiting_review"] is False
+    assert result["submitted"] is True
+    assert client.click_calls == ["contact-next", "resume-next", "top-choice-next", "screening-next", "submit-application"]
     assert ("auth", "Yes") in client.select_calls
     assert ("recruiter", "I have not worked with a recruiter") in client.select_calls
     assert ("clearance", "No") in client.select_calls
     assert ("clearance-level", "None") in client.select_calls
     assert ("polygraph", "No") in client.select_calls
     assert ("hear-about", "LinkedIn") in client.select_calls
-    assert ("veteran", "Not a veteran") in client.select_calls
     assert filled["salary"] == "100000"
     assert filled["start-date"] == current_date
     assert filled["cert-name"] == "Zachary Kralec"
     assert filled["cert-date"] == current_date
     assert filled["cert-confirm"] is True
     assert not any(ref == "follow-company" for batch in client.fill_calls for ref in [row["ref"] for row in batch])
+    assert result["page_diagnostics"]["final_step_detected"] is True
+    assert result["page_diagnostics"]["later_step_decision"] == "safe_auto_submit"
+    assert result["page_diagnostics"]["submit_confidence"] == "high"
+    assert result["page_diagnostics"]["auto_submit_allowed"] is True
+    assert result["page_diagnostics"]["auto_submit_attempted"] is True
+    assert result["page_diagnostics"]["auto_submit_succeeded"] is True
+    assert result["page_diagnostics"]["should_auto_submit"] is True
+    assert result["page_diagnostics"]["submit_button_present"] is True
+    assert result["page_diagnostics"]["submit_signal_type"] == "text"
+    assert result["page_diagnostics"]["submit_blocked_reason"] is None
+    assert result["page_diagnostics"]["attempted_submit_without_button"] is False
+    assert "final_step_detected" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert "no_unresolved_fields" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert "submit_visible_and_ready" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert "confidence_below_threshold" not in result["page_diagnostics"]["submit_confidence_reasons"]
+
+
+def test_linkedin_next_candidate_prefers_live_test_button() -> None:
+    candidates = [
+        _sanitize_next_candidate(
+            {
+                "refHint": "plain-next",
+                "label": "Next",
+                "tag": "button",
+                "role": "",
+                "attributes": {},
+                "score": 10,
+            }
+        ),
+        _sanitize_next_candidate(
+            {
+                "refHint": "[data-live-test-easy-apply-next-button]",
+                "label": "Next",
+                "tag": "button",
+                "role": "",
+                "attributes": {
+                    "aria-label": "Continue to next step",
+                    "data-live-test-easy-apply-next-button": "",
+                },
+                "score": 1000,
+            }
+        ),
+    ]
+
+    chosen = _choose_next_candidate([row for row in candidates if row], None)
+
+    assert chosen is not None
+    assert chosen["ref_hint"] == "[data-live-test-easy-apply-next-button]"
+    assert chosen["next_signal_type"] == "data-live-test"
+
+
+def test_backend_linkedin_top_choice_step_advances_and_verifies_heading_change(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class TopChoiceHeadingAdvanceClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(page_title="Apply to Acme AI", current_url="https://www.linkedin.com/jobs/view/4354740729/", snapshots=[])
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Contact info"', '[contact-next] button "Continue to next step"'])
+            if self.stage == "resume":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Resume"', 'generic "Selected"', '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked', '[resume-next] button "Continue to next step"'])
+            if self.stage == "top_choice":
+                return "\n".join(['[dialog-root] dialog "Apply to The Amatriot Group" [active]', '[step-heading] heading "Apply to The Amatriot Group"', 'text "Mark this job as a top choice (Optional)"', '[top-choice] checkbox "Mark this job as a top choice"', '[top-choice-next] button "Continue to next step"'])
+            return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Voluntary self identification"', 'group "Are you authorized to work in the US without a sponsor visa? * Required"', '[auth-yes] radio "Yes" checked', '[screening-next] button "Continue to next step"'])
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "top_choice"
+            elif ref == "top-choice-next":
+                self.stage = "screening"
+
+    client = TopChoiceHeadingAdvanceClient()
+    result = run_backend(payload, client=client)
+
+    assert "top-choice" not in client.click_calls
+    assert "top-choice-next" in client.click_calls
+    top_choice_actions = [
+        row for row in result["debug_json"]["linkedin_progression"] if row.get("chosen_ref") == "top-choice-next"
+    ]
+    assert top_choice_actions
+    assert top_choice_actions[-1]["advanced_to_new_step"] is True
+    assert result["page_diagnostics"]["top_choice_step_detected"] is True
+    assert result["page_diagnostics"]["top_choice_skip_attempted"] is True
+    assert result["page_diagnostics"]["top_choice_interaction_performed"] is False
+    assert result["page_diagnostics"]["step_advance_attempted"] is True
+    assert any(row["reason"] == "optional_top_choice_left_unchecked" for row in result["page_diagnostics"]["later_step_optional_steps_skipped"])
+
+
+def test_backend_linkedin_later_step_advance_verified_when_progress_changes(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class ProgressAdvanceClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(page_title="Apply to Acme AI", current_url="https://www.linkedin.com/jobs/view/4354740729/", snapshots=[])
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Contact info"', '[contact-next] button "Continue to next step"'])
+            if self.stage == "resume":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Resume"', 'generic "Selected"', '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked', '[resume-next] button "Continue to next step"'])
+            if self.stage == "screening_a":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Additional questions"', 'text "67%"', '[screening-next] button "Continue to next step"'])
+            return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Additional questions"', 'text "100%"', '[review-note] heading "Review your application"'])
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening_a"
+            elif ref == "screening-next":
+                self.stage = "screening_b"
+
+    client = ProgressAdvanceClient()
+    result = run_backend(payload, client=client)
+
+    assert "screening-next" in client.click_calls
+    assert result["page_diagnostics"]["step_advance_attempted"] is True
+    assert result["page_diagnostics"]["step_advance_verified"] is True
+    assert result["page_diagnostics"]["active_step_progress_percent"] == 100
+
+
+def test_backend_linkedin_no_progress_after_two_attempts_returns_precise_blocking_reason(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class NoProgressNextClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(page_title="Apply to Acme AI", current_url="https://www.linkedin.com/jobs/view/4354740729/", snapshots=[])
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Contact info"', '[contact-next] button "Continue to next step"'])
+            if self.stage == "resume":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Resume"', 'generic "Selected"', '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked', '[resume-next] button "Continue to next step"'])
+            return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Additional questions"', '[screening-next] button "Continue to next step"'])
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+
+    client = NoProgressNextClient()
+    result = run_backend(payload, client=client)
+
+    assert result["failure_category"] == "manual_review_required"
+    assert result["page_diagnostics"]["step_advance_attempted"] is True
+    assert result["page_diagnostics"]["step_advance_verified"] is False
+    assert result["page_diagnostics"]["step_advance_retry_attempted"] is True
+    assert result["page_diagnostics"]["step_advance_retry_verified"] is False
+    assert result["page_diagnostics"]["step_advance_blocking_reason"] == "active_step_signature_unchanged_after_next_click"
+    assert "active_step_signature_unchanged_after_next_click" in result["blocking_reason"]
+    assert client.click_calls.count("screening-next") == 2
+
+
+def test_backend_linkedin_active_step_parsing_ignores_off_step_controls(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class ActiveStepScopeClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(page_title="Apply to Acme AI", current_url="https://www.linkedin.com/jobs/view/4354740729/", snapshots=[])
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Contact info"', '[contact-next] button "Continue to next step"'])
+            if self.stage == "resume":
+                return "\n".join(['[dialog-root] dialog "Apply to Acme AI" [active]', '[step-heading] heading "Resume"', 'generic "Selected"', '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked', '[resume-next] button "Continue to next step"'])
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Additional questions"',
+                    '[current-q] textbox "Desired salary *"',
+                    '[off-step-auth] textbox "Are you authorized to work in the US without a sponsor visa? *"',
+                    '[screening-next] button "Continue to next step"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+
+        def evaluate_json(self, fn_source: str):
+            if "__openclaw_linkedin_active_step_probe__" in fn_source and self.stage == "screening":
+                return {
+                    "probeKind": "__openclaw_linkedin_active_step_probe__",
+                    "activeStepHeading": "Additional questions",
+                    "activeStepProgressPercent": 67,
+                    "activeStepRequiredLabels": ["Desired salary *"],
+                    "activeStepVisibleLabels": ["Desired salary *"],
+                    "nextCandidates": [
+                        {
+                            "refHint": "[data-test-easy-apply-next-button]",
+                            "label": "Next",
+                            "tag": "button",
+                            "role": "",
+                            "attributes": {
+                                "aria-label": "Continue to next step",
+                                "data-test-easy-apply-next-button": "",
+                            },
+                            "score": 500,
+                        }
+                    ],
+                    "chosenNext": {
+                        "refHint": "[data-test-easy-apply-next-button]",
+                        "label": "Next",
+                        "tag": "button",
+                        "role": "",
+                        "attributes": {
+                            "aria-label": "Continue to next step",
+                            "data-test-easy-apply-next-button": "",
+                        },
+                        "score": 500,
+                    },
+                }
+            return super().evaluate_json(fn_source)
+
+    client = ActiveStepScopeClient()
+    result = run_backend(payload, client=client)
+
+    assert result["page_diagnostics"]["active_step_required_labels"] == ["Desired salary *"]
+    assert "Are you authorized to work in the US without a sponsor visa?" not in result["page_diagnostics"]["active_step_required_labels"]
+
+
+def test_backend_linkedin_submit_probe_ignores_paragraph_and_chooses_submit_button(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[warning-copy] paragraph "Submitting this application won\'t change your profile"',
+            '[submit-button] button "Submit application"',
+            '[review] heading "Review your application"',
+        ]
+    )
+    submitted_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[success] heading "Application submitted"',
+            'text "Thank you for applying"',
+        ]
+    )
+    client = HighConfidenceLinkedInSubmitClient(review_snapshot=review_snapshot, submitted_snapshot=submitted_snapshot)
+    client.submit_probe_result = {
+        "probeKind": "__openclaw_linkedin_submit_probe__",
+        "candidates": [
+            {
+                "refHint": "warning-copy",
+                "label": "Submitting this application won't change your profile",
+                "tag": "p",
+                "role": "",
+                "attributes": {},
+                "score": 99,
+            },
+            {
+                "refHint": "[data-live-test-easy-apply-submit-button]",
+                "label": "Submit application",
+                "tag": "button",
+                "role": "",
+                "attributes": {
+                    "aria-label": "Submit application",
+                    "data-live-test-easy-apply-submit-button": "",
+                },
+                "score": 1000,
+            },
+        ],
+        "chosen": {
+            "refHint": "warning-copy",
+            "label": "Submitting this application won't change your profile",
+            "tag": "p",
+            "role": "",
+            "attributes": {},
+            "score": 99,
+        },
+    }
+    client.submit_click_result = {
+        "probeKind": "__openclaw_linkedin_submit_click__",
+        "clicked": True,
+        "chosen": {
+            "refHint": "[data-live-test-easy-apply-submit-button]",
+            "label": "Submit application",
+            "tag": "button",
+            "role": "",
+            "attributes": {
+                "aria-label": "Submit application",
+                "data-live-test-easy-apply-submit-button": "",
+            },
+            "score": 1000,
+        },
+    }
+
+    result = run_backend(payload, client=client)
+
+    assert result["submitted"] is True
+    assert result["page_diagnostics"]["submit_step_detected"] is True
+    assert result["page_diagnostics"]["submit_button_present"] is True
+    assert result["page_diagnostics"]["submit_candidate_tags"] == ["button"]
+    assert result["page_diagnostics"]["chosen_submit_ref"] == "[data-live-test-easy-apply-submit-button]"
+    assert result["page_diagnostics"]["chosen_submit_tag"] == "button"
+    assert result["page_diagnostics"]["chosen_submit_attributes"]["aria-label"] == "Submit application"
+    assert "data-live-test-easy-apply-submit-button" in result["page_diagnostics"]["chosen_submit_attributes"]
+    assert client.dom_submit_clicks == 1
+
+
+def test_backend_linkedin_submit_probe_prioritizes_live_test_submit_button(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[primary-footer-submit] button "Submit application"',
+            '[live-test-submit] button "Submit application"',
+            '[review] heading "Review your application"',
+        ]
+    )
+    submitted_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[success] heading "Application submitted"',
+            'text "Thank you for applying"',
+        ]
+    )
+    client = HighConfidenceLinkedInSubmitClient(review_snapshot=review_snapshot, submitted_snapshot=submitted_snapshot)
+    client.submit_probe_result = {
+        "probeKind": "__openclaw_linkedin_submit_probe__",
+        "candidates": [
+            {
+                "refHint": "primary-footer-submit",
+                "label": "Submit application",
+                "tag": "button",
+                "role": "",
+                "attributes": {"aria-label": "Submit application"},
+                "score": 28,
+            },
+            {
+                "refHint": "[data-live-test-easy-apply-submit-button]",
+                "label": "Submit application",
+                "tag": "button",
+                "role": "",
+                "attributes": {
+                    "aria-label": "Submit application",
+                    "data-live-test-easy-apply-submit-button": "",
+                },
+                "score": 1000,
+            },
+        ],
+        "chosen": {
+            "refHint": "primary-footer-submit",
+            "label": "Submit application",
+            "tag": "button",
+            "role": "",
+            "attributes": {"aria-label": "Submit application"},
+            "score": 28,
+        },
+    }
+    client.submit_click_result = {
+        "probeKind": "__openclaw_linkedin_submit_click__",
+        "clicked": True,
+        "chosen": {
+            "refHint": "[data-live-test-easy-apply-submit-button]",
+            "label": "Submit application",
+            "tag": "button",
+            "role": "",
+            "attributes": {
+                "aria-label": "Submit application",
+                "data-live-test-easy-apply-submit-button": "",
+            },
+            "score": 1000,
+        },
+    }
+
+    result = run_backend(payload, client=client)
+
+    assert result["submitted"] is True
+    assert result["page_diagnostics"]["submit_step_detected"] is True
+    assert result["page_diagnostics"]["chosen_submit_ref"] == "[data-live-test-easy-apply-submit-button]"
+    assert result["page_diagnostics"]["chosen_submit_attributes"]["data-live-test-easy-apply-submit-button"] == ""
+
+
+def test_backend_linkedin_submit_fallback_uses_button_when_live_test_attribute_missing(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[dismiss-button] button "Dismiss"',
+            '[submit-button] button "Submit application"',
+            '[review] heading "Review your application"',
+        ]
+    )
+    submitted_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[success] heading "Application submitted"',
+            'text "Thank you for applying"',
+        ]
+    )
+    client = HighConfidenceLinkedInSubmitClient(review_snapshot=review_snapshot, submitted_snapshot=submitted_snapshot)
+    client.submit_probe_result = {
+        "probeKind": "__openclaw_linkedin_submit_probe__",
+        "candidates": [
+            {
+                "refHint": "dismiss-button",
+                "label": "Dismiss",
+                "tag": "button",
+                "role": "",
+                "attributes": {"aria-label": "Dismiss"},
+                "score": 0,
+            },
+            {
+                "refHint": "submit-button",
+                "label": "Submit application",
+                "tag": "button",
+                "role": "",
+                "attributes": {"aria-label": "Submit application"},
+                "score": 25,
+            },
+        ],
+        "chosen": {
+            "refHint": "submit-button",
+            "label": "Submit application",
+            "tag": "button",
+            "role": "",
+            "attributes": {"aria-label": "Submit application"},
+            "score": 25,
+        },
+    }
+
+    result = run_backend(payload, client=client)
+
+    assert result["submitted"] is True
+    assert result["page_diagnostics"]["chosen_submit_ref"] == "submit-button"
+    assert result["page_diagnostics"]["chosen_submit_tag"] == "button"
+    assert client.click_calls[-1] == "submit-button"
+
+
+def test_backend_linkedin_submit_failure_detected_when_click_has_no_effect(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[submit-button] button "Submit application"',
+            '[review] heading "Review your application"',
+        ]
+    )
+    client = HighConfidenceLinkedInSubmitClient(
+        review_snapshot=review_snapshot,
+        submitted_snapshot=review_snapshot,
+        dom_submit_advances=False,
+    )
+    client.submit_probe_result = {
+        "probeKind": "__openclaw_linkedin_submit_probe__",
+        "candidates": [
+            {
+                "refHint": "[data-live-test-easy-apply-submit-button]",
+                "label": "Submit application",
+                "tag": "button",
+                "role": "",
+                "attributes": {
+                    "aria-label": "Submit application",
+                    "data-live-test-easy-apply-submit-button": "",
+                },
+                "score": 1000,
+            }
+        ],
+        "chosen": {
+            "refHint": "[data-live-test-easy-apply-submit-button]",
+            "label": "Submit application",
+            "tag": "button",
+            "role": "",
+            "attributes": {
+                "aria-label": "Submit application",
+                "data-live-test-easy-apply-submit-button": "",
+            },
+            "score": 1000,
+        },
+    }
+    client.submit_click_result = {
+        "probeKind": "__openclaw_linkedin_submit_click__",
+        "clicked": True,
+        "chosen": client.submit_probe_result["chosen"],
+    }
+
+    result = run_backend(payload, client=client)
+
+    assert result["submitted"] is False
+    assert result["failure_category"] == "manual_review_required"
+    assert result["page_diagnostics"]["auto_submit_attempted"] is True
+    assert result["page_diagnostics"]["auto_submit_succeeded"] is False
+    assert result["page_diagnostics"]["submit_decision_reason"] == "submit_click_no_effect"
+    assert "submit_click_no_effect" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert "auto_submit_confirmation_missing" in result["errors"]
+
+
+def test_backend_linkedin_review_step_with_only_next_visible_does_not_auto_submit(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[step-heading] heading "Review your application"',
+            '[review-next] button "Continue to next step"',
+        ]
+    )
+
+    class ReviewOnlyNextClient(HighConfidenceLinkedInSubmitClient):
+        def __init__(self) -> None:
+            super().__init__(review_snapshot=review_snapshot, submitted_snapshot=review_snapshot, dom_submit_advances=False)
+
+    client = ReviewOnlyNextClient()
+    client.submit_probe_result = {
+        "probeKind": "__openclaw_linkedin_submit_probe__",
+        "candidates": [
+            {
+                "refHint": "review-next",
+                "label": "Next",
+                "tag": "button",
+                "role": "",
+                "attributes": {"aria-label": "Continue to next step"},
+                "score": 0,
+            }
+        ],
+        "chosen": {
+            "refHint": "review-next",
+            "label": "Next",
+            "tag": "button",
+            "role": "",
+            "attributes": {"aria-label": "Continue to next step"},
+            "score": 0,
+        },
+    }
+
+    result = run_backend(payload, client=client)
+
+    assert result["submitted"] is False
     assert result["page_diagnostics"]["review_step_detected"] is True
-    assert result["page_diagnostics"]["submit_visible"] is True
-    assert result["page_diagnostics"]["submit_ready_without_autosubmit"] is True
+    assert result["page_diagnostics"]["submit_step_detected"] is False
+    assert result["page_diagnostics"]["submit_button_present"] is False
+    assert result["page_diagnostics"]["submit_signal_type"] == "none"
+    assert result["page_diagnostics"]["final_step_detected"] is False
+    assert result["page_diagnostics"]["later_step_decision"] == "safe_review_only"
+    assert result["page_diagnostics"]["auto_submit_allowed"] is False
+    assert result["page_diagnostics"]["auto_submit_attempted"] is False
+    assert result["page_diagnostics"]["attempted_submit_without_button"] is False
+    assert result["page_diagnostics"]["pre_submit_transition_attempted"] is True
+    assert result["page_diagnostics"]["pre_submit_transition_succeeded"] is False
+    assert result["page_diagnostics"]["submit_candidate_refs"] == []
+    assert "submit_step_not_detected" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert client.dom_submit_clicks == 0
+
+
+def test_backend_linkedin_final_stage_misclassification_prefers_continue_then_reprobes_submit(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_next_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[step-heading] heading "Review your application"',
+            '[review-next] button "Continue to next step"',
+        ]
+    )
+    submit_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[step-heading] heading "Review your application"',
+            '[submit-button] button "Submit application"',
+        ]
+    )
+    submitted_snapshot = "\n".join(
+        [
+            '[dialog-root] dialog "Apply to Acme AI" [active]',
+            '[success] heading "Application submitted"',
+            'text "Thank you for applying"',
+        ]
+    )
+
+    class ReviewThenSubmitClient(HighConfidenceLinkedInSubmitClient):
+        def __init__(self) -> None:
+            super().__init__(review_snapshot=review_next_snapshot, submitted_snapshot=submitted_snapshot)
+
+        def snapshot(self) -> str:
+            if self.stage == "review_submit":
+                return submit_snapshot
+            return super().snapshot()
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "review-next":
+                self.stage = "review_submit"
+
+        def evaluate_json(self, fn_source: str):
+            if "__openclaw_linkedin_submit_probe__" in fn_source:
+                if self.stage == "review":
+                    return {
+                        "probeKind": "__openclaw_linkedin_submit_probe__",
+                        "candidates": [
+                            {
+                                "refHint": "review-next",
+                                "label": "Next",
+                                "tag": "button",
+                                "role": "",
+                                "attributes": {"aria-label": "Continue to next step"},
+                                "score": 0,
+                            }
+                        ],
+                        "chosen": {
+                            "refHint": "review-next",
+                            "label": "Next",
+                            "tag": "button",
+                            "role": "",
+                            "attributes": {"aria-label": "Continue to next step"},
+                            "score": 0,
+                        },
+                    }
+                if self.stage == "review_submit":
+                    return {
+                        "probeKind": "__openclaw_linkedin_submit_probe__",
+                        "candidates": [
+                            {
+                                "refHint": "[data-live-test-easy-apply-submit-button]",
+                                "label": "Submit application",
+                                "tag": "button",
+                                "role": "",
+                                "attributes": {
+                                    "aria-label": "Submit application",
+                                    "data-live-test-easy-apply-submit-button": "",
+                                },
+                                "score": 1000,
+                            }
+                        ],
+                        "chosen": {
+                            "refHint": "[data-live-test-easy-apply-submit-button]",
+                            "label": "Submit application",
+                            "tag": "button",
+                            "role": "",
+                            "attributes": {
+                                "aria-label": "Submit application",
+                                "data-live-test-easy-apply-submit-button": "",
+                            },
+                            "score": 1000,
+                        },
+                    }
+            if "__openclaw_linkedin_submit_click__" in fn_source and self.stage == "review_submit":
+                self.dom_submit_clicks += 1
+                self.stage = "submitted"
+                return {
+                    "probeKind": "__openclaw_linkedin_submit_click__",
+                    "clicked": True,
+                    "chosen": {
+                        "refHint": "[data-live-test-easy-apply-submit-button]",
+                        "label": "Submit application",
+                        "tag": "button",
+                        "role": "",
+                        "attributes": {
+                            "aria-label": "Submit application",
+                            "data-live-test-easy-apply-submit-button": "",
+                        },
+                        "score": 1000,
+                    },
+                }
+            return super().evaluate_json(fn_source)
+
+    client = ReviewThenSubmitClient()
+    result = run_backend(payload, client=client)
+
+    assert result["submitted"] is True
+    assert "review-next" in client.click_calls
+    assert result["page_diagnostics"]["pre_submit_transition_attempted"] is True
+    assert result["page_diagnostics"]["pre_submit_transition_succeeded"] is True
+    assert result["page_diagnostics"]["submit_step_detected"] is True
+    assert result["page_diagnostics"]["submit_button_present"] is True
+    assert result["debug_json"]["linkedin_progression"][-2]["action"] == "click_next"
+    assert result["debug_json"]["linkedin_progression"][-2]["reason"] == "pre_submit_transition"
+    assert result["debug_json"]["linkedin_progression"][-1]["action"] == "click_submit"
+    assert result["page_diagnostics"]["chosen_submit_ref"] == "[data-live-test-easy-apply-submit-button]"
+    assert client.dom_submit_clicks == 1
+
+
+def test_backend_linkedin_submit_transition_probe_cap_stops_with_manual_review(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+    review_snapshots = {
+        "review": "\n".join(
+            [
+                '[dialog-root] dialog "Apply to Acme AI" [active]',
+                '[step-heading] heading "Review your application 1"',
+                '[review-next] button "Continue to next step"',
+            ]
+        ),
+        "review_2": "\n".join(
+            [
+                '[dialog-root] dialog "Apply to Acme AI" [active]',
+                '[step-heading] heading "Review your application 2"',
+                '[review-next] button "Continue to next step"',
+            ]
+        ),
+        "review_3": "\n".join(
+            [
+                '[dialog-root] dialog "Apply to Acme AI" [active]',
+                '[step-heading] heading "Review your application 3"',
+                '[review-next] button "Continue to next step"',
+            ]
+        ),
+    }
+
+    class ReviewProbeLoopClient(HighConfidenceLinkedInSubmitClient):
+        def __init__(self) -> None:
+            super().__init__(review_snapshot=review_snapshots["review"], submitted_snapshot=review_snapshots["review_3"])
+
+        def snapshot(self) -> str:
+            if self.stage in review_snapshots:
+                return review_snapshots[self.stage]
+            return super().snapshot()
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "review-next":
+                if self.stage == "review":
+                    self.stage = "review_2"
+                elif self.stage == "review_2":
+                    self.stage = "review_3"
+
+        def evaluate_json(self, fn_source: str):
+            if "__openclaw_linkedin_submit_probe__" in fn_source and self.stage in review_snapshots:
+                return {
+                    "probeKind": "__openclaw_linkedin_submit_probe__",
+                    "candidates": [
+                        {
+                            "refHint": "review-next",
+                            "label": "Next",
+                            "tag": "button",
+                            "role": "",
+                            "attributes": {"aria-label": "Continue to next step"},
+                            "score": 0,
+                        }
+                    ],
+                    "chosen": {
+                        "refHint": "review-next",
+                        "label": "Next",
+                        "tag": "button",
+                        "role": "",
+                        "attributes": {"aria-label": "Continue to next step"},
+                        "score": 0,
+                    },
+                }
+            return super().evaluate_json(fn_source)
+
+    client = ReviewProbeLoopClient()
+    result = run_backend(payload, client=client)
+
+    assert result["source_status"] == "manual_review_required"
+    assert result["failure_category"] == "manual_review_required"
+    assert "submit_transition_probe_cap_reached" in result["blocking_reason"]
+    assert result["page_diagnostics"]["submit_blocked_reason"] == "submit_transition_probe_cap_reached"
+    assert result["page_diagnostics"]["pre_submit_transition_attempted"] is True
+    assert result["page_diagnostics"]["auto_submit_attempted"] is False
+    assert client.click_calls.count("review-next") == 2
+    assert client.dom_submit_clicks == 0
+
+
+def test_backend_linkedin_final_review_stops_for_safe_review_when_submit_confidence_is_ambiguous(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = _payload(tmp_path)
+    payload["application_answers"] = []
+    pdf_path = tmp_path / "resume.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%Test\n")
+    payload["application_target"]["application_url"] = "https://www.linkedin.com/jobs/view/4354740729/apply/?openSDUIApplyFlow=true"
+    payload["application_target"]["source_url"] = "https://www.linkedin.com/jobs/view/4354740729/"
+    payload["resume_variant"]["resume_upload_path"] = str(pdf_path)
+    payload["resume_variant"]["resume_file_name"] = "resume.pdf"
+    payload["artifacts"]["resume_upload_path"] = str(pdf_path)
+
+    monkeypatch.setattr(
+        "integrations.openclaw_apply_browser_backend.motivation_answer",
+        lambda **_: {
+            "answer": "I am excited about this role.",
+            "source": "llm_generated",
+            "confidence": 0.86,
+            "reason": "llm_generated",
+        },
+    )
+
+    class LinkedInReviewOnlyClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(
+                page_title="Apply to Acme AI",
+                current_url="https://www.linkedin.com/jobs/view/4354740729/",
+                snapshots=[],
+            )
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Contact info"',
+                        '[first-name] textbox "First name*": Zachary',
+                        '[last-name] textbox "Last name*": Kralec',
+                        '[contact-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "resume":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Resume"',
+                        'generic "Selected"',
+                        '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked',
+                        '[resume-next] button "Continue to next step"',
+                    ]
+                )
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Review your application"',
+                    '[motivation] textarea "Why are you interested in this role? *"',
+                    '[submit-application] button "Submit application"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "review"
+
+    client = LinkedInReviewOnlyClient()
+    result = run_backend(payload, client=client)
+
+    assert result["failure_category"] is None
+    assert result["draft_status"] == "draft_ready"
+    assert result["awaiting_review"] is True
+    assert result["submitted"] is False
+    assert client.click_calls == ["contact-next", "resume-next"]
+    assert result["page_diagnostics"]["final_step_detected"] is True
+    assert result["page_diagnostics"]["later_step_decision"] == "safe_review_only"
+    assert result["page_diagnostics"]["submit_confidence"] == "medium"
+    assert result["page_diagnostics"]["auto_submit_allowed"] is False
+    assert result["page_diagnostics"]["auto_submit_attempted"] is False
+    assert result["page_diagnostics"]["auto_submit_succeeded"] is False
     assert result["page_diagnostics"]["should_auto_submit"] is False
+    assert "final_step_detected" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert "no_unresolved_fields" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert "submit_visible_and_ready" in result["page_diagnostics"]["submit_confidence_reasons"]
+    assert any(
+        reason in result["page_diagnostics"]["submit_confidence_reasons"]
+        for reason in ("heuristic_answers_present", "confidence_below_threshold", "required_disclosures_uncertain")
+    )
 
 
 def test_backend_linkedin_later_step_recovers_from_stale_select_ref(tmp_path: Path) -> None:
@@ -609,11 +1636,19 @@ def test_backend_linkedin_later_step_recovers_from_stale_select_ref(tmp_path: Pa
                         '[screening-next] button "Continue to next step"',
                     ]
                 )
+            if self.stage == "review":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Review your application"',
+                        '[submit-application] button "Submit application"',
+                    ]
+                )
             return "\n".join(
                 [
                     '[dialog-root] dialog "Apply to Acme AI" [active]',
-                    '[step-heading] heading "Review your application"',
-                    '[submit-application] button "Submit application"',
+                    '[step-heading] heading "Application submitted"',
+                    'text "Thank you for applying"',
                 ]
             )
 
@@ -625,8 +1660,8 @@ def test_backend_linkedin_later_step_recovers_from_stale_select_ref(tmp_path: Pa
                 self.stage = "screening"
             elif ref == "screening-next":
                 self.stage = "review"
-            elif ref == "screening-next":
-                self.stage = "review"
+            elif ref == "submit-application":
+                self.stage = "submitted"
 
         def select(self, ref: str, value: str) -> None:
             super().select(ref, value)
@@ -650,6 +1685,7 @@ def test_backend_linkedin_later_step_recovers_from_stale_select_ref(tmp_path: Pa
 
     assert result["failure_category"] is None
     assert result["draft_status"] == "draft_ready"
+    assert result["submitted"] is True
     assert ("clearance-old", "No") in client.select_calls
     assert ("clearance-new", "No") in client.select_calls
     action_diag = next(
@@ -661,6 +1697,441 @@ def test_backend_linkedin_later_step_recovers_from_stale_select_ref(tmp_path: Pa
     assert action_diag["retry_succeeded"] is True
     assert action_diag["original_ref"] == "clearance-old"
     assert action_diag["replacement_ref"] == "clearance-new"
+
+
+def test_backend_linkedin_later_step_answers_required_work_authorization_radio_yes(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class LinkedInLaterStepRadioClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(
+                page_title="Apply to Acme AI",
+                current_url="https://www.linkedin.com/jobs/view/4354740729/",
+                snapshots=[],
+            )
+            self.stage = "contact"
+            self.selected_auth: str | None = None
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Contact info"',
+                        '[first-name] textbox "First name*": Zachary',
+                        '[last-name] textbox "Last name*": Kralec',
+                        '[email-address] combobox "Email address *": zkralec@icloud.com selected',
+                        '[contact-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "resume":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Resume"',
+                        'generic "Selected"',
+                        '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked',
+                        '[resume-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "screening":
+                yes_line = '[auth-yes] radio "Yes" checked' if self.selected_auth == "Yes" else '[auth-yes] radio "Yes"'
+                no_line = '[auth-no] radio "No" checked' if self.selected_auth == "No" else '[auth-no] radio "No"'
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Voluntary self identification"',
+                        'group "Are you authorized to work in the US without a sponsor visa? * Required"',
+                        yes_line,
+                        no_line,
+                        '[screening-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "review":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Review your application"',
+                        '[submit-application] button "Submit application"',
+                    ]
+                )
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Application submitted"',
+                    'heading "Your application was sent"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+            elif ref == "auth-yes":
+                self.selected_auth = "Yes"
+            elif ref == "auth-no":
+                self.selected_auth = "No"
+            elif ref == "screening-next" and self.selected_auth == "Yes":
+                self.stage = "review"
+            elif ref == "submit-application":
+                self.stage = "submitted"
+
+    client = LinkedInLaterStepRadioClient()
+    result = run_backend(payload, client=client)
+
+    assert result["failure_category"] is None
+    assert "auth-yes" in client.click_calls
+    assert "screening-next" in client.click_calls
+    assert result["page_diagnostics"]["later_step_policy_matches"]
+    assert any(row["canonical_key"] == "work_authorization_us" for row in result["page_diagnostics"]["later_step_policy_matches"])
+    assert any(row["canonical_key"] == "work_authorization_us" for row in result["page_diagnostics"]["later_step_answers_applied"])
+    radio_groups = {row["field_name"]: row for row in result["page_diagnostics"]["later_step_radio_group_diagnostics"]}
+    assert radio_groups["work_authorization_us"]["selected_option"] == "Yes"
+    assert radio_groups["work_authorization_us"]["selection_verified"] is True
+    statuses = {row["field_name"]: row for row in result["page_diagnostics"]["later_step_required_field_statuses"]}
+    assert statuses["work_authorization_us"]["satisfied"] is True
+    resolution_rows = result["page_diagnostics"]["later_step_canonical_key_resolution"]
+    assert any(row["resolved_field_name"] == "work_authorization_us" for row in resolution_rows)
+    assert not any(row["resolved_field_name"] == "state_or_province" for row in resolution_rows)
+    strategy_rows = {row["field_name"]: row for row in result["page_diagnostics"]["later_step_radio_selection_strategy"]}
+    assert strategy_rows["work_authorization_us"]["verification_method"] == "checked_state"
+    assert result["page_diagnostics"]["later_step_continue_gate_reason"] == "all_required_later_step_fields_satisfied"
+
+
+def test_backend_linkedin_later_step_blocks_continue_until_required_radio_verified(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class LinkedInLaterStepRadioUnverifiedClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(
+                page_title="Apply to Acme AI",
+                current_url="https://www.linkedin.com/jobs/view/4354740729/",
+                snapshots=[],
+            )
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Contact info"',
+                        '[first-name] textbox "First name*": Zachary',
+                        '[last-name] textbox "Last name*": Kralec',
+                        '[contact-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "resume":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Resume"',
+                        'generic "Selected"',
+                        '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked',
+                        '[resume-next] button "Continue to next step"',
+                    ]
+                )
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Voluntary self identification"',
+                    'group "Are you authorized to work in the US without a sponsor visa? * Required"',
+                    '[auth-yes] radio "Yes"',
+                    '[auth-no] radio "No"',
+                    '[screening-next] button "Continue to next step"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+
+    client = LinkedInLaterStepRadioUnverifiedClient()
+    result = run_backend(payload, client=client)
+
+    assert result["source_status"] == "manual_review_required"
+    assert "auth-yes" in client.click_calls
+    assert "screening-next" not in client.click_calls
+    assert result["page_diagnostics"]["later_step_continue_gate_reason"] == "blocking_required_later_step_fields"
+    statuses = {row["field_name"]: row for row in result["page_diagnostics"]["later_step_required_field_statuses"]}
+    assert statuses["work_authorization_us"]["satisfied"] is False
+    assert statuses["work_authorization_us"]["selection_attempted"] is True
+
+
+def test_backend_linkedin_later_step_verified_radio_selection_allows_continue(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class LinkedInLaterStepRadioContinueClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(
+                page_title="Apply to Acme AI",
+                current_url="https://www.linkedin.com/jobs/view/4354740729/",
+                snapshots=[],
+            )
+            self.stage = "contact"
+            self.selected_auth = False
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Contact info"',
+                        '[contact-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "resume":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Resume"',
+                        'generic "Selected"',
+                        '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked',
+                        '[resume-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "screening":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Voluntary self identification"',
+                        'group "Are you authorized to work in the US without a sponsor visa? * Required"',
+                        '[auth-yes] radio "Yes" checked' if self.selected_auth else '[auth-yes] radio "Yes"',
+                        '[auth-no] radio "No"',
+                        '[screening-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "review":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Review your application"',
+                        '[submit-application] button "Submit application"',
+                    ]
+                )
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Application submitted"',
+                    'heading "Your application was sent"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+            elif ref == "auth-yes":
+                self.selected_auth = True
+            elif ref == "screening-next" and self.selected_auth:
+                self.stage = "review"
+            elif ref == "submit-application":
+                self.stage = "submitted"
+
+    client = LinkedInLaterStepRadioContinueClient()
+    result = run_backend(payload, client=client)
+
+    assert result["failure_category"] is None
+    assert client.click_calls.index("auth-yes") < client.click_calls.index("screening-next")
+    assert result["page_diagnostics"]["pre_submit_transition_attempted"] is False
+    assert result["page_diagnostics"]["later_step_continue_gate_reason"] == "all_required_later_step_fields_satisfied"
+
+
+def test_backend_linkedin_later_step_reclassifies_bad_dom_radio_field_name_to_work_authorization(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class LinkedInLaterStepDomMisclassifiedRadioClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(
+                page_title="Apply to Acme AI",
+                current_url="https://www.linkedin.com/jobs/view/4354740729/",
+                snapshots=[],
+            )
+            self.stage = "contact"
+            self.selected_auth = False
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Contact info"',
+                        '[contact-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "resume":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Resume"',
+                        'generic "Selected"',
+                        '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked',
+                        '[resume-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "screening":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Voluntary self identification"',
+                        'group "Are you authorized to work in the US without a sponsor visa? * Required"',
+                        '[auth-yes] radio "Yes" checked' if self.selected_auth else '[auth-yes] radio "Yes"',
+                        '[auth-no] radio "No"',
+                        '[screening-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "review":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Review your application"',
+                        '[submit-application] button "Submit application"',
+                    ]
+                )
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Application submitted"',
+                    'heading "Your application was sent"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+            elif ref == "auth-yes":
+                self.selected_auth = True
+            elif ref == "screening-next" and self.selected_auth:
+                self.stage = "review"
+            elif ref == "submit-application":
+                self.stage = "submitted"
+
+        def evaluate_json(self, fn_source: str):
+            if "__openclaw_linkedin_radio_groups_probe__" in fn_source and self.stage == "screening":
+                return {
+                    "probeKind": "__openclaw_linkedin_radio_groups_probe__",
+                    "groups": [
+                        {
+                            "field_name": "state_or_province",
+                            "group_label": "Are you authorized to work in the US without a sponsor visa? * Required",
+                            "required": True,
+                            "options": ["Yes", "No"],
+                            "selected_option": "Yes" if self.selected_auth else None,
+                            "selection_verified": self.selected_auth,
+                            "chosen_option": "Yes" if self.selected_auth else None,
+                            "refs_involved": ["auth-yes", "auth-no"],
+                        }
+                    ],
+                }
+            if "__openclaw_linkedin_radio_group_select__" in fn_source and self.stage == "screening":
+                self.selected_auth = True
+                return {
+                    "probeKind": "__openclaw_linkedin_radio_group_select__",
+                    "found": True,
+                    "field_name": "work_authorization_us",
+                    "group_label": "Are you authorized to work in the US without a sponsor visa? * Required",
+                    "selection_attempted": True,
+                    "selection_verified": True,
+                    "chosen_option": "Yes",
+                    "selected_option": "Yes",
+                    "used_input_click": True,
+                    "used_label_click": False,
+                    "verification_method": "checked_state",
+                    "refs_involved": ["auth-yes"],
+                }
+            return super().evaluate_json(fn_source)
+
+    client = LinkedInLaterStepDomMisclassifiedRadioClient()
+    result = run_backend(payload, client=client)
+
+    assert result["failure_category"] is None
+    assert client.click_calls.index("screening-next") > client.click_calls.index("resume-next")
+    radio_groups = {row["field_name"]: row for row in result["page_diagnostics"]["later_step_radio_group_diagnostics"]}
+    assert "state_or_province" not in radio_groups
+    assert radio_groups["work_authorization_us"]["selected_option"] == "Yes"
+    assert radio_groups["work_authorization_us"]["selection_verified"] is True
+    resolution_rows = result["page_diagnostics"]["later_step_canonical_key_resolution"]
+    assert any(
+        row["resolved_field_name"] == "work_authorization_us"
+        and row["resolution_reason"] == "keyword_match_work_authorization"
+        for row in resolution_rows
+    )
+    strategy_rows = {row["field_name"]: row for row in result["page_diagnostics"]["later_step_radio_selection_strategy"]}
+    assert strategy_rows["work_authorization_us"]["used_input_click"] is True
+    assert strategy_rows["work_authorization_us"]["used_label_click"] is False
+    assert result["page_diagnostics"]["later_step_continue_gate_reason"] == "all_required_later_step_fields_satisfied"
+
+
+def test_backend_linkedin_later_step_blocks_unclassified_required_radio_group(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _configure_linkedin_easy_apply_payload(payload, tmp_path)
+
+    class LinkedInLaterStepUnclassifiedRadioClient(FakeBrowserClient):
+        def __init__(self) -> None:
+            super().__init__(
+                page_title="Apply to Acme AI",
+                current_url="https://www.linkedin.com/jobs/view/4354740729/",
+                snapshots=[],
+            )
+            self.stage = "contact"
+
+        def snapshot(self) -> str:
+            if self.stage == "contact":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Contact info"',
+                        '[contact-next] button "Continue to next step"',
+                    ]
+                )
+            if self.stage == "resume":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Resume"',
+                        'generic "Selected"',
+                        '[selected-resume] radio "Deselect resume Zachary Kralec Resume.pdf" checked',
+                        '[resume-next] button "Continue to next step"',
+                    ]
+                )
+            return "\n".join(
+                [
+                    '[dialog-root] dialog "Apply to Acme AI" [active]',
+                    '[step-heading] heading "Voluntary self identification"',
+                    'group "Do you prefer to work remote or on-site? * Required"',
+                    '[pref-remote] radio "Remote"',
+                    '[pref-onsite] radio "On-site"',
+                    '[screening-next] button "Continue to next step"',
+                ]
+            )
+
+        def click(self, ref: str) -> None:
+            super().click(ref)
+            if ref == "contact-next":
+                self.stage = "resume"
+            elif ref == "resume-next":
+                self.stage = "screening"
+
+    client = LinkedInLaterStepUnclassifiedRadioClient()
+    result = run_backend(payload, client=client)
+
+    assert result["source_status"] == "manual_review_required"
+    assert result["blocking_reason"] == "unclassified_required_radio_group"
+    assert "screening-next" not in client.click_calls
+    radio_groups = result["page_diagnostics"]["later_step_radio_group_diagnostics"]
+    assert any(row["field_name"] == "unclassified_radio_group" for row in radio_groups)
+    assert result["page_diagnostics"]["later_step_continue_gate_reason"] == "unclassified_required_radio_group"
 
 
 def test_backend_linkedin_later_step_blocks_when_stale_select_ref_cannot_reresolve(tmp_path: Path) -> None:
@@ -864,7 +2335,8 @@ def test_backend_linkedin_repeated_later_step_handoffs_before_timeout(tmp_path: 
     assert result["failure_category"] == "manual_review_required"
     assert result["awaiting_review"] is True
     assert result["page_diagnostics"]["repeated_state_detected"] is True
-    assert result["page_diagnostics"]["repeated_state_reason"] == "next_click_no_progress_same_signature"
+    assert result["page_diagnostics"]["repeated_state_reason"] == "active_step_signature_unchanged_after_next_click"
+    assert result["page_diagnostics"]["step_advance_blocking_reason"] == "active_step_signature_unchanged_after_next_click"
     assert result["page_diagnostics"]["later_step_iteration_count"] >= 1
     assert result["page_diagnostics"]["last_step_signature"]
     assert result["page_diagnostics"]["last_visible_labels"] == ["Are you authorized to work in the US without a sponsor visa? *"]
@@ -1037,11 +2509,19 @@ def test_backend_linkedin_review_like_step_stops_without_extra_probing(tmp_path:
                         '[resume-next] button "Continue to next step"',
                     ]
                 )
+            if self.stage == "review_like":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Final review"',
+                        '[submit-application] button "Submit application"',
+                    ]
+                )
             return "\n".join(
                 [
                     '[dialog-root] dialog "Apply to Acme AI" [active]',
-                    '[step-heading] heading "Final review"',
-                    '[submit-application] button "Submit application"',
+                    '[step-heading] heading "Application submitted"',
+                    'text "Thank you for applying"',
                 ]
             )
 
@@ -1051,17 +2531,20 @@ def test_backend_linkedin_review_like_step_stops_without_extra_probing(tmp_path:
                 self.stage = "resume"
             elif ref == "resume-next":
                 self.stage = "review_like"
+            elif ref == "submit-application":
+                self.stage = "submitted"
 
     client = LinkedInReviewLikeClient()
     result = run_backend(payload, client=client)
 
     assert result["failure_category"] is None
     assert result["draft_status"] == "draft_ready"
-    assert result["awaiting_review"] is True
-    assert client.click_calls == ["contact-next", "resume-next"]
+    assert result["awaiting_review"] is False
+    assert result["submitted"] is True
+    assert client.click_calls == ["contact-next", "resume-next", "submit-application"]
     assert result["page_diagnostics"]["review_like_step_detected"] is True
-    assert result["page_diagnostics"]["submit_ready_without_autosubmit"] is True
-    assert result["page_diagnostics"]["should_auto_submit"] is False
+    assert result["page_diagnostics"]["auto_submit_succeeded"] is True
+    assert result["page_diagnostics"]["should_auto_submit"] is True
 
 
 def test_backend_linkedin_later_step_uses_truthful_personal_fallback_when_required_and_no_neutral_exists(tmp_path: Path) -> None:
@@ -1095,6 +2578,7 @@ def test_backend_linkedin_later_step_uses_truthful_personal_fallback_when_requir
                 snapshots=[],
             )
             self.stage = "contact"
+            self.veteran_selected = False
 
         def snapshot(self) -> str:
             if self.stage == "contact":
@@ -1133,13 +2617,21 @@ def test_backend_linkedin_later_step_uses_truthful_personal_fallback_when_requir
                         '[submit-application] button "Submit application"',
                     ]
                 )
+            if self.stage == "submitted":
+                return "\n".join(
+                    [
+                        '[dialog-root] dialog "Apply to Acme AI" [active]',
+                        '[step-heading] heading "Application submitted"',
+                        'text "Thank you for applying"',
+                    ]
+                )
             return "\n".join(
                 [
                     '[dialog-root] dialog "Apply to Acme AI" [active]',
                     '[step-heading] heading "Additional questions"',
                     '[auth] combobox "Are you authorized to work in the US without a sponsor visa? *"',
                     '[veteran-yes] radio "Protected veteran *"',
-                    '[veteran-no] radio "Not a protected veteran *"',
+                    '[veteran-no] radio "Not a protected veteran *" checked' if self.veteran_selected else '[veteran-no] radio "Not a protected veteran *"',
                     '[screening-next] button "Continue to next step"',
                 ]
             )
@@ -1150,8 +2642,12 @@ def test_backend_linkedin_later_step_uses_truthful_personal_fallback_when_requir
                 self.stage = "resume"
             elif ref == "resume-next":
                 self.stage = "screening"
-            elif ref == "screening-next":
+            elif ref == "veteran-no":
+                self.veteran_selected = True
+            elif ref == "screening-next" and self.veteran_selected:
                 self.stage = "review"
+            elif ref == "submit-application":
+                self.stage = "submitted"
 
     client = LinkedInUnsafeSelfIdClient()
     result = run_backend(payload, client=client)
@@ -1160,12 +2656,14 @@ def test_backend_linkedin_later_step_uses_truthful_personal_fallback_when_requir
     assert result["source_status"] == "success"
     assert result["failure_category"] is None
     assert result["awaiting_review"] is True
+    assert result["submitted"] is False
     assert ("auth", "Yes") in client.select_calls
-    assert ("veteran-no", True) in [(row["ref"], row["value"]) for batch in client.fill_calls for row in batch]
-    assert client.click_calls == ["contact-next", "resume-next", "screening-next"]
+    assert "veteran-no" in client.click_calls
+    assert client.click_calls == ["contact-next", "resume-next", "veteran-no"]
     fallback_rows = result["form_diagnostics"]["later_step_personal_answer_fallbacks_used"]
     assert fallback_rows[0]["canonical_key"] == "veteran_status"
     assert fallback_rows[0]["value"] == "Not a veteran"
+    assert "unsafe_personal_fallback_answers_present" in result["page_diagnostics"]["submit_confidence_reasons"]
 
 
 def test_backend_linkedin_later_step_stops_at_review_when_personal_fallback_is_uncertain(tmp_path: Path) -> None:
@@ -2638,7 +4136,9 @@ def test_backend_maps_salary_and_start_date_defaults(tmp_path: Path) -> None:
     assert result["failure_category"] is None
     assert filled["salary"] == "100000"
     assert filled["start-date"] == "05/18/2026"
-    assert result["page_diagnostics"]["should_auto_submit"] is True
+    assert result["page_diagnostics"]["should_auto_submit"] is False
+    assert result["page_diagnostics"]["submit_step_detected"] is False
+    assert result["page_diagnostics"]["submit_button_present"] is False
 
 
 def test_backend_optional_self_id_fields_are_filled_when_clearly_mapped(tmp_path: Path) -> None:
@@ -2730,8 +4230,12 @@ def test_backend_sets_auto_submit_eligibility_only_when_confidence_threshold_is_
     result = run_backend(payload, client=client)
 
     assert result["failure_category"] is None
-    assert result["page_diagnostics"]["should_auto_submit"] is True
-    assert result["page_diagnostics"]["submit_decision_reason"] == "confidence_threshold_met"
+    assert result["page_diagnostics"]["should_auto_submit"] is False
+    assert result["page_diagnostics"]["submit_step_detected"] is False
+    assert result["page_diagnostics"]["submit_decision_reason"] in {
+        "submit_step_not_detected",
+        "no_safe_advance_action_visible",
+    }
     assert result["page_diagnostics"]["confidence_score_used"] == 0.95
 
 

@@ -158,7 +158,7 @@ def _host_visible_request(request: dict[str, Any]) -> dict[str, Any]:
     host_request["resume_variant"] = resume_variant
 
     artifacts = dict(host_request.get("artifacts") or {})
-    for key in ("receipt_path", "screenshot_dir", "resume_upload_path"):
+    for key in ("receipt_path", "screenshot_dir", "resume_upload_path", "progress_snapshot_path"):
         normalized = _host_compatible_path(artifacts.get(key))
         if normalized:
             artifacts[key] = normalized
@@ -241,6 +241,7 @@ class ArtifactPaths:
     run_key: str
     screenshot_dir: Path
     receipt_path: Path
+    progress_snapshot_path: Path
     generated_resume_path: Path
     host_handoff_request_path: Path
     host_handoff_result_path: Path
@@ -621,10 +622,12 @@ def build_artifact_paths(payload: dict[str, Any], config: RunnerConfig) -> Artif
     resume_variant = payload.get("resume_variant") if isinstance(payload.get("resume_variant"), dict) else {}
     generated_resume_path = config.resume_root / f"{run_key}{_file_ext(str(resume_variant.get('resume_file_name') or ''), default='.txt')}"
     receipt_path = config.receipt_root / f"{run_key}.json"
+    progress_snapshot_path = config.receipt_root / f"{run_key}.progress.json"
     return ArtifactPaths(
         run_key=run_key,
         screenshot_dir=screenshot_dir,
         receipt_path=receipt_path,
+        progress_snapshot_path=progress_snapshot_path,
         generated_resume_path=generated_resume_path,
         host_handoff_request_path=host_handoff_dir / f"{run_key}.input.json",
         host_handoff_result_path=host_handoff_dir / f"{run_key}.result.json",
@@ -931,8 +934,26 @@ def _default_blocking_reason(failure_category: str | None) -> str | None:
     return FAILURE_BLOCKING_REASONS.get(failure_category, failure_category.replace("_", " "))
 
 
+def _read_progress_snapshot(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _has_submit_signal(raw_result: dict[str, Any]) -> bool:
     return bool(raw_result.get("submitted")) or bool(raw_result.get("submit_clicked")) or bool(raw_result.get("final_submit_clicked"))
+
+
+def _safe_auto_submit_signal(raw_result: dict[str, Any]) -> bool:
+    page_diagnostics = raw_result.get("page_diagnostics") if isinstance(raw_result.get("page_diagnostics"), dict) else {}
+    form_diagnostics = raw_result.get("form_diagnostics") if isinstance(raw_result.get("form_diagnostics"), dict) else {}
+    auto_submit_allowed = bool(page_diagnostics.get("auto_submit_allowed") or form_diagnostics.get("auto_submit_allowed"))
+    auto_submit_succeeded = bool(page_diagnostics.get("auto_submit_succeeded") or form_diagnostics.get("auto_submit_succeeded"))
+    return bool(raw_result.get("submitted")) and auto_submit_allowed and auto_submit_succeeded
 
 
 def _meaningful_draft_status(value: Any) -> bool:
@@ -982,7 +1003,8 @@ def _normalize_result(
     blocking_reason = str(raw_result.get("blocking_reason") or "").strip() or _default_blocking_reason(failure_category)
 
     submitted_signal = _has_submit_signal(raw_result)
-    if submitted_signal:
+    safe_submitted = _safe_auto_submit_signal(raw_result)
+    if submitted_signal and not safe_submitted:
         warnings.append("unsafe_submit_attempted_detected")
         errors.append("adapter_reported_submit_signal")
         failure_category = "unsafe_submit_attempted"
@@ -1024,7 +1046,7 @@ def _normalize_result(
         blocking_reason = blocking_reason or _default_blocking_reason(failure_category)
 
     source_status = _normalize_source_status(raw_result, failure_category=failure_category, meaningful_progress=meaningful_progress)
-    if submitted_signal:
+    if submitted_signal and not safe_submitted:
         source_status = "unsafe_submit_attempted"
     if inspect_only and source_status == "success":
         source_status = "inspect_only"
@@ -1069,16 +1091,16 @@ def _normalize_result(
     notify_decision = raw_result.get("notify_decision") if isinstance(raw_result.get("notify_decision"), dict) else {}
     debug_json = raw_result.get("debug_json") if isinstance(raw_result.get("debug_json"), dict) else {}
     notify_reason = str(notify_decision.get("reason") or "").strip() or (
-        "draft_ready_for_review" if awaiting_review else (review_status or source_status or "blocked")
+        "application_submitted" if safe_submitted else ("draft_ready_for_review" if awaiting_review else (review_status or source_status or "blocked"))
     )
     should_notify = awaiting_review and not submitted_signal and len(screenshots) > 0 and bool(notify_decision.get("should_notify", True))
     normalized = {
-        "status": "awaiting_review" if awaiting_review else (source_status or "upstream_failure"),
+        "status": "success" if safe_submitted else ("awaiting_review" if awaiting_review else (source_status or "upstream_failure")),
         "draft_status": draft_status,
         "source_status": source_status,
-        "awaiting_review": awaiting_review,
-        "review_status": review_status,
-        "submitted": False,
+        "awaiting_review": awaiting_review and not safe_submitted,
+        "review_status": "submitted" if safe_submitted else review_status,
+        "submitted": safe_submitted,
         "failure_category": failure_category,
         "blocking_reason": blocking_reason,
         "fields_filled_manifest": fields_filled_manifest,
@@ -1246,6 +1268,7 @@ def execute_apply_draft(
             "receipt_path": str(paths.receipt_path.resolve()),
             "screenshot_dir": str(paths.screenshot_dir.resolve()),
             "resume_upload_path": materialized_resume_path,
+            "progress_snapshot_path": str(paths.progress_snapshot_path.resolve()),
         },
         "lineage": payload.get("lineage") if isinstance(payload.get("lineage"), dict) else {},
         "inspect_only": inspect_only,
@@ -1299,24 +1322,58 @@ def execute_apply_draft(
         try:
             raw_result = resolved_adapter.run(request)
         except subprocess.TimeoutExpired:
+            progress_snapshot = _read_progress_snapshot(paths.progress_snapshot_path)
+            progress_fields = (
+                progress_snapshot.get("fields_filled_manifest")
+                if isinstance(progress_snapshot.get("fields_filled_manifest"), list)
+                else []
+            )
+            progress_screenshots = (
+                progress_snapshot.get("screenshot_metadata_references")
+                if isinstance(progress_snapshot.get("screenshot_metadata_references"), list)
+                else []
+            )
+            progress_checkpoint_urls = (
+                progress_snapshot.get("checkpoint_urls")
+                if isinstance(progress_snapshot.get("checkpoint_urls"), list)
+                else [application_url]
+            )
+            progress_page_diagnostics = (
+                progress_snapshot.get("page_diagnostics")
+                if isinstance(progress_snapshot.get("page_diagnostics"), dict)
+                else {}
+            )
+            progress_form_diagnostics = (
+                progress_snapshot.get("form_diagnostics")
+                if isinstance(progress_snapshot.get("form_diagnostics"), dict)
+                else {}
+            )
+            progress_warnings = _as_text_list(progress_snapshot.get("warnings"))
+            progress_errors = _as_text_list(progress_snapshot.get("errors"))
             raw_result = {
-                "draft_status": "not_started",
+                "draft_status": "partial_draft" if progress_fields else "not_started",
                 "source_status": "timed_out",
                 "awaiting_review": False,
                 "review_status": "blocked",
                 "submitted": False,
                 "failure_category": "timed_out",
                 "blocking_reason": _default_blocking_reason("timed_out"),
-                "fields_filled_manifest": [],
-                "screenshot_metadata_references": [],
-                "checkpoint_urls": [application_url],
-                "page_title": None,
-                "warnings": [],
-                "errors": ["openclaw_apply_timed_out"],
+                "fields_filled_manifest": progress_fields,
+                "screenshot_metadata_references": progress_screenshots,
+                "checkpoint_urls": progress_checkpoint_urls,
+                "page_title": str(progress_snapshot.get("page_title") or "").strip() or None,
+                "warnings": _dedupe_text(progress_warnings + (["timeout_progress_snapshot_recovered"] if progress_snapshot else [])),
+                "errors": _dedupe_text(progress_errors + ["openclaw_apply_timed_out"]),
                 "notify_decision": {"should_notify": False, "reason": "timed_out", "channels": []},
                 "account_created": False,
                 "safe_to_retry": True,
-                "debug_json": {"adapter_timeout_seconds": config.timeout_seconds},
+                "page_diagnostics": progress_page_diagnostics,
+                "form_diagnostics": progress_form_diagnostics,
+                "debug_json": {
+                    "adapter_timeout_seconds": config.timeout_seconds,
+                    "progress_snapshot_path": str(paths.progress_snapshot_path.resolve()),
+                    "draft_progress": progress_snapshot,
+                },
             }
         except Exception as exc:
             logger.exception("OpenClaw adapter raised an exception for %s", paths.run_key)

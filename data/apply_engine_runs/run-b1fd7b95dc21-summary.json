@@ -1,0 +1,23 @@
+{
+  "run_id": "run-b1fd7b95dc21",
+  "job_url": "https://smartapply.indeed.com/beta/indeedapply/form/profile-location",
+  "site": "Generic",
+  "adapter_used": "generic",
+  "started_at": "2026-04-13T18:24:49.943086+00:00",
+  "completed_at": "2026-04-13T18:24:55.505947+00:00",
+  "status": "partial",
+  "review_reached": false,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-b1fd7b95dc21/01-01-landing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-b1fd7b95dc21/02-02-on-form.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-b1fd7b95dc21/03-01-filled.png"
+  ],
+  "failure_reason": "Could not navigate past step 1 \u2014 no navigation buttons found.",
+  "llm_calls": 0,
+  "notes": [],
+  "steps": []
+}

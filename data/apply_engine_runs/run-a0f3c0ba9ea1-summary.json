@@ -1,0 +1,23 @@
+{
+  "run_id": "run-a0f3c0ba9ea1",
+  "job_url": "https://jobs.lever.co/whoop/530bcd23-5c9d-4e95-8f06-31d1087987df/apply",
+  "site": "Lever",
+  "adapter_used": "lever",
+  "started_at": "2026-04-13T18:15:03.863319+00:00",
+  "completed_at": "2026-04-13T18:17:52.831996+00:00",
+  "status": "draft_ready",
+  "review_reached": true,
+  "submitted": false,
+  "step_count": 0,
+  "fields_filled": 0,
+  "fields_failed": 0,
+  "screenshots": [
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-a0f3c0ba9ea1/01-01-lever-listing.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-a0f3c0ba9ea1/02-02-lever-form.png",
+    "/home/zkralec/VSCode/mission-control/data/apply_engine_runs/screenshots/screenshots/run-a0f3c0ba9ea1/03-03-lever-filled.png"
+  ],
+  "failure_reason": null,
+  "llm_calls": 3,
+  "notes": [],
+  "steps": []
+}
